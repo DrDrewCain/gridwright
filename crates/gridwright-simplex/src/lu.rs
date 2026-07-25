@@ -112,8 +112,6 @@ pub struct Lu {
     u: Tri,
     /// `perm[k]` is the original row that became row `k`.
     perm: Vec<usize>,
-    /// The inverse of the above, for scattering a right-hand side.
-    inv_perm: Vec<usize>,
     /// Original column index of each factorised column, since columns are
     /// reordered before elimination.
     col_order: Vec<usize>,
@@ -150,7 +148,6 @@ impl Lu {
             l,
             u,
             perm: (0..m).collect(),
-            inv_perm: (0..m).collect(),
             col_order: (0..m).collect(),
             col_rank: (0..m).collect(),
         }
@@ -175,7 +172,7 @@ impl Lu {
 
         // The active submatrix, as sparse columns that shrink as rows are
         // eliminated.
-        let mut active: Vec<Vec<(usize, f64)>> =
+        let active: Vec<Vec<(usize, f64)>> =
             col_order.iter().map(|&j| cols[j].clone()).collect();
         // How many active entries each row still has, for the fill estimate.
         let mut row_count = vec![0usize; m];
@@ -294,10 +291,6 @@ impl Lu {
         u.close();
         l.close();
 
-        let mut inv_perm = vec![0usize; m];
-        for (rank, &row) in perm.iter().enumerate() {
-            inv_perm[row] = rank;
-        }
         let mut col_rank = vec![0usize; m];
         for (rank, &j) in col_order.iter().enumerate() {
             col_rank[j] = rank;
@@ -308,7 +301,6 @@ impl Lu {
             l,
             u,
             perm,
-            inv_perm,
             col_order,
             col_rank,
         })

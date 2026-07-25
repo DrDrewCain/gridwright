@@ -438,6 +438,49 @@ conveniently available at 8760 snapshots and hundreds of buses in one file; they
 are labelled as synthetic wherever they appear. Correctness is validated against
 real networks, which is the half that matters.
 
+## Scale
+
+Measured, on synthetic topologies, and labelled as such wherever it appears.
+Correctness is validated against real networks; these say only how the problem
+grows.
+
+A full year at hourly resolution, solved whole:
+
+| Buses | Variables | Build | Solve |
+| --- | --- | --- | --- |
+| 16 | 1.0M | 11 ms | 20 s |
+| 32 | 2.0M | 14 ms | 194 s |
+| 64 | 4.1M | — | did not finish in seven minutes |
+
+The solve grows about 9.5× for a doubling and construction is 0.0–0.1% of
+runtime. **At full resolution the fast build buys almost nothing.** The same
+year through a rolling horizon of 96-hour windows keeping 72:
+
+| Buses | Windows | Total |
+| --- | --- | --- |
+| 32 | 122 | 8.5 s |
+| 64 | 122 | 23 s |
+| 128 | 122 | 72 s |
+
+Twenty-three times faster at 32 buses, and it finishes where the monolithic
+solve does not. Note that this performs **122 builds instead of one** and
+construction still does not register: decomposition is what makes a year
+tractable, not the builder. What the fast build actually buys is interactive
+rebuild, scenario sweeps that assemble the same network hundreds of times, and
+the memory ceiling. That is a narrower claim than "construction is the
+bottleneck", and it is the true one.
+
+The pure-Rust solver, which is what a browser has:
+
+| Rows | Time |
+| --- | --- |
+| 864 | 57 ms |
+| 3,456 | 1.1 s |
+| 13,824 | 36 s |
+
+About `m^1.9`. Before the sparse factorisation replaced the dense inverse this
+was `m^2.7`, and 2,592 rows would not finish inside ten minutes.
+
 ## Licence
 
 **AGPL-3.0** ([LICENSE](LICENSE)). Open source: use it, modify it, run it in
