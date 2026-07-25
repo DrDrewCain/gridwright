@@ -25,7 +25,7 @@
 
 use std::path::Path;
 
-use calamine::{Data, Reader, open_workbook_auto};
+use calamine::{Data, Reader, open_workbook_auto, open_workbook_auto_from_rs};
 use gridwright_net::Network;
 
 use crate::csv::Table;
@@ -71,7 +71,32 @@ pub struct Workbook {
     path: String,
     /// Sheet name as written, keyed by its normalised form.
     sheets: std::collections::HashMap<String, String>,
-    book: std::cell::RefCell<calamine::Sheets<std::io::BufReader<std::fs::File>>>,
+    book: std::cell::RefCell<Sheets>,
+}
+
+/// One workbook handle covering both ways of getting at one.
+///
+/// A file on disk and a buffer from a file picker are the same spreadsheet;
+/// only the reader underneath differs, and a browser has only the second.
+enum Sheets {
+    File(calamine::Sheets<std::io::BufReader<std::fs::File>>),
+    Memory(calamine::Sheets<std::io::Cursor<Vec<u8>>>),
+}
+
+impl Sheets {
+    fn names(&self) -> Vec<String> {
+        match self {
+            Sheets::File(b) => b.sheet_names().to_vec(),
+            Sheets::Memory(b) => b.sheet_names().to_vec(),
+        }
+    }
+
+    fn range(&mut self, name: &str) -> Result<calamine::Range<Data>, calamine::Error> {
+        match self {
+            Sheets::File(b) => b.worksheet_range(name),
+            Sheets::Memory(b) => b.worksheet_range(name),
+        }
+    }
 }
 
 fn normalise(s: &str) -> String {
@@ -88,21 +113,36 @@ impl Workbook {
                 message: e.to_string(),
             })
         })?;
+        Ok(Self::wrap(Sheets::File(book), label))
+    }
+
+    /// A workbook already in memory.
+    pub fn from_bytes(bytes: Vec<u8>, label: &str) -> Result<Self, IoError> {
+        let book = open_workbook_auto_from_rs(std::io::Cursor::new(bytes)).map_err(|e| {
+            IoError::Excel(ExcelError::Open {
+                file: label.to_string(),
+                message: e.to_string(),
+            })
+        })?;
+        Ok(Self::wrap(Sheets::Memory(book), label.to_string()))
+    }
+
+    fn wrap(book: Sheets, label: String) -> Self {
         let sheets = book
-            .sheet_names()
+            .names()
             .iter()
             .map(|n| (normalise(n), n.clone()))
             .collect();
-        Ok(Self {
+        Self {
             path: label,
             sheets,
             book: std::cell::RefCell::new(book),
-        })
+        }
     }
 
     /// Sheet names as the workbook spells them.
     pub fn sheet_names(&self) -> Vec<String> {
-        self.book.borrow().sheet_names().to_vec()
+        self.book.borrow().names()
     }
 }
 
@@ -114,7 +154,7 @@ impl TableSource for Workbook {
         let range = self
             .book
             .borrow_mut()
-            .worksheet_range(actual)
+            .range(actual)
             .map_err(|e| {
                 IoError::Excel(ExcelError::Sheet {
                     file: self.path.clone(),
@@ -162,10 +202,18 @@ impl TableSource for Workbook {
 /// Load a network from a workbook.
 pub fn load_network(path: impl AsRef<Path>) -> Result<Network, IoError> {
     let path = path.as_ref();
-    let book = Workbook::open(path)?;
+    assemble_book(Workbook::open(path)?, &path.display().to_string())
+}
+
+/// Load a network from a workbook already in memory.
+pub fn parse_network(bytes: Vec<u8>, label: &str) -> Result<Network, IoError> {
+    assemble_book(Workbook::from_bytes(bytes, label)?, label)
+}
+
+fn assemble_book(book: Workbook, label: &str) -> Result<Network, IoError> {
     if book.table("buses")?.is_none() {
         return Err(IoError::Excel(ExcelError::NoBuses {
-            file: path.display().to_string(),
+            file: label.to_string(),
             found: book.sheet_names().join(", "),
         }));
     }

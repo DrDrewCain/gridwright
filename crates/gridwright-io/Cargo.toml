@@ -15,7 +15,10 @@ default = ["json"]
 json = ["dep:serde", "dep:serde_json", "gridwright-net/serde"]
 # Columnar time series. A year of hourly data for a national fleet is the case
 # CSV handles badly and this handles well.
-parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-cast"]
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-cast", "dep:bytes"]
+# Zstandard-compressed Parquet. Native only: the codec is a C library, and
+# enabling this is what stops the crate building for WebAssembly.
+parquet-zstd = ["parquet", "parquet/zstd"]
 # Spreadsheets, which is how a great deal of national statistics is published.
 excel = ["dep:calamine"]
 # ENTSO-E CGMES, the European grid exchange standard.
@@ -24,7 +27,10 @@ cgmes = ["dep:quick-xml"]
 # this does not cost the WebAssembly target a C toolchain.
 netcdf = ["dep:hdf5-pure"]
 # Every format at once.
+# Every format that cross-compiles.
 all-formats = ["json", "parquet", "excel", "cgmes", "netcdf"]
+# Every format at all, including the one that needs a C toolchain.
+all-formats-native = ["all-formats", "parquet-zstd"]
 
 [dependencies]
 gridwright-net.workspace = true
@@ -35,6 +41,7 @@ parquet = { workspace = true, optional = true }
 arrow-array = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
 arrow-cast = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
 calamine = { workspace = true, optional = true }
 quick-xml = { workspace = true, optional = true }
 hdf5-pure = { workspace = true, optional = true }

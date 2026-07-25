@@ -194,8 +194,25 @@ tools, and a test asserts they all read to the same network.
 
 The binary formats sit behind feature flags, and detection does not: a build
 without Parquet says "this is Parquet and this build cannot read it" rather
-than claiming not to recognise the file. The netCDF reader is pure Rust, so the
-WebAssembly target keeps working.
+than claiming not to recognise the file.
+
+**None of it needs a filesystem.** `load_bytes` takes a name and a buffer;
+`load_files` takes a set of them, which is what a multiple-selection picker or
+a dropped folder produces, and is the only way to express a CSV directory or a
+CGMES model split across its profiles. Every reader is pure Rust — including
+netCDF, via a pure-Rust HDF5 implementation, and Parquet, using only codecs
+that cross-compile — so the whole format layer builds for
+`wasm32-unknown-unknown` alongside the engine and the solver:
+
+```bash
+cargo build --target wasm32-unknown-unknown \
+    -p gridwright-io -p gridwright-build -p gridwright-simplex \
+    --features gridwright-io/all-formats
+```
+
+That is what makes the planned interface possible rather than aspirational: a
+browser has no filesystem to open, and a library that can only read from disk
+could not be the one it imports.
 
 ```
 $ gw run examples/eu-mini
@@ -357,7 +374,7 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace --all-features   # 309 tests
+cargo test --workspace --all-features   # 347 tests
 ./target/release/gw demo
 ./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw case examples/pglib/case118_ieee.m

@@ -84,6 +84,11 @@ pub enum DetectError {
     #[error("{path} does not look like any format this reads")]
     Unrecognised { path: String },
     #[error(
+        "{path} is one file of a {format}, which takes several; hand them all \
+         over together"
+    )]
+    NeedsSeveralFiles { path: String, format: &'static str },
+    #[error(
         "{path} is {format}, which this build cannot read; rebuild with the \
          `{feature}` feature enabled"
     )]
@@ -211,44 +216,54 @@ pub fn sniff(path: impl AsRef<Path>) -> Result<Format, DetectError> {
     if text.trim().is_empty() {
         return Err(unrecognised());
     }
+    sniff_text(&text, &ext).ok_or_else(unrecognised)
+}
+
+/// Identify a text format from its content, falling back to an extension.
+///
+/// Shared between the path and the byte entry points, so a file recognised
+/// from disk is recognised identically out of a buffer. Two code paths here
+/// would be two chances to disagree about what a file is.
+pub(crate) fn sniff_text(text: &str, ext: &str) -> Option<Format> {
     let trimmed = text.trim_start();
+    if trimmed.is_empty() {
+        return None;
+    }
 
     // Content first, and only then the extension, so a renamed file still
     // reads.
     if trimmed.starts_with('{') {
         #[cfg(feature = "json")]
         {
-            return Ok(if crate::json::looks_like_powermodels(&text) {
+            return Some(if crate::json::looks_like_powermodels(text) {
                 Format::PowerModels
             } else {
                 Format::NativeJson
             });
         }
         #[cfg(not(feature = "json"))]
-        return Ok(Format::NativeJson);
+        return Some(Format::NativeJson);
     }
     if trimmed.starts_with("<?xml") || looks_like_cim(trimmed) {
-        return Ok(Format::Cgmes);
+        return Some(Format::Cgmes);
     }
-    if looks_like_matpower(&text) {
-        return Ok(Format::Matpower);
+    if looks_like_matpower(text) {
+        return Some(Format::Matpower);
     }
     if looks_like_psse(trimmed) {
-        return Ok(Format::Psse);
+        return Some(Format::Psse);
     }
 
-    // Nothing in the content settled it, so fall back to the name.
-    match ext.as_str() {
-        "m" => Ok(Format::Matpower),
-        "raw" | "rawx" => Ok(Format::Psse),
-        "json" => Ok(Format::NativeJson),
-        "nc" | "h5" | "hdf5" | "cdf" => Ok(Format::Netcdf),
-        "xlsx" => Ok(Format::Excel),
-        "xml" | "rdf" => Ok(Format::Cgmes),
-        // A lone CSV is only meaningful next to its siblings, so the directory
-        // is what to point at.
-        "csv" if path.file_stem().is_some_and(|s| s == "buses") => Ok(Format::CsvDirectory),
-        _ => Err(unrecognised()),
+    match ext {
+        "m" => Some(Format::Matpower),
+        "raw" | "rawx" => Some(Format::Psse),
+        "json" => Some(Format::NativeJson),
+        "nc" | "h5" | "hdf5" | "cdf" => Some(Format::Netcdf),
+        "xlsx" => Some(Format::Excel),
+        "xml" | "rdf" => Some(Format::Cgmes),
+        // A lone CSV is only meaningful next to its siblings.
+        "csv" => Some(Format::CsvDirectory),
+        _ => None,
     }
 }
 

@@ -34,8 +34,10 @@ pub mod csv;
 pub mod matpower;
 pub mod psse;
 pub mod detect;
+pub mod memory;
 
-pub use detect::{Format, load_any, sniff};
+pub use detect::{DetectError, Format, load_any, sniff};
+pub use memory::{Files, load_bytes, load_files, sniff_bytes};
 
 #[cfg(feature = "json")]
 pub mod json;

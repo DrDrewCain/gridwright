@@ -74,8 +74,22 @@ struct Nc {
 
 impl Nc {
     fn open(path: &Path) -> Result<Self, NetcdfError> {
-        let label = path.display().to_string();
-        let file = hdf5_pure::File::open(path).map_err(|e| NetcdfError::Open {
+        let bytes = std::fs::read(path).map_err(|e| NetcdfError::Open {
+            file: path.display().to_string(),
+            message: e.to_string(),
+        })?;
+        Self::from_bytes(bytes, &path.display().to_string())
+    }
+
+    /// The same, from memory.
+    ///
+    /// The reader is pure Rust and takes a byte vector, so a network arriving
+    /// from a file picker or over a socket needs no temporary file and no
+    /// filesystem at all — which is the whole reason a WebAssembly build can
+    /// open one.
+    fn from_bytes(bytes: Vec<u8>, label: &str) -> Result<Self, NetcdfError> {
+        let label = label.to_string();
+        let file = hdf5_pure::File::from_bytes(bytes).map_err(|e| NetcdfError::Open {
             file: label.clone(),
             message: e.to_string(),
         })?;
@@ -188,14 +202,25 @@ fn series(
 
 /// Read a PyPSA network from a netCDF file.
 pub fn load_network(path: impl AsRef<Path>) -> Result<Case, crate::IoError> {
-    read(path.as_ref()).map_err(crate::IoError::Netcdf)
+    let path = path.as_ref();
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "network".into());
+    read(Nc::open(path).map_err(crate::IoError::Netcdf)?, &name)
+        .map_err(crate::IoError::Netcdf)
 }
 
-fn read(path: &Path) -> Result<Case, NetcdfError> {
-    let nc = Nc::open(path)?;
+/// Read a PyPSA network from bytes already in memory.
+pub fn parse_network(bytes: Vec<u8>, name: &str) -> Result<Case, NetcdfError> {
+    let nc = Nc::from_bytes(bytes, name)?;
+    read(nc, name)
+}
+
+fn read(nc: Nc, name: &str) -> Result<Case, NetcdfError> {
     let Some(bus_names) = nc.strings("buses_i") else {
         return Err(NetcdfError::NotPypsa {
-            file: path.display().to_string(),
+            file: name.to_string(),
         });
     };
     let n_bus = bus_names.len();
@@ -427,10 +452,7 @@ fn read(path: &Path) -> Result<Case, NetcdfError> {
 
     net.validate()?;
     Ok(Case {
-        name: path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "network".into()),
+        name: name.to_string(),
         network: net,
         notes,
     })

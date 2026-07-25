@@ -32,10 +32,15 @@ rayon = "1.10"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-parquet = "59"
+# Pure-Rust codecs only, so the whole reader cross-compiles to WebAssembly.
+# Zstandard is a C library and is the one thing here that does not; it is
+# available natively behind the `parquet-zstd` feature.
+parquet = { version = "59", default-features = false, features = ["arrow", "snap", "brotli", "flate2", "flate2-rust_backend"] }
+
 arrow-array = "59"
 arrow-schema = "59"
 arrow-cast = "59"
+bytes = "1"
 calamine = "0.36"
 quick-xml = "0.41"
 hdf5-pure = "0.24"

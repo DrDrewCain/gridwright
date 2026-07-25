@@ -31,7 +31,7 @@ use arrow_schema::{DataType, Field, Schema};
 use gridwright_net::{Network, TimeSeries};
 use parquet::arrow::ArrowWriter;
 use parquet::arrow::arrow_reader::ParquetRecordBatchReaderBuilder;
-use parquet::basic::{Compression, ZstdLevel};
+use parquet::basic::Compression;
 use parquet::file::properties::WriterProperties;
 
 use crate::csv::Table;
@@ -113,6 +113,21 @@ fn read_table(path: &Path) -> Result<Option<Table>, IoError> {
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+    table_from(file, label)
+}
+
+/// The same, from bytes already in memory.
+///
+/// `bytes::Bytes` is a chunk reader, so the whole Parquet reader works over a
+/// buffer with no filesystem involved.
+pub fn table_from_bytes(bytes: Vec<u8>, label: &str) -> Result<Option<Table>, IoError> {
+    table_from(bytes::Bytes::from(bytes), label.to_string())
+}
+
+fn table_from<R: parquet::file::reader::ChunkReader + 'static>(
+    file: R,
+    label: String,
+) -> Result<Option<Table>, IoError> {
     let fail = |source| {
         IoError::Parquet(ParquetError::Read {
             file: label.clone(),
@@ -177,6 +192,33 @@ fn read_wide(
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_default();
+    wide_from(file, label, names, n_snapshots, default)
+}
+
+/// A wide time series from bytes, staying numeric throughout.
+pub fn wide_from_bytes(
+    bytes: Vec<u8>,
+    label: &str,
+    names: &[String],
+    n_snapshots: usize,
+    default: &[f64],
+) -> Result<Option<TimeSeries>, IoError> {
+    wide_from(
+        bytes::Bytes::from(bytes),
+        label.to_string(),
+        names,
+        n_snapshots,
+        default,
+    )
+}
+
+fn wide_from<R: parquet::file::reader::ChunkReader + 'static>(
+    file: R,
+    label: String,
+    names: &[String],
+    n_snapshots: usize,
+    default: &[f64],
+) -> Result<Option<TimeSeries>, IoError> {
     let fail = |source| {
         IoError::Parquet(ParquetError::Read {
             file: label.clone(),
@@ -337,11 +379,13 @@ fn write_batch(path: &Path, batch: RecordBatch) -> Result<(), IoError> {
             source,
         })
     };
-    // Zstandard because these files are overwhelmingly repeated floats and
-    // repeated names, and the decode cost is far below the parse cost it
-    // replaces.
+    // Snappy: pure Rust, so this writer works in a browser, and the default
+    // pandas and pyarrow write, so what comes out is what the rest of anyone's
+    // toolchain already expects. Zstandard compresses these files better and
+    // costs a C toolchain, which is a poor trade for a library whose target
+    // includes WebAssembly.
     let props = WriterProperties::builder()
-        .set_compression(Compression::ZSTD(ZstdLevel::default()))
+        .set_compression(Compression::SNAPPY)
         .build();
     let mut writer = ArrowWriter::try_new(file, batch.schema(), Some(props)).map_err(fail)?;
     writer.write(&batch).map_err(fail)?;
