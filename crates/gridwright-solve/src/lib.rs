@@ -22,6 +22,7 @@
 use gridwright_build::{Lopf, VarIndex};
 use gridwright_model::Sense;
 
+pub mod head;
 pub mod rolling;
 
 #[cfg(feature = "highs")]
@@ -188,6 +189,8 @@ pub enum SolveError {
     TooManyColumns(usize),
     #[error("model has {0} rows, which exceeds the solver's i32 index space")]
     TooManyRows(usize),
+    #[error("could not build the model: {0}")]
+    Build(String),
     #[error("solver rejected the model (status {0})")]
     Rejected(i32),
     #[error("solver failed to run (status {0})")]

@@ -727,6 +727,24 @@ pub struct Network {
     /// Hydro's defining feature: energy arrives whether or not anyone asked for
     /// it. Absent means none, which is right for a battery.
     pub storage_inflow: TimeSeries,
+    /// Head at each storage unit and snapshot, as a fraction of full head.
+    ///
+    /// The other way to model head's effect on energy conversion, and the one
+    /// that scales. The exact treatment
+    /// ([`StorageUnit::head_bands`]) needs a binary per band per snapshot,
+    /// which is tens of thousands of them for one reservoir over a year, and
+    /// the current literature is candid that this is where hydro MILPs stop
+    /// finishing.
+    ///
+    /// The alternative is to hold head fixed at a guess, which leaves an
+    /// ordinary linear program, then update the guess from the levels the
+    /// solve produced and go round again. Empty means full head everywhere,
+    /// which is the behaviour of a model that ignores the effect.
+    ///
+    /// This is a fixed point rather than a proof: it converges in practice and
+    /// carries no optimality bound, which is the trade being made against a
+    /// formulation that has one and will not finish.
+    pub head_profile: TimeSeries,
     /// Cost of shedding load, per MWh.
     ///
     /// Present so infeasibility surfaces as an expensive answer rather than as
@@ -793,6 +811,7 @@ impl Network {
             gen_availability: TimeSeries::empty(),
             load_profile: TimeSeries::empty(),
             storage_inflow: TimeSeries::empty(),
+            head_profile: TimeSeries::empty(),
             value_of_lost_load: 10_000.0,
             base_mva: 100.0,
             co2_price: 0.0,

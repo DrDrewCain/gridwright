@@ -721,9 +721,18 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                 let ti = step as u32;
                 let store_coeff = -unit.efficiency_store * w;
                 let dispatch_coeff = w / unit.efficiency_dispatch;
+                // A head profile scales the volume drawn per megawatt-hour,
+                // and being a constant it stays inside a linear program. That
+                // is the whole point of it: the exact treatment below needs a
+                // binary per band per snapshot.
+                let profile_head = net.head_profile.at(s, step).filter(|h| *h > 1e-6);
                 let draw = |terms: &mut Vec<(u32, f64)>| {
                     if bands.is_empty() {
-                        terms.push((di.at(ti), dispatch_coeff));
+                        let coeff = match profile_head {
+                            Some(h) => dispatch_coeff / h,
+                            None => dispatch_coeff,
+                        };
+                        terms.push((di.at(ti), coeff));
                     } else {
                         for (b, block) in bands.iter().enumerate() {
                             terms.push((block.at(ti), dispatch_coeff / head_of(b)));

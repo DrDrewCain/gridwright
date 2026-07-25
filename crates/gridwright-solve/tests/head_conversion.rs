@@ -202,3 +202,139 @@ fn conversion_and_capacity_are_different_effects_and_both_apply() {
         );
     }
 }
+
+// --- The scalable treatment of the same physics. ---
+
+use gridwright_solve::head::{HeadOptions, solve_head_iterated};
+
+#[test]
+fn the_fixed_point_lands_near_the_exact_answer() {
+    // The claim that makes the iteration worth having. It gives up the
+    // optimality guarantee, so the least it must do is agree with the
+    // formulation that keeps one.
+    let net = hydro(0, 600.0); // bands off; the iteration supplies the head
+    let r = solve_head_iterated(&net, &HighsSolver::default(), HeadOptions::default())
+        .unwrap();
+    assert_eq!(r.solution.status, Status::Optimal);
+    assert!(r.converged, "did not converge, residual {}", r.residual);
+
+    let (status, exact, _) = solve(&hydro(8, 600.0));
+    assert_eq!(status, Status::Optimal);
+
+    let spread = (r.solution.objective - exact).abs() / exact.abs().max(1.0);
+    assert!(
+        spread < 0.05,
+        "iterated {} against exact {}, which is {:.1}% apart",
+        r.solution.objective,
+        exact,
+        spread * 100.0
+    );
+}
+
+#[test]
+fn the_iteration_needs_no_binaries_at_all() {
+    // The entire reason it exists. The exact formulation puts a binary per
+    // band per snapshot into the model, which is where hydro MILPs stop
+    // finishing on real horizons.
+    let net = hydro(0, 600.0);
+    let r = solve_head_iterated(&net, &HighsSolver::default(), HeadOptions::default())
+        .unwrap();
+    assert!(!r.lopf.model.is_mip(), "the iterated model must stay an LP");
+    assert!(r.iterations > 1, "one pass is not a fixed point");
+}
+
+#[test]
+fn it_improves_on_ignoring_head_entirely() {
+    // The first iteration starts at full head everywhere, which is exactly
+    // what a model ignoring the effect assumes. Every iteration after that
+    // should move away from it, or the whole exercise is decorative.
+    let net = hydro(0, 300.0);
+    let ignored = solve(&net).1;
+    let r = solve_head_iterated(&net, &HighsSolver::default(), HeadOptions::default())
+        .unwrap();
+    assert!(
+        r.solution.objective > ignored,
+        "accounting for head should cost more, not less: {} against {ignored}",
+        r.solution.objective
+    );
+}
+
+#[test]
+fn the_heads_it_settles_on_track_the_reservoir_level() {
+    // A sanity check on the fixed point itself rather than on the cost. As the
+    // reservoir draws down over the horizon, the head it converts at should
+    // fall with it.
+    let net = hydro(0, 1000.0);
+    let r = solve_head_iterated(&net, &HighsSolver::default(), HeadOptions::default())
+        .unwrap();
+    let heads = r.head.row(0).unwrap();
+    assert!(heads.iter().all(|h| (0.6..=1.0).contains(h)), "{heads:?}");
+    assert!(
+        heads.last().unwrap() <= heads.first().unwrap(),
+        "head should not rise as the reservoir empties: {heads:?}"
+    );
+}
+
+#[test]
+fn a_unit_with_no_head_variation_is_left_alone() {
+    let mut net = hydro(0, 800.0);
+    net.storage[0].head_min_pu = 1.0;
+    let r = solve_head_iterated(&net, &HighsSolver::default(), HeadOptions::default())
+        .unwrap();
+    assert!(r.converged);
+    let (_, plain, _) = solve(&net);
+    assert!((r.solution.objective - plain).abs() < 1e-6);
+}
+
+#[test]
+fn under_relaxation_is_what_stops_it_oscillating() {
+    // A fuller reservoir converts better, which encourages drawing on it,
+    // which empties it, which converts worse. Taking the new head outright
+    // lets that chase itself; a partial step damps it. Both should reach a
+    // similar place, and the damped one should get there without thrashing.
+    let net = hydro(0, 700.0);
+    let damped = solve_head_iterated(
+        &net,
+        &HighsSolver::default(),
+        HeadOptions {
+            relaxation: 0.5,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let undamped = solve_head_iterated(
+        &net,
+        &HighsSolver::default(),
+        HeadOptions {
+            relaxation: 1.0,
+            max_iterations: 40,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(damped.converged, "damped run did not settle");
+    let spread = (damped.solution.objective - undamped.solution.objective).abs()
+        / undamped.solution.objective.abs().max(1.0);
+    assert!(spread < 0.05, "the two runs disagree by {:.1}%", spread * 100.0);
+}
+
+#[test]
+fn a_run_that_does_not_settle_says_so_rather_than_pretending() {
+    // Capped at one iteration, the fixed point cannot have been reached, and
+    // reporting convergence anyway would be the worst possible outcome: an
+    // answer under a head assumption nobody checked.
+    let net = hydro(0, 500.0);
+    let r = solve_head_iterated(
+        &net,
+        &HighsSolver::default(),
+        HeadOptions {
+            max_iterations: 1,
+            tolerance: 1e-12,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert!(!r.converged);
+    assert_eq!(r.iterations, 1);
+    assert!(r.residual > 0.0);
+}
