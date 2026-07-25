@@ -419,6 +419,8 @@ pub fn write_network(net: &Network, dir: impl AsRef<Path>) -> Result<(), IoError
     );
     c.t("carrier", net.buses.iter().map(|b| b.carrier.clone()).collect());
     c.r("v_nom", net.buses.iter().map(|b| b.v_nom).collect());
+    c.r("g_shunt", net.buses.iter().map(|b| b.g_shunt).collect());
+    c.r("b_shunt", net.buses.iter().map(|b| b.b_shunt).collect());
     c.r("v_min", net.buses.iter().map(|b| b.v_min).collect());
     c.r("v_max", net.buses.iter().map(|b| b.v_max).collect());
     write_batch(&dir.join("buses.parquet"), c.batch().map_err(arrow)?)?;
@@ -477,6 +479,7 @@ pub fn write_network(net: &Network, dir: impl AsRef<Path>) -> Result<(), IoError
         net.lines.iter().map(|l| l.shunt_susceptance).collect(),
     );
     c.r("tap_ratio", net.lines.iter().map(|l| l.tap_ratio).collect());
+    c.r("phase_shift", net.lines.iter().map(|l| l.phase_shift).collect());
     c.r("loss", net.lines.iter().map(|l| l.loss).collect());
     write_batch(&dir.join("lines.parquet"), c.batch().map_err(arrow)?)?;
 

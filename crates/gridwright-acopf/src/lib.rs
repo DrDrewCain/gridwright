@@ -44,7 +44,10 @@
 //! balance in both real and reactive power, generator limits, voltage bands —
 //! is an ordinary linear constraint.
 
+pub mod bnb;
 pub mod cycles;
+
+pub use bnb::{BnbOptions, BnbSolution, Stop, solve_bnb};
 
 use clarabel::algebra::CscMatrix;
 use clarabel::solver::{
@@ -87,6 +90,35 @@ pub struct AcSolution {
     /// How many triangles had cycle constraints applied. Zero when they were
     /// not requested, or when the network is radial and has none.
     pub triangles_constrained: usize,
+    /// `Re(V_i · conj(V_j))` per line: the Jabr variable itself.
+    ///
+    /// Exposed because the spatial search branches on it, and because it is
+    /// the only place the relaxation's remaining error is visible per branch
+    /// rather than as one summary number.
+    pub w_re: Vec<f64>,
+    /// `Im(V_i · conj(V_j))` per line.
+    pub w_im: Vec<f64>,
+    /// `|V|²` per bus, before the square root.
+    pub u: Vec<f64>,
+    /// Slack in `R² + I² ≤ u_i u_j` on each line, normalised.
+    ///
+    /// Zero means that branch's relaxation is exact. The largest of these is
+    /// [`AcSolution::cone_gap`], and the search splits whichever branch has
+    /// the biggest.
+    pub line_gap: Vec<f64>,
+    /// Largest violation of `Im(W₁W₂W₃) = 0` over the constrained cycles.
+    ///
+    /// A separate question from [`AcSolution::cone_gap`], and one it cannot
+    /// answer. The cone is a statement about each branch on its own; this is
+    /// the statement that the angle differences add up around a loop. A
+    /// solution can satisfy every branch exactly and still be unphysical,
+    /// routing power around a cycle in a way no set of voltage angles could
+    /// produce — and a reader looking only at the cone gap would call it
+    /// optimal.
+    ///
+    /// Zero when no cycles were constrained, which means unmeasured rather
+    /// than satisfied.
+    pub cycle_gap: f64,
     /// Largest violation of `R² + I² = u_i u_j` across all lines.
     ///
     /// Zero means the relaxation is exact and the answer is a genuine AC
@@ -222,6 +254,26 @@ pub fn solve_acopf_with(
     if net.buses.is_empty() {
         return Err(AcError::Empty);
     }
+    let dom = cycles::Domain::root(net);
+    solve_in_domain(net, snapshot, opts, &dom)
+}
+
+/// Solve the relaxation restricted to a domain.
+///
+/// Every node of the spatial search is this function over a smaller box. The
+/// objective it returns is a valid lower bound for its own box, so the least
+/// bound over any partition of the root box is a valid bound for the whole
+/// problem — which is what makes the search sound.
+pub fn solve_in_domain(
+    net: &Network,
+    snapshot: usize,
+    opts: AcOptions,
+    dom: &cycles::Domain,
+) -> Result<AcSolution, AcError> {
+    net.validate()?;
+    if net.buses.is_empty() {
+        return Err(AcError::Empty);
+    }
 
     // Everything below is per unit. Impedances already are; power is not, and
     // converting once here is far safer than remembering to divide at each of
@@ -275,9 +327,33 @@ pub fn solve_acopf_with(
             q_terms.push((lay.qg(g as usize), 1.0));
         }
 
+        // A shunt at the node itself: real power drawn in proportion to |V|²,
+        // reactive power injected in proportion to it. Unlike the DC case this
+        // is not a constant, because |V|² is the decision variable `u`.
+        if net.buses[b].g_shunt != 0.0 {
+            p_terms.push((lay.u(b), -net.buses[b].g_shunt));
+        }
+        if net.buses[b].b_shunt != 0.0 {
+            q_terms.push((lay.u(b), net.buses[b].b_shunt));
+        }
+
         for (l, line) in net.lines.iter().enumerate() {
             let (g_ij, b_ij) = y[l];
             let half_shunt = line.shunt_susceptance / 2.0;
+            // A phase shift rotates the coupling between the two ends without
+            // touching either end's own voltage term. Writing the tap ratio as
+            // the complex number it is, `a = τ·e^{jθ}`, the off-diagonal
+            // admittance picks up `e^{∓jθ}`, and multiplying that out leaves
+            // the series admittance rotated:
+            //
+            //   at bus0:  g' = g·cosθ − b·sinθ,   b' = b·cosθ + g·sinθ
+            //   at bus1:  the same with θ negated
+            //
+            // At θ = 0 both collapse to (g, b) and every row below is
+            // unchanged, which is what makes this safe to apply everywhere.
+            let (cos, sin) = (line.phase_shift.cos(), line.phase_shift.sin());
+            let (g0, b0) = (g_ij * cos - b_ij * sin, b_ij * cos + g_ij * sin);
+            let (g1, b1) = (g_ij * cos + b_ij * sin, b_ij * cos - g_ij * sin);
             // A transformer scales what each end sees differently: the tapped
             // end by 1/tau^2 on its own voltage and 1/tau on the coupling, the
             // other end not at all on its own voltage. That asymmetry is the
@@ -288,20 +364,20 @@ pub fn solve_acopf_with(
             if line.bus0 == b {
                 // Withdrawal at the tapped end: −P_ij and −Q_ij.
                 p_terms.push((lay.u(b), -g_ij / t2));
-                p_terms.push((lay.r(l), g_ij / t1));
-                p_terms.push((lay.i(l), b_ij / t1));
+                p_terms.push((lay.r(l), g0 / t1));
+                p_terms.push((lay.i(l), b0 / t1));
                 q_terms.push((lay.u(b), (b_ij + half_shunt) / t2));
-                q_terms.push((lay.r(l), -b_ij / t1));
-                q_terms.push((lay.i(l), g_ij / t1));
+                q_terms.push((lay.r(l), -b0 / t1));
+                q_terms.push((lay.i(l), g0 / t1));
             } else if line.bus1 == b {
                 // At the far end the angle difference reverses, which flips the
                 // sign on the sine term and only that term.
                 p_terms.push((lay.u(b), -g_ij));
-                p_terms.push((lay.r(l), g_ij / t1));
-                p_terms.push((lay.i(l), -b_ij / t1));
+                p_terms.push((lay.r(l), g1 / t1));
+                p_terms.push((lay.i(l), -b1 / t1));
                 q_terms.push((lay.u(b), b_ij + half_shunt));
-                q_terms.push((lay.r(l), -b_ij / t1));
-                q_terms.push((lay.i(l), -g_ij / t1));
+                q_terms.push((lay.r(l), -b1 / t1));
+                q_terms.push((lay.i(l), -g1 / t1));
             }
         }
 
@@ -332,12 +408,55 @@ pub fn solve_acopf_with(
 
     for b in 0..lay.n_bus {
         let bus = &net.buses[b];
-        push_range(
-            &mut ineq,
-            lay.u(b),
-            bus.v_min * bus.v_min,
-            bus.v_max * bus.v_max,
-        );
+        let _ = bus;
+        push_range(&mut ineq, lay.u(b), dom.u[b].0, dom.u[b].1);
+    }
+
+    // --- The box, and the cut that closes the relaxation as it shrinks. ---
+    //
+    // Jabr relaxes `R² + I² = u_i u_j` to `≤`, and everything the relaxation
+    // gets wrong lives in that inequality being slack. The missing half is
+    // `R² + I² ≥ u_i u_j`, which is reverse-convex and cannot be written down
+    // directly.
+    //
+    // Over a box it can be relaxed validly. `R² + I²` is convex, so the affine
+    // function through the corner values lies above it; `u_i u_j` is bilinear,
+    // so McCormick gives affine functions lying below it. Therefore
+    //
+    //     secant(R) + secant(I)  ≥  R² + I²  ≥  u_i u_j  ≥  McCormick(u_i, u_j)
+    //
+    // and the two ends of that chain are linear. Imposing them is implied by
+    // the true constraint, so no feasible point is ever cut off — and as the
+    // box closes, the secant collapses onto the parabola and the McCormick
+    // bound onto the product, so the relaxation converges to the exact
+    // condition. That convergence is what the search below is spending nodes
+    // to buy.
+    for (l, line) in net.lines.iter().enumerate() {
+        if line.is_transport() {
+            continue;
+        }
+        let b = dom.lines[l];
+        push_range(&mut ineq, lay.r(l), b.r.0, b.r.1);
+        push_range(&mut ineq, lay.i(l), b.i.0, b.i.1);
+
+        let (sr, cr) = cycles::secant(b.r.0, b.r.1);
+        let (si, ci) = cycles::secant(b.i.0, b.i.1);
+        let (ui, uj) = (dom.u[line.bus0], dom.u[line.bus1]);
+        // Both McCormick underestimators of the product; either alone is
+        // valid, and together they are tighter.
+        for (a, c) in [(ui.0, uj.0), (ui.1, uj.1)] {
+            //  a·u_j + c·u_i − a·c  ≤  secant_R + secant_I
+            //  →  a·u_j + c·u_i − sr·R − si·I  ≤  a·c + cr + ci
+            ineq.push(
+                &[
+                    (lay.u(line.bus1), a),
+                    (lay.u(line.bus0), c),
+                    (lay.r(l), -sr),
+                    (lay.i(l), -si),
+                ],
+                a * c + cr + ci,
+            );
+        }
     }
     for (g, unit) in net.generators.iter().enumerate() {
         let avail = net.gen_availability.at(g, snapshot).unwrap_or(1.0);
@@ -364,8 +483,13 @@ pub fn solve_acopf_with(
         let rr = |k: usize| lay.r(tri.lines[k]);
         let ii = |k: usize| lay.i(tri.lines[k]);
 
+        // Drawn over this node's boxes. A child's envelope is strictly
+        // tighter than its parent's, which is the whole mechanism.
         let bnd: Vec<(f64, f64)> = (0..3)
-            .map(|k| cycles::ri_bounds(net, tri.lines[k]))
+            .map(|k| {
+                let b = dom.lines[tri.lines[k]];
+                (b.r.0.min(b.i.0), b.r.1.max(b.i.1))
+            })
             .collect();
 
         // Pairwise products of the first two factors, for each term.
@@ -485,6 +609,9 @@ pub fn solve_acopf_with(
     let q_gen: Vec<f64> = (0..lay.n_gen).map(|g| x[lay.qg(g)] * base).collect();
 
     let mut cone_gap: f64 = 0.0;
+    let mut line_gap = Vec::with_capacity(lay.n_line);
+    let mut w_re = Vec::with_capacity(lay.n_line);
+    let mut w_im = Vec::with_capacity(lay.n_line);
     let mut p_flow = Vec::with_capacity(lay.n_line);
     let mut q_flow = Vec::with_capacity(lay.n_line);
     for (l, line) in net.lines.iter().enumerate() {
@@ -496,7 +623,11 @@ pub fn solve_acopf_with(
         // The relaxation replaced an equality with an inequality; this is how
         // far apart the two ended up.
         let slack = ui * uj - (rr * rr + ii * ii);
-        cone_gap = cone_gap.max(slack.abs() / (ui * uj).abs().max(1.0));
+        let normalised = slack.abs() / (ui * uj).abs().max(1.0);
+        cone_gap = cone_gap.max(normalised);
+        line_gap.push(normalised);
+        w_re.push(rr);
+        w_im.push(ii);
         p_flow.push((g_ij * ui / t2 - (g_ij * rr + b_ij * ii) / t1) * base);
         q_flow.push(
             (-(b_ij + line.shunt_susceptance / 2.0) * ui / t2 + (b_ij * rr - g_ij * ii) / t1)
@@ -511,15 +642,50 @@ pub fn solve_acopf_with(
         .map(|(g, unit)| unit.marginal_cost * p_gen[g])
         .sum();
 
+    let u: Vec<f64> = (0..lay.n_bus).map(|b| x[lay.u(b)]).collect();
+
+    // Cycle consistency, measured from the solution rather than trusted.
+    //
+    // Around a closed loop W_ij·W_jk·W_ki is real and non-negative, so its
+    // imaginary part vanishing is the algebraic form of "the angle differences
+    // sum to zero". The McCormick envelopes only relax that condition; whether
+    // the point actually satisfies it is a separate matter, and the answer is
+    // frequently no.
+    let mut cycle_gap: f64 = 0.0;
+    for tri in &triangles {
+        let (mut a, mut b) = ([0.0f64; 3], [0.0f64; 3]);
+        for k in 0..3 {
+            let l = tri.lines[k];
+            a[k] = x[lay.r(l)];
+            b[k] = if tri.forward[k] { 1.0 } else { -1.0 } * x[lay.i(l)];
+        }
+        let im = a[0] * a[1] * b[2] + a[0] * b[1] * a[2] + b[0] * a[1] * a[2]
+            - b[0] * b[1] * b[2];
+        // Normalised by the magnitude the product should have, which is the
+        // product of the three voltage-squareds.
+        let scale = (u[tri.buses[0]] * u[tri.buses[1]] * u[tri.buses[2]])
+            .abs()
+            .max(1e-9);
+        cycle_gap = cycle_gap.max(im.abs() / scale);
+    }
+
     // Tightness decides whether this is an answer or a bound, so it is folded
     // into the status rather than left for the caller to notice.
-    let status = if status == Status::Optimal && cone_gap > 1e-5 {
+    // Both conditions have to hold for the answer to describe a real operating
+    // point. Reporting `Optimal` on the strength of the cone alone would call
+    // a cycle-inconsistent solution physical.
+    let status = if status == Status::Optimal && (cone_gap > 1e-5 || cycle_gap > 1e-5) {
         Status::OptimalRelaxed
     } else {
         status
     };
 
     Ok(AcSolution {
+        cycle_gap,
+        w_re,
+        w_im,
+        u,
+        line_gap,
         status,
         triangles_constrained: triangles.len(),
         objective,

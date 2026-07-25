@@ -604,6 +604,13 @@ fn build_balance(
                     let li = ld as usize;
                     demand += net.load_profile.at(li, step).unwrap_or(net.loads[li].p_set);
                 }
+                // A shunt conductance draws real power proportional to the
+                // square of voltage. A DC model holds every voltage at one, so
+                // that draw is a constant and joins the demand. It is small
+                // per bus and not small summed over a national network, which
+                // is the sort of quantity that shows up as an unexplained gap
+                // between a model and a measurement.
+                demand += net.buses[b].g_shunt * net.base_mva;
                 batch.push_eq(terms.iter().copied(), demand);
             }
             batch
@@ -626,6 +633,16 @@ fn build_dc_flow(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
             let f = vars.flow[l];
             let a0 = vars.angle[line.bus0];
             let a1 = vars.angle[line.bus1];
+            // A phase shifter forces an angle difference of its own, on top
+            // of whatever the flow induces:
+            //
+            //   flow = B · (θ₀ − θ₁ − shift)
+            //
+            // The shift is fixed, so it is a constant and moves to the right
+            // hand side. That it is a constant is exactly the point: it is the
+            // amount of power the device commands regardless of what the rest
+            // of the network would otherwise have done.
+            let rhs = -line.susceptance * line.phase_shift;
             for step in 0..t {
                 let ti = step as u32;
                 batch.push_eq(
@@ -634,7 +651,7 @@ fn build_dc_flow(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                         (a0.at(ti), -line.susceptance),
                         (a1.at(ti), line.susceptance),
                     ],
-                    0.0,
+                    rhs,
                 );
             }
             batch

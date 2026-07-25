@@ -220,6 +220,18 @@ pub struct Bus {
     /// reference, because an angle in Texas means nothing relative to one in
     /// Ohio.
     pub synchronous_area: String,
+    /// Shunt conductance at this node, per unit on the system base.
+    ///
+    /// A real power draw proportional to voltage squared: `P = g_shunt · |V|²`.
+    /// Zero on nearly every test case and not zero on real networks.
+    pub g_shunt: f64,
+    /// Shunt susceptance at this node, per unit on the system base.
+    ///
+    /// Positive injects reactive power, which is what a capacitor bank does,
+    /// and capacitor banks are how voltage is actually held up. An AC answer
+    /// that ignores them is answering about a network with no reactive
+    /// compensation installed, which is not the network anybody operates.
+    pub b_shunt: f64,
     /// Nominal voltage in kilovolts, or zero when the source did not say.
     ///
     /// Not used by the optimisation, which works in per unit throughout, and
@@ -252,6 +264,8 @@ impl Default for Bus {
             name: String::new(),
             country: "??".into(),
             synchronous_area: "main".into(),
+            g_shunt: 0.0,
+            b_shunt: 0.0,
             v_nom: 0.0,
             v_min: 0.9,
             v_max: 1.1,
@@ -476,6 +490,14 @@ pub struct Line {
     /// does not exist, and a solver will usually report that as infeasible
     /// rather than as a slightly wrong answer.
     pub tap_ratio: f64,
+    /// Phase shift across a transformer, in radians, positive from `bus0`.
+    ///
+    /// The other half of the branch model, and the half that exists to be
+    /// controlled: a phase-shifting transformer is installed precisely to push
+    /// a chosen amount of power along one path rather than another. Read as an
+    /// ordinary transformer it constrains nothing, and the flow it was built to
+    /// command goes wherever the impedances happen to send it.
+    pub phase_shift: f64,
     /// Losses as a fraction of the power flowing, applied to the magnitude.
     ///
     /// Real losses are quadratic in current, which is not linear and therefore
@@ -502,6 +524,7 @@ impl Default for Line {
             reactance: 0.0,
             shunt_susceptance: 0.0,
             tap_ratio: 1.0,
+            phase_shift: 0.0,
             loss: 0.0,
         }
     }

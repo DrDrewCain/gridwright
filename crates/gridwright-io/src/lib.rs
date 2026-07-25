@@ -219,6 +219,8 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
                 .map_err(|e| field(e, &src.label("buses")))
         };
         net.buses[idx].v_nom = bf("v_nom", 0.0)?;
+        net.buses[idx].g_shunt = bf("g_shunt", 0.0)?;
+        net.buses[idx].b_shunt = bf("b_shunt", 0.0)?;
         net.buses[idx].v_min = bf("v_min", 0.9)?;
         net.buses[idx].v_max = bf("v_max", 1.1)?;
         net.buses[idx].carrier = buses.text_or(r, "carrier", "AC");
@@ -295,6 +297,7 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
                 s_nom_max: f("s_nom_max", f64::INFINITY)?,
                 capital_cost: f("capital_cost", 0.0)?,
                 loss: f("loss", 0.0)?,
+                phase_shift: f("phase_shift", 0.0)?,
                 resistance: f("resistance", 0.0)?,
                 reactance: f("reactance", 0.0)?,
                 shunt_susceptance: f("shunt_susceptance", 0.0)?,
@@ -522,12 +525,12 @@ pub fn write_network(net: &Network, dir: impl AsRef<Path>) -> Result<(), IoError
 
     let bus = |i: usize| q(&net.buses[i].name);
 
-    let mut out = String::from("name,country,synchronous_area,carrier,v_nom,v_min,v_max\n");
+    let mut out = String::from("name,country,synchronous_area,carrier,v_nom,v_min,v_max,g_shunt,b_shunt\n");
     for b in &net.buses {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{}\n",
             q(&b.name), q(&b.country), q(&b.synchronous_area), q(&b.carrier),
-            f(b.v_nom), f(b.v_min), f(b.v_max)
+            f(b.v_nom), f(b.v_min), f(b.v_max), f(b.g_shunt), f(b.b_shunt)
         ));
     }
     write_csv(dir, "buses.csv", &out)?;
@@ -551,14 +554,15 @@ min_up_time,min_down_time,ramp_up,ramp_down,q_min,q_max\n",
 
     let mut out = String::from(
         "name,bus0,bus1,s_nom,susceptance,resistance,reactance,shunt_susceptance,\
-tap_ratio,loss,s_nom_extendable,s_nom_max,capital_cost\n",
+tap_ratio,phase_shift,loss,s_nom_extendable,s_nom_max,capital_cost\n",
     );
     for l in &net.lines {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             q(&l.name), bus(l.bus0), bus(l.bus1), f(l.s_nom), f(l.susceptance),
             f(l.resistance), f(l.reactance), f(l.shunt_susceptance), f(l.tap_ratio),
-            f(l.loss), l.s_nom_extendable, f(l.s_nom_max), f(l.capital_cost)
+            f(l.phase_shift), f(l.loss), l.s_nom_extendable, f(l.s_nom_max),
+            f(l.capital_cost)
         ));
     }
     write_csv(dir, "lines.csv", &out)?;

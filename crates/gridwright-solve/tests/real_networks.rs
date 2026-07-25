@@ -76,14 +76,20 @@ fn generation_balances_demand_on_every_real_network() {
         let sol = HighsSolver::default().solve(&lopf).unwrap();
 
         let demand: f64 = net.loads.iter().map(|l| l.p_set).sum();
+        // Shunt conductances draw real power too, and they are not a rounding
+        // term: case300 carries over a megawatt of them. Generation covers the
+        // load and the shunts together, which is what makes this a balance
+        // check rather than an approximate one.
+        let shunts: f64 = net.buses.iter().map(|b| b.g_shunt).sum::<f64>() * net.base_mva;
         let generation: f64 = (0..net.generators.len())
             .map(|g| sol.dispatch(&lopf.vars, g)[0])
             .sum();
         let shed = sol.total_shed(&lopf.vars);
 
         assert!(
-            (generation + shed - demand).abs() < 1e-3,
-            "{name}: {generation:.4} generated + {shed:.4} shed != {demand:.4} demanded"
+            (generation + shed - demand - shunts).abs() < 1e-3,
+            "{name}: {generation:.4} generated + {shed:.4} shed != {demand:.4} demanded \
+             + {shunts:.4} drawn by shunts"
         );
         assert!(shed < 1e-4, "{name}: {shed:.4} MW unserved on a feasible case");
     }
@@ -140,6 +146,7 @@ fn dc_power_flow_holds_on_every_branch_of_every_real_network() {
     // spanning orders of magnitude this is a far stronger check than any
     // hand-built triangle, because a sign error or a transposed index would
     // survive a symmetric test and cannot survive this one.
+    let mut total_shifters = 0;
     for (name, ..) in CASES {
         let case = load_case(case_path(name)).unwrap();
         let net = &case.network;
@@ -147,6 +154,7 @@ fn dc_power_flow_holds_on_every_branch_of_every_real_network() {
         let sol = HighsSolver::default().solve(&lopf).unwrap();
 
         let mut checked = 0;
+        let mut shifters = 0;
         for (l, line) in net.lines.iter().enumerate() {
             if line.is_transport() {
                 continue;
@@ -154,15 +162,28 @@ fn dc_power_flow_holds_on_every_branch_of_every_real_network() {
             let f = sol.flow(&lopf.vars, l)[0];
             let a0 = sol.trajectory(lopf.vars.angle[line.bus0])[0];
             let a1 = sol.trajectory(lopf.vars.angle[line.bus1])[0];
-            let expected = line.susceptance * (a0 - a1);
+            // A phase shifter commands an angle difference of its own, so the
+            // flow follows the difference net of it.
+            let expected = line.susceptance * (a0 - a1 - line.phase_shift);
             assert!(
                 (f - expected).abs() < 1e-4,
-                "{name}: branch {l} carries {f:.6} but B*(dtheta) = {expected:.6}"
+                "{name}: branch {l} carries {f:.6} but B*(dtheta - shift) = {expected:.6}"
             );
             checked += 1;
+            if line.phase_shift != 0.0 {
+                shifters += 1;
+            }
         }
         assert!(checked > 0, "{name}: no DC branches were checked");
+        total_shifters += shifters;
     }
+    // case300 carries exactly one phase-shifting transformer. Without this the
+    // shift term could be dropped entirely and every assertion above would
+    // still pass, since it is zero on the other four networks.
+    assert!(
+        total_shifters > 0,
+        "no phase shifters were exercised, so the shift term is untested"
+    );
 }
 
 #[test]

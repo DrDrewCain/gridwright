@@ -125,6 +125,74 @@ pub fn find_triangles(net: &Network, limit: usize) -> Vec<Triangle> {
     out
 }
 
+/// The box a single branch's Jabr variables are confined to, and the voltage
+/// ranges of the buses it joins.
+///
+/// The whole point of spatial branch and bound is that these are not fixed:
+/// splitting one and solving both halves gives a bound at least as good as the
+/// parent's, and usually better, because every envelope and every secant below
+/// is drawn over the box it is given.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RiBox {
+    pub r: (f64, f64),
+    pub i: (f64, f64),
+}
+
+/// The full domain of a problem: one box per line, one voltage-squared range
+/// per bus.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Domain {
+    pub lines: Vec<RiBox>,
+    /// `u = |V|²` per bus.
+    pub u: Vec<(f64, f64)>,
+}
+
+impl Domain {
+    /// The root domain, from the network's own voltage limits.
+    pub fn root(net: &Network) -> Self {
+        Self {
+            lines: (0..net.lines.len())
+                .map(|l| {
+                    let (lo, hi) = ri_bounds(net, l);
+                    RiBox {
+                        r: (lo, hi),
+                        i: (lo, hi),
+                    }
+                })
+                .collect(),
+            u: net
+                .buses
+                .iter()
+                .map(|b| (b.v_min * b.v_min, b.v_max * b.v_max))
+                .collect(),
+        }
+    }
+
+    /// Total width, as a crude measure of how much is left to explore.
+    pub fn width(&self) -> f64 {
+        self.lines
+            .iter()
+            .map(|b| (b.r.1 - b.r.0) + (b.i.1 - b.i.0))
+            .sum::<f64>()
+            + self.u.iter().map(|(lo, hi)| hi - lo).sum::<f64>()
+    }
+}
+
+/// The secant of `x²` over `[lo, hi]`, as `(coefficient, constant)`.
+///
+/// Returns `(lo + hi, −lo·hi)` so that the secant is `(lo+hi)·x − lo·hi`. It
+/// equals `x²` at both ends and lies above it in between, since `x²` is
+/// convex. That makes it a valid **over**estimator, which is the direction
+/// needed to relax `R² + I² ≥ u_i u_j`: replacing the left side by something
+/// larger can only admit more points, never exclude a feasible one.
+///
+/// As the interval closes the secant collapses onto the parabola, so the
+/// relaxation approaches the exact constraint. That convergence is what makes
+/// splitting boxes worth doing.
+pub fn secant(lo: f64, hi: f64) -> (f64, f64) {
+    (lo + hi, -lo * hi)
+}
+
 /// Bounds on `R` and `I` for a line, from the voltage bands of its ends.
 ///
 /// `|R|` and `|I|` are each at most `|V_i||V_j|`, since they are that product

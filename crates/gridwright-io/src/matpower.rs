@@ -146,6 +146,11 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
             net.buses[idx].v_min = vmin;
         }
         index_of.insert(id, idx);
+        // Gs and Bs are stated as the MW and MVAr a shunt would draw or inject
+        // at one per unit voltage, so dividing by the system base puts them in
+        // per unit, which is where the formulation wants them.
+        net.buses[idx].g_shunt = num(row, 4, "bus", r, 13).unwrap_or(0.0) / base_mva;
+        net.buses[idx].b_shunt = num(row, 5, "bus", r, 13).unwrap_or(0.0) / base_mva;
         let qd = num(row, 3, "bus", r, 13)?;
         if pd.abs() > 0.0 || qd.abs() > 0.0 {
             loads.push((idx, pd, qd, id));
@@ -262,6 +267,12 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
             reactance: x,
             shunt_susceptance: shunt,
             tap_ratio: tap,
+            // Column 9 is the phase shift, and MATPOWER states it in degrees
+            // where every trigonometric identity in the formulation wants
+            // radians.
+            phase_shift: num(row, 9, "branch", r, 11)
+                .unwrap_or(0.0)
+                .to_radians(),
             ..Default::default()
         });
     }
