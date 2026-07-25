@@ -594,6 +594,28 @@ pub struct StorageUnit {
     /// distinction is worth stating: this captures why a low reservoir cannot
     /// deliver peak output, not why it yields less energy overall.
     pub head_min_pu: f64,
+    /// How many bands to linearise the head-to-energy relationship over.
+    ///
+    /// Zero or one leaves it out. Two or more turns on the *conversion* effect,
+    /// which is separate from the capacity effect [`StorageUnit::head_min_pu`]
+    /// already gives:
+    ///
+    /// - **Capacity**: a reservoir near empty cannot reach its rating, because
+    ///   power is proportional to the height water falls through. Linear in the
+    ///   stored level, so it is an ordinary constraint.
+    /// - **Conversion**: a full reservoir yields more megawatt-hours from the
+    ///   same *volume*, for the same reason. The volume drawn per megawatt-hour
+    ///   is inversely proportional to head, and head depends on the level, so
+    ///   this one is bilinear and no ordinary constraint expresses it.
+    ///
+    /// Following Borghetti, D'Ambrosio, Lodi and Martello (2008), the bilinear
+    /// term is linearised over bands of reservoir level, within each of which
+    /// head is taken as constant. Selecting a band needs a binary, so switching
+    /// this on makes the problem a MILP and takes it away from the pure-Rust
+    /// backend. More bands means a closer approximation and more binaries;
+    /// three to five is usually enough, because head varies over a reservoir's
+    /// working range by tens of percent rather than by orders of magnitude.
+    pub head_bands: usize,
     /// The reservoir this one discharges into, if any.
     ///
     /// A cascade is a chain of reservoirs on one river: what the upper station
@@ -632,6 +654,7 @@ impl Default for StorageUnit {
             cyclic: true,
             soc_initial: None,
             head_min_pu: 1.0,
+            head_bands: 0,
             downstream: None,
             travel_time: 0,
             p_nom_extendable: false,

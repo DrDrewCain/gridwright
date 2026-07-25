@@ -75,6 +75,15 @@ pub struct VarIndex {
     pub spill: Vec<Option<VarBlock>>,
     /// Loss on each lossy line, always non-negative.
     pub line_loss: Vec<Option<VarBlock>>,
+    /// Which head band a reservoir is in, per storage unit. Binary, empty when
+    /// the conversion effect is off for that unit.
+    pub head_band: Vec<Vec<VarBlock>>,
+    /// Discharge attributed to each head band, per storage unit.
+    ///
+    /// The band decides how much water a megawatt-hour costs, so the discharge
+    /// has to be split across bands rather than left as one number: the volume
+    /// drawn is the sum of each band's discharge divided by that band's head.
+    pub head_discharge: Vec<Vec<VarBlock>>,
 }
 
 /// A built linear program plus the map back to what its variables mean.
@@ -372,6 +381,28 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         }));
     }
 
+    // Head bands, for the storage units whose energy conversion depends on
+    // level. One binary per band per snapshot picks which band the reservoir
+    // is in, and one continuous variable per band per snapshot carries the
+    // discharge attributed to it.
+    vars.head_band.reserve(net.storage.len());
+    vars.head_discharge.reserve(net.storage.len());
+    for unit in &net.storage {
+        if unit.head_bands >= 2 && unit.head_min_pu < 1.0 && unit.p_nom > 0.0 {
+            let mut picks = Vec::with_capacity(unit.head_bands);
+            let mut flows = Vec::with_capacity(unit.head_bands);
+            for _ in 0..unit.head_bands {
+                picks.push(model.add_binary_block(t32, 0.0));
+                flows.push(model.add_block(t32, 0.0, unit.p_nom, 0.0));
+            }
+            vars.head_band.push(picks);
+            vars.head_discharge.push(flows);
+        } else {
+            vars.head_band.push(Vec::new());
+            vars.head_discharge.push(Vec::new());
+        }
+    }
+
     // Commitment. Status is binary, which is what turns this into a MILP;
     // start-up and shut-down are continuous because the status constraint
     // forces them to integral values anyway, and relaxing them shrinks the
@@ -504,6 +535,7 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     all.extend(build_commitment(net, &vars, t));
     all.extend(build_ramps(net, &vars, t));
     all.extend(build_head(net, &vars, t));
+    all.extend(build_head_conversion(net, &vars, t));
     all.extend(build_losses(net, &vars, t));
     all.extend(build_cascades(net, &vars, t));
     if let Some(batch) = build_co2(net, &vars, t) {
@@ -677,10 +709,27 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
             let ch = vars.charge[s];
             let di = vars.discharge[s];
             let spill = vars.spill[s];
+            // With head bands on, a megawatt-hour costs a different volume of
+            // water depending on how full the reservoir is, so the draw is the
+            // sum over bands of that band's discharge at that band's head
+            // rather than one term at one efficiency. The `discharge` variable
+            // still exists and still reports the power; it is only the volume
+            // accounting that moves.
+            let bands = &vars.head_discharge[s];
+            let head_of = |b: usize| head_band_level(unit, b);
             for (step, &w) in weights.iter().enumerate().take(t) {
                 let ti = step as u32;
                 let store_coeff = -unit.efficiency_store * w;
                 let dispatch_coeff = w / unit.efficiency_dispatch;
+                let draw = |terms: &mut Vec<(u32, f64)>| {
+                    if bands.is_empty() {
+                        terms.push((di.at(ti), dispatch_coeff));
+                    } else {
+                        for (b, block) in bands.iter().enumerate() {
+                            terms.push((block.at(ti), dispatch_coeff / head_of(b)));
+                        }
+                    }
+                };
 
                 // Natural inflow arrives whether or not anyone wanted it, so
                 // it is a constant on the right hand side rather than a
@@ -696,7 +745,7 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                     // This overrides cyclicity: a window of a rolling horizon
                     // inherits a level, it does not return to one.
                     terms.push((ch.at(ti), store_coeff));
-                    terms.push((di.at(ti), dispatch_coeff));
+                    draw(&mut terms);
                     if let Some(sp) = spill {
                         terms.push((sp.at(ti), w));
                     }
@@ -720,7 +769,7 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                     }
                 }
                 terms.push((ch.at(ti), store_coeff));
-                terms.push((di.at(ti), dispatch_coeff));
+                draw(&mut terms);
                 if let Some(sp) = spill {
                     terms.push((sp.at(ti), w));
                 }
@@ -1112,6 +1161,135 @@ fn build_ramps(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
 /// Linear in the state of charge, so it costs one row per snapshot and no
 /// variables. Without it a model empties a reservoir at full power right to the
 /// bottom, which overstates exactly the flexibility a dry season removes.
+/// Representative head for band `b`, as a fraction of full head.
+///
+/// Bands divide the reservoir's working range evenly and each is evaluated at
+/// its midpoint, so the approximation errs in neither direction systematically.
+/// Taking the bottom of each band would understate every unit's yield and
+/// taking the top would overstate it, and a hydro fleet is large enough for
+/// either bias to matter.
+fn head_band_level(unit: &gridwright_net::StorageUnit, b: usize) -> f64 {
+    let n = unit.head_bands.max(1) as f64;
+    let lo = unit.head_min_pu;
+    let mid = (b as f64 + 0.5) / n;
+    (lo + (1.0 - lo) * mid).max(1e-6)
+}
+
+/// Piecewise linearisation of head's effect on energy conversion.
+///
+/// The capacity effect is linear and lives in [`build_head`]. This is the other
+/// one: a full reservoir yields more megawatt-hours from the same volume,
+/// because the water falls further. Volume drawn per megawatt-hour goes as
+/// `1/head`, and head depends on the stored level, so the product is bilinear
+/// and no single linear row expresses it.
+///
+/// Following Borghetti, D'Ambrosio, Lodi and Martello, *An MILP approach for
+/// short-term hydro scheduling and unit commitment with head-dependent
+/// reservoir*, IEEE Transactions on Power Systems 23(3), 2008. The reservoir's
+/// range is cut into bands; inside a band head is taken as constant, so the
+/// relationship is linear there; a binary picks the band.
+///
+/// The level that matters is the one at the *start* of the period, for the same
+/// reason [`build_head`] uses it: water leaves at the head it had on the way
+/// out, and using the end level would make the constraint self-limiting.
+fn build_head_conversion(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    net.storage
+        .par_iter()
+        .enumerate()
+        .filter(|(s, _)| !vars.head_band[*s].is_empty())
+        .map(|(s, unit)| {
+            let picks = &vars.head_band[s];
+            let flows = &vars.head_discharge[s];
+            let n = picks.len();
+            let e_max = unit.p_nom * unit.max_hours;
+            let di = vars.discharge[s];
+            let soc = vars.soc[s];
+            let mut batch = RowBatch::with_capacity(t * (3 + 2 * n), t * (6 + 6 * n));
+
+            for step in 0..t {
+                let ti = step as u32;
+
+                // Exactly one band holds.
+                batch.push_eq(picks.iter().map(|p| (p.at(ti), 1.0)), 1.0);
+
+                // The per-band discharges add up to the discharge.
+                let mut split: Vec<(u32, f64)> = Vec::with_capacity(n + 1);
+                split.push((di.at(ti), 1.0));
+                for f in flows {
+                    split.push((f.at(ti), -1.0));
+                }
+                batch.push_eq(split, 0.0);
+
+                // A band carries nothing unless it is the one selected.
+                for (b, f) in flows.iter().enumerate() {
+                    batch.push_le([(f.at(ti), 1.0), (picks[b].at(ti), -unit.p_nom)], 0.0);
+                }
+
+                // The selected band has to be the one the level is actually in.
+                // Written as two big-M bounds against the previous level, which
+                // is a constant at the first snapshot of a non-cyclic run and a
+                // variable everywhere else.
+                let prev = match (step, unit.soc_initial, unit.cyclic) {
+                    (0, Some(e0), _) => Level::Fixed(e0),
+                    (0, None, true) => Level::Var(soc.at(t as u32 - 1)),
+                    (0, None, false) => Level::Fixed(0.0),
+                    _ => Level::Var(soc.at(ti - 1)),
+                };
+                for (b, pick) in picks.iter().enumerate() {
+                    let lo = e_max * b as f64 / n as f64;
+                    let hi = e_max * (b + 1) as f64 / n as f64;
+                    match prev {
+                        // A constant level selects its band outright, so the
+                        // binary is pinned rather than left to two rows that
+                        // would be trivially true or trivially false.
+                        //
+                        // Exactly one band, computed rather than tested: a
+                        // level sitting on a boundary is inside two ranges, and
+                        // pinning both to one would contradict the row above
+                        // that says exactly one holds.
+                        Level::Fixed(level) => {
+                            let _ = (lo, hi);
+                            let which = if e_max > 0.0 {
+                                ((level / e_max * n as f64).floor() as usize).min(n - 1)
+                            } else {
+                                0
+                            };
+                            batch.push_eq(
+                                [(pick.at(ti), 1.0)],
+                                if b == which { 1.0 } else { 0.0 },
+                            );
+                        }
+                        Level::Var(col) => {
+                            // Big-M, with M the whole reservoir so the rows go
+                            // slack rather than binding when the band is not
+                            // selected.
+                            //
+                            //   level >= lo - M(1-z)  ⟺  -level + M·z <= M - lo
+                            batch.push_le(
+                                [(col, -1.0), (pick.at(ti), e_max)],
+                                e_max - lo,
+                            );
+                            //   level <= hi + M(1-z)  ⟺   level + M·z <= hi + M
+                            batch.push_le(
+                                [(col, 1.0), (pick.at(ti), e_max)],
+                                hi + e_max,
+                            );
+                        }
+                    }
+                }
+            }
+            batch
+        })
+        .collect()
+}
+
+/// The reservoir level a band test is written against.
+#[derive(Debug, Clone, Copy)]
+enum Level {
+    Fixed(f64),
+    Var(u32),
+}
+
 fn build_head(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
     net.storage
         .par_iter()

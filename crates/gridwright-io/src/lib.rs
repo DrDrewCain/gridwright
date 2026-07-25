@@ -353,6 +353,7 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
                 downstream: None,
                 travel_time: f("travel_time", 0.0)? as usize,
                 head_min_pu: f("head_min_pu", 1.0)?,
+                head_bands: f("head_bands", 0.0)? as usize,
                 soc_initial: t
                     .column("soc_initial")
                     .and(f("soc_initial", f64::NAN).ok())
@@ -581,15 +582,15 @@ tap_ratio,phase_shift,loss,s_nom_extendable,s_nom_max,capital_cost\n",
     if !net.storage.is_empty() {
         let mut out = String::from(
             "name,bus,p_nom,max_hours,efficiency_store,efficiency_dispatch,cyclic,\
-p_nom_extendable,p_nom_max,capital_cost,head_min_pu,travel_time,spillable\n",
+p_nom_extendable,p_nom_max,capital_cost,head_min_pu,head_bands,travel_time,spillable\n",
         );
         for s in &net.storage {
             out.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
                 q(&s.name), bus(s.bus), f(s.p_nom), f(s.max_hours),
                 f(s.efficiency_store), f(s.efficiency_dispatch), s.cyclic,
                 s.p_nom_extendable, f(s.p_nom_max), f(s.capital_cost),
-                f(s.head_min_pu), s.travel_time, s.spillable
+                f(s.head_min_pu), s.head_bands, s.travel_time, s.spillable
             ));
         }
         write_csv(dir, "storage_units.csv", &out)?;
