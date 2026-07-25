@@ -1,0 +1,11 @@
+[package]
+name = "gridwright-simplex"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Bounded-variable revised simplex returning both primal values and row duals. Pure Rust, no C dependencies, compiles to WebAssembly."
+
+[dependencies]
+thiserror.workspace = true

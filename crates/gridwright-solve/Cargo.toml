@@ -8,8 +8,11 @@ rust-version.workspace = true
 description = "Solver backends for transnational energy system models"
 
 [features]
-default = ["highs"]
+default = ["highs", "simplex"]
 highs = ["dep:highs-sys"]
+# The pure-Rust backend. No C toolchain, compiles to WebAssembly, and the only
+# way to get prices in a browser.
+simplex = ["dep:gridwright-simplex"]
 
 [dependencies]
 gridwright-model.workspace = true
@@ -18,3 +21,4 @@ gridwright-net.workspace = true
 gridwright-io.workspace = true
 thiserror.workspace = true
 highs-sys = { version = "1.6", optional = true }
+gridwright-simplex = { workspace = true, optional = true }

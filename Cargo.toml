@@ -4,6 +4,7 @@ members = [
     "crates/gridwright-model",
     "crates/gridwright-net",
     "crates/gridwright-io",
+    "crates/gridwright-simplex",
     "crates/gridwright-build",
     "crates/gridwright-solve",
     "crates/gridwright-cli",
@@ -20,6 +21,7 @@ rust-version = "1.90"
 gridwright-model = { path = "crates/gridwright-model" }
 gridwright-net = { path = "crates/gridwright-net" }
 gridwright-io = { path = "crates/gridwright-io" }
+gridwright-simplex = { path = "crates/gridwright-simplex" }
 gridwright-build = { path = "crates/gridwright-build" }
 gridwright-solve = { path = "crates/gridwright-solve" }
 rayon = "1.10"

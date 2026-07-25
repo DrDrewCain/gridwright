@@ -99,6 +99,19 @@ when it is scarce.
 investment decision, operating costs weighted by probability, capital not,
 because you build once and then find out which weather year you got.
 
+**Two solver backends.** HiGHS for scale, and a simplex written for this
+project for everywhere HiGHS cannot go. The second exists for one reason: the
+engine needs to run in a browser, HiGHS is C++, and the pure-Rust alternatives
+do not expose duals. A nodal balance row's dual *is* the price of energy at that
+bus, so a browser build without duals would be a model that cannot answer the
+question people run it to ask. Ours returns them, compiles to
+`wasm32-unknown-unknown` with a single dependency, and is checked against HiGHS
+on every IEEE network and on all 118 prices in case118.
+
+It declines integer problems rather than returning the relaxation, so unit
+commitment still needs HiGHS. A commitment answer with fractional on/off states
+is not an answer.
+
 **Data.** Networks load from a directory of CSVs in the layout PyPSA writes,
 and from **MATPOWER `.m` files**, which is how the IEEE test cases, PGLib-OPF,
 RTE's French network and the PEGASE European models are all distributed.
@@ -250,7 +263,8 @@ assembled in order to rebuild it inside someone else's representation.
 | `gridwright-model` | Sparse LP core. Variable blocks, row batches, CSC transpose. |
 | `gridwright-net` | Network domain: buses, lines, generators, storage, loads. |
 | `gridwright-build` | Parallel LP assembly. |
-| `gridwright-solve` | Solver trait plus the HiGHS backend. |
+| `gridwright-simplex` | Our own bounded-variable simplex. Pure Rust, returns duals, compiles to WASM. |
+| `gridwright-solve` | Solver trait, with HiGHS and pure-Rust backends. |
 | `gridwright-io` | CSV loading and result export, including its own parser. |
 | `gridwright-cli` | The `gw` binary. |
 
@@ -260,7 +274,7 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace          # 151 tests
+cargo test --workspace          # 178 tests
 ./target/release/gw demo
 ./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw case examples/pglib/case118_ieee.m

@@ -170,6 +170,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "gridwright-simplex"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+]
+
+[[package]]
 name = "gridwright-solve"
 version = "0.1.0"
 dependencies = [
@@ -177,6 +184,7 @@ dependencies = [
  "gridwright-io",
  "gridwright-model",
  "gridwright-net",
+ "gridwright-simplex",
  "highs-sys",
  "thiserror",
 ]

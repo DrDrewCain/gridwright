@@ -25,8 +25,14 @@ use gridwright_model::Sense;
 #[cfg(feature = "highs")]
 mod highs_backend;
 
+#[cfg(feature = "simplex")]
+mod simplex_backend;
+
 #[cfg(feature = "highs")]
 pub use highs_backend::HighsSolver;
+
+#[cfg(feature = "simplex")]
+pub use simplex_backend::SimplexSolver;
 
 /// How a solve ended.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -153,6 +159,11 @@ pub enum SolveError {
     Rejected(i32),
     #[error("solver failed to run (status {0})")]
     RunFailed(i32),
+    #[error(
+        "this backend cannot solve integer variables, and the model has {0}; \
+         unit commitment needs the HiGHS backend"
+    )]
+    IntegerNotSupported(usize),
 }
 
 /// Objective sense as the solver's constant.
