@@ -54,6 +54,7 @@
 #![allow(clippy::needless_range_loop)]
 
 mod basis;
+pub mod lu;
 
 pub use basis::{Basis, BasisError};
 

@@ -144,7 +144,7 @@ fn where_the_pure_rust_solver_stops() {
     // property of the factorisation, not of the machine.
     use gridwright_solve::SimplexSolver;
     println!("\n  buses  hours  rows      time");
-    for (buses, hours) in [(4, 12), (8, 12), (8, 24), (12, 24), (16, 24)] {
+    for (buses, hours) in [(8, 24), (16, 24), (24, 48), (32, 48), (48, 72), (64, 96), (96, 96)] {
         let net = ring(buses, hours);
         let lopf = build_lopf(&net).unwrap();
         let t0 = Instant::now();

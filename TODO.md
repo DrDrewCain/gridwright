@@ -14,20 +14,32 @@ concrete in the way, named.
       basic feasibility after every pivot and looking at the first failure.
       Now agrees with HiGHS on all five IEEE networks, on all 118 nodal prices
       in case118, and on mixed models at 1, 4, 12 and 24 hours.
-- [ ] **Sparse LU with Forrest-Tomlin updates**, replacing the dense `m × m`
-      basis inverse. **This is now the gating item for everything else**, and
-      the numbers say why. Measured on a synthetic ring, the pure-Rust solver
-      runs 216 rows in 33 ms, 432 in 150 ms and 864 in 1.2 s: roughly `O(m^2.7)`,
-      which is the dense factorisation showing through rather than anything
-      about the machine. Extrapolated, 2,000 rows is about 12 seconds and 5,000
-      is minutes.
-      
-      That ceiling is what stands between the library and a usable interface.
-      A browser cannot call HiGHS, so anything solved in the page goes through
-      this solver, and at 864 rows the practical limit is a network of perhaps
-      twenty buses over a day. Illustrative, not a study. Sparse LU turns the
-      per-pivot cost from `O(m²)` into something proportional to the fill, which
-      on these matrices is a small multiple of the nonzeros.
+- [x] ~~**Sparse LU**, replacing the dense `m × m` basis inverse.~~ **Done**, as
+      a sparse LU factorisation with product-form updates. Measured on the same
+      ladder, before and after:
+
+      | Rows | Dense inverse | Factorised | |
+      | --- | --- | --- | --- |
+      | 216 | 33 ms | 4.4 ms | 7.6× |
+      | 432 | 150 ms | 15 ms | 9.9× |
+      | 864 | 1.2 s | 57 ms | 21× |
+
+      The exponent falls from about `m^2.7` to `m^1.9`. Where the dense version
+      could not finish 2,592 rows inside a ten-minute budget, this does it in
+      0.6 s, reaches 3,456 rows in 1.1 s and 20,736 in under two minutes. That
+      moves the in-page ceiling from roughly twenty buses over a day to a few
+      thousand rows in about a second, which is an interactive model rather than
+      an illustration.
+- [ ] **Forrest-Tomlin updates**, which update the factors themselves rather
+      than appending elementary matrices. Product form is what is implemented
+      and it is simpler; its cost is that every solve lengthens with the pivots
+      since the last refactorisation, which is visible in the scaling degrading
+      from `m^1.9` at 3,000 rows to about `m^2.5` at 14,000. Forrest-Tomlin is
+      the standard remedy.
+- [ ] **A fill-reducing ordering.** Columns are currently pre-ordered by
+      ascending nonzero count, which is a cheap stand-in for the symbolic
+      analysis a production code performs. On a banded matrix the factors stay
+      within four times the input nonzeros; on an unstructured one they do not.
 - [ ] Branch and bound, so the pure-Rust backend can do unit commitment. It
       currently declines MIPs rather than returning a relaxation, which is the
       right behaviour but a real limitation.
