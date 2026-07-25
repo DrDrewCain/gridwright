@@ -220,6 +220,15 @@ pub struct Bus {
     /// reference, because an angle in Texas means nothing relative to one in
     /// Ohio.
     pub synchronous_area: String,
+    /// Nominal voltage in kilovolts, or zero when the source did not say.
+    ///
+    /// Not used by the optimisation, which works in per unit throughout, and
+    /// carried anyway because converting *into* per unit needs it. A line
+    /// reactance quoted in ohms — which is how PyPSA and most utility data
+    /// state it — is `x * base_mva / v_nom²` in per unit, and a reader with no
+    /// nominal voltage has no way to do that conversion and no way to know it
+    /// failed to.
+    pub v_nom: f64,
     /// Lowest acceptable voltage magnitude, per unit. AC only.
     pub v_min: f64,
     /// Highest acceptable voltage magnitude, per unit. AC only.
@@ -243,6 +252,7 @@ impl Default for Bus {
             name: String::new(),
             country: "??".into(),
             synchronous_area: "main".into(),
+            v_nom: 0.0,
             v_min: 0.9,
             v_max: 1.1,
             carrier: "AC".into(),

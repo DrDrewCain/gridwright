@@ -269,6 +269,7 @@ impl Parser {
         let area = if self.rev < 32 { r.opt(6) } else { r.opt(4) };
         let country = area.map_or_else(|| "??".to_string(), |a| format!("area{}", a as i64));
         let idx = self.net.add_bus(name, country);
+        self.net.buses[idx].v_nom = basekv;
         self.index_of.insert(id, idx);
         self.base_kv.push(basekv);
 

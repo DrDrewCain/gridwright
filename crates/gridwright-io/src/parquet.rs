@@ -418,6 +418,7 @@ pub fn write_network(net: &Network, dir: impl AsRef<Path>) -> Result<(), IoError
         net.buses.iter().map(|b| b.synchronous_area.clone()).collect(),
     );
     c.t("carrier", net.buses.iter().map(|b| b.carrier.clone()).collect());
+    c.r("v_nom", net.buses.iter().map(|b| b.v_nom).collect());
     c.r("v_min", net.buses.iter().map(|b| b.v_min).collect());
     c.r("v_max", net.buses.iter().map(|b| b.v_max).collect());
     write_batch(&dir.join("buses.parquet"), c.batch().map_err(arrow)?)?;

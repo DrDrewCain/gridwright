@@ -38,6 +38,10 @@ pub mod psse;
 pub mod json;
 #[cfg(feature = "parquet")]
 pub mod parquet;
+#[cfg(feature = "excel")]
+pub mod excel;
+#[cfg(feature = "netcdf")]
+pub mod netcdf;
 
 /// A network read from a file, plus what had to be discarded to make it fit.
 ///
@@ -99,6 +103,12 @@ pub enum IoError {
     #[cfg(feature = "parquet")]
     #[error("reading Parquet: {0}")]
     Parquet(#[from] parquet::ParquetError),
+    #[cfg(feature = "excel")]
+    #[error("reading spreadsheet: {0}")]
+    Excel(#[from] excel::ExcelError),
+    #[cfg(feature = "netcdf")]
+    #[error("reading netCDF: {0}")]
+    Netcdf(#[from] netcdf::NetcdfError),
 }
 
 /// Where the tables come from.
@@ -192,7 +202,17 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
         let country = buses
             .text(r, "country")
             .unwrap_or_else(|_| "??".to_string());
-        net.add_bus(name, country);
+        let idx = net.add_bus(name, country);
+        let bf = |c: &str, d: f64| {
+            buses
+                .number(r, c, d)
+                .map_err(|e| field(e, &src.label("buses")))
+        };
+        net.buses[idx].v_nom = bf("v_nom", 0.0)?;
+        net.buses[idx].v_min = bf("v_min", 0.9)?;
+        net.buses[idx].v_max = bf("v_max", 1.1)?;
+        net.buses[idx].carrier = buses.text_or(r, "carrier", "AC");
+        net.buses[idx].synchronous_area = buses.text_or(r, "synchronous_area", "main");
     }
     let bus_of: std::collections::HashMap<String, usize> = net
         .buses
@@ -492,12 +512,12 @@ pub fn write_network(net: &Network, dir: impl AsRef<Path>) -> Result<(), IoError
 
     let bus = |i: usize| q(&net.buses[i].name);
 
-    let mut out = String::from("name,country,synchronous_area,carrier,v_min,v_max\n");
+    let mut out = String::from("name,country,synchronous_area,carrier,v_nom,v_min,v_max\n");
     for b in &net.buses {
         out.push_str(&format!(
-            "{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{}\n",
             q(&b.name), q(&b.country), q(&b.synchronous_area), q(&b.carrier),
-            f(b.v_min), f(b.v_max)
+            f(b.v_nom), f(b.v_min), f(b.v_max)
         ));
     }
     write_csv(dir, "buses.csv", &out)?;
