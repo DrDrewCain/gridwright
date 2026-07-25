@@ -26,14 +26,7 @@
 
 use gridwright_net::{Generator, Line, Load, Network, Snapshots};
 
-/// A parsed MATPOWER case, plus what had to be discarded to make it linear.
-#[derive(Debug)]
-pub struct Case {
-    pub name: String,
-    pub network: Network,
-    /// Things dropped or approximated, so a caller can report them honestly.
-    pub notes: Vec<String>,
-}
+pub use crate::Case;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MatpowerError {

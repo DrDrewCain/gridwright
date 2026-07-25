@@ -32,6 +32,21 @@ use gridwright_net::{
 
 pub mod csv;
 pub mod matpower;
+pub mod psse;
+
+/// A network read from a file, plus what had to be discarded to make it fit.
+///
+/// Every format carries more than a linear optimisation model can hold, and
+/// they each carry a different more. `notes` is where that goes: a caller can
+/// print it and tell a user exactly what was dropped, instead of the reader
+/// deciding quietly on their behalf.
+#[derive(Debug)]
+pub struct Case {
+    pub name: String,
+    pub network: Network,
+    /// Things dropped or approximated, so a caller can report them honestly.
+    pub notes: Vec<String>,
+}
 
 use csv::{CsvError, Table};
 
@@ -71,6 +86,8 @@ pub enum IoError {
     Invalid(#[from] NetError),
     #[error("reading MATPOWER case: {0}")]
     Matpower(#[from] matpower::MatpowerError),
+    #[error("reading PSS/E RAW case: {0}")]
+    Psse(#[from] psse::PsseError),
 }
 
 fn read(dir: &Path, name: &str) -> Result<Option<String>, IoError> {
