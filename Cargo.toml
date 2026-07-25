@@ -6,6 +6,7 @@ members = [
     "crates/gridwright-io",
     "crates/gridwright-simplex",
     "crates/gridwright-acopf",
+    "crates/gridwright-emissions",
     "crates/gridwright-build",
     "crates/gridwright-solve",
     "crates/gridwright-cli",
@@ -24,6 +25,7 @@ gridwright-net = { path = "crates/gridwright-net" }
 gridwright-io = { path = "crates/gridwright-io" }
 gridwright-simplex = { path = "crates/gridwright-simplex" }
 gridwright-acopf = { path = "crates/gridwright-acopf" }
+gridwright-emissions = { path = "crates/gridwright-emissions" }
 gridwright-build = { path = "crates/gridwright-build" }
 gridwright-solve = { path = "crates/gridwright-solve" }
 rayon = "1.10"

@@ -75,6 +75,18 @@ impl Table {
         }
     }
 
+    /// A string field with a default when the column or the cell is absent.
+    ///
+    /// For labels rather than data: a missing fuel name should leave the file
+    /// readable, since grouping by fuel is a reporting nicety and refusing to
+    /// load a network over it would be out of proportion.
+    pub fn text_or(&self, row: usize, name: &str, default: &str) -> String {
+        match self.cell(row, name) {
+            Some(v) if !v.is_empty() => v.to_string(),
+            _ => default.to_string(),
+        }
+    }
+
     /// A numeric field with a default when the column or the cell is absent.
     ///
     /// Absent and empty both fall back, because a column that exists but is

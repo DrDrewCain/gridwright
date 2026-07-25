@@ -1,0 +1,12 @@
+[package]
+name = "gridwright-emissions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Emissions accounting for gridwright: production, consumption, average and marginal intensity"
+
+[dependencies]
+gridwright-net.workspace = true
+thiserror.workspace = true

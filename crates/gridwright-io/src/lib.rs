@@ -9,7 +9,7 @@
 //! ```text
 //! network/
 //!   buses.csv           name, country
-//!   generators.csv      name, bus, p_nom, marginal_cost, ...
+//!   generators.csv      name, bus, p_nom, marginal_cost, carrier, ...
 //!   lines.csv           name, bus0, bus1, s_nom, susceptance, ...
 //!   loads.csv           name, bus, p_set
 //!   storage_units.csv   name, bus, p_nom, max_hours, ...      (optional)
@@ -164,6 +164,7 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 bus: lookup(&t, r, "bus", "generators.csv")?,
                 p_nom: f("p_nom", 0.0)?,
                 marginal_cost: f("marginal_cost", 0.0)?,
+                carrier: t.text_or(r, "carrier", "unknown"),
                 p_min_pu: f("p_min_pu", 0.0)?,
                 p_nom_extendable: t
                     .boolean(r, "p_nom_extendable", false)
@@ -171,6 +172,7 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 p_nom_max: f("p_nom_max", f64::INFINITY)?,
                 capital_cost: f("capital_cost", 0.0)?,
                 co2_emissions: f("co2_emissions", 0.0)?,
+                embodied_co2: f("embodied_co2", 0.0)?,
                 committable: t
                     .boolean(r, "committable", false)
                     .map_err(|e| field(e, "generators.csv"))?,
@@ -307,6 +309,12 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
         )?;
     }
 
+    if let Some(text) = read(dir, "co2_price.txt")?
+        && let Ok(v) = text.trim().parse::<f64>()
+        && v.is_finite()
+    {
+        net.co2_price = v;
+    }
     if let Some(text) = read(dir, "co2_limit.txt")? {
         let trimmed = text.trim();
         if !trimmed.is_empty() {

@@ -452,11 +452,14 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     };
 
     for (g, unit) in net.generators.iter().enumerate() {
+        // A carbon price is simply an addition to the cost of running an
+        // emitting unit, which is exactly what a carbon price is in reality.
+        let effective = unit.marginal_cost + net.co2_price * unit.co2_emissions;
         if flat {
-            model.fill_obj(vars.dispatch[g], unit.marginal_cost * weights[0]);
+            model.fill_obj(vars.dispatch[g], effective * weights[0]);
         } else {
             obj_buf.clear();
-            obj_buf.extend((0..t).map(|s| cost_at(unit.marginal_cost, s)));
+            obj_buf.extend((0..t).map(|s| cost_at(effective, s)));
             model.set_obj(vars.dispatch[g], &obj_buf)?;
         }
     }
@@ -1242,8 +1245,19 @@ fn build_co2(net: &Network, vars: &VarIndex, t: usize) -> Option<RowBatch> {
     // row is emitted regardless so that row counts stay predictable and the
     // dual is available to report the (zero) carbon price.
     let weights = net.snapshots.weights();
-    let mut batch = RowBatch::with_capacity(1, emitters.len() * t);
+    let mut batch = RowBatch::with_capacity(1, emitters.len() * t + net.generators.len());
     let mut terms: Vec<(u32, f64)> = Vec::with_capacity(emitters.len() * t);
+    // Capacity built carries its embodied carbon into the same budget. Leaving
+    // it out lets a model meet a cap by building its way there for free.
+    for (g, unit) in net.generators.iter().enumerate() {
+        if unit.embodied_co2 > 0.0
+            && let Some(cap) = vars.gen_capacity[g]
+        {
+            for q in 0..cap.len() {
+                terms.push((cap.at(q), unit.embodied_co2));
+            }
+        }
+    }
     for &g in &emitters {
         let rate = net.generators[g].co2_emissions;
         let p = vars.dispatch[g];

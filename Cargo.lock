@@ -308,6 +308,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "gridwright-emissions"
+version = "0.1.0"
+dependencies = [
+ "gridwright-net",
+ "thiserror 2.0.19",
+]
+
+[[package]]
 name = "gridwright-io"
 version = "0.1.0"
 dependencies = [
@@ -342,6 +350,7 @@ name = "gridwright-solve"
 version = "0.1.0"
 dependencies = [
  "gridwright-build",
+ "gridwright-emissions",
  "gridwright-io",
  "gridwright-model",
  "gridwright-net",

@@ -135,6 +135,37 @@ impl Solution {
         self.trajectory(block)[period]
     }
 
+    /// Everything the emissions accounting needs, read out of the solution.
+    ///
+    /// The accounting crate takes plain numbers on purpose, so that it depends
+    /// on no solver and can be fed results from anywhere. That leaves a gap
+    /// between "solved" and "accounted" which every caller would otherwise
+    /// close by hand, against variable-layout details they should not have to
+    /// know. This closes it once.
+    pub fn emissions_input(
+        &self,
+        net: &gridwright_net::Network,
+        lopf: &gridwright_build::Lopf,
+    ) -> gridwright_emissions::Flows {
+        let vars = &lopf.vars;
+        gridwright_emissions::Flows {
+            dispatch: (0..net.generators.len())
+                .map(|g| self.dispatch(vars, g).to_vec())
+                .collect(),
+            flows: (0..net.lines.len())
+                .map(|l| self.flow(vars, l).to_vec())
+                .collect(),
+            shed: (0..net.buses.len())
+                .map(|b| self.shed(vars, b).to_vec())
+                .collect(),
+            built: vars
+                .gen_capacity
+                .iter()
+                .map(|block| block.map_or(0.0, |b| self.capacity_built(b)))
+                .collect(),
+        }
+    }
+
     /// Total unserved energy across the whole system.
     pub fn total_shed(&self, vars: &VarIndex) -> f64 {
         vars.shed

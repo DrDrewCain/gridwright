@@ -257,6 +257,13 @@ pub struct Generator {
     pub p_nom: f64,
     /// Cost per MWh dispatched.
     pub marginal_cost: f64,
+    /// What this unit burns or harvests: coal, gas, nuclear, wind, solar.
+    ///
+    /// Free text rather than an enum, because the set of things people model is
+    /// open and a closed list would force a caller to either lie or patch this
+    /// crate. Used for grouping in reports, never for arithmetic, so an
+    /// unrecognised value costs nothing but a row of its own.
+    pub carrier: String,
     /// Minimum output as a fraction of capacity, for must-run plant.
     pub p_min_pu: f64,
     /// Whether the optimiser may build more of this.
@@ -276,6 +283,13 @@ pub struct Generator {
     pub capital_cost: f64,
     /// Tonnes of CO2 per MWh generated.
     pub co2_emissions: f64,
+    /// Tonnes of CO2 per MW of capacity built.
+    ///
+    /// A wind turbine emits nothing while running and a great deal while being
+    /// made, and a model scoring only operation will over-build renewables
+    /// against a full accounting. Charged against capacity added, not against
+    /// the fleet that already exists, since that carbon is already in the air.
+    pub embodied_co2: f64,
     /// Whether this unit's on/off state is a decision rather than implied.
     ///
     /// Turning this on makes the problem a MILP. A thermal plant cannot run at
@@ -327,11 +341,13 @@ impl Default for Generator {
             bus: 0,
             p_nom: 0.0,
             marginal_cost: 0.0,
+            carrier: "unknown".into(),
             p_min_pu: 0.0,
             p_nom_extendable: false,
             p_nom_max: f64::INFINITY,
             capital_cost: 0.0,
             co2_emissions: 0.0,
+            embodied_co2: 0.0,
             committable: false,
             start_up_cost: 0.0,
             shut_down_cost: 0.0,
@@ -627,6 +643,14 @@ pub struct Network {
     /// the two silently produces an infeasible problem rather than a wrong
     /// number, which at least fails loudly.
     pub base_mva: f64,
+    /// Price per tonne of CO2, added to every emitting generator's cost.
+    ///
+    /// The alternative question to a cap. A cap asks what happens if emitting
+    /// beyond X is forbidden; a price asks what happens if it costs Y. They are
+    /// duals of each other, and the dual of the CO2 row gives the price a cap
+    /// implies, so setting both is legitimate but means something specific:
+    /// a floor price alongside a hard ceiling.
+    pub co2_price: f64,
     /// System wide CO2 budget in tonnes over the modelled horizon.
     ///
     /// One constraint spanning every generator and every snapshot, which is a
@@ -653,6 +677,7 @@ impl Network {
             storage_inflow: TimeSeries::empty(),
             value_of_lost_load: 10_000.0,
             base_mva: 100.0,
+            co2_price: 0.0,
             contingencies: Vec::new(),
             reserve_margin: None,
             co2_limit: None,
