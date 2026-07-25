@@ -54,16 +54,60 @@
 
 use crate::lu::{Lu, LuError};
 
-/// One product-form update: the elementary matrix from a single pivot.
-#[derive(Debug, Clone)]
-struct Eta {
-    /// The row whose basic variable was replaced.
-    row: usize,
-    /// The entering column's direction, `B⁻¹ a_q`, at every row but the pivot.
-    /// Stored sparsely because most of it is zero.
-    entries: Vec<(usize, f64)>,
-    /// One over the pivot, kept rather than recomputed.
-    recip: f64,
+/// The accumulated pivots, packed.
+///
+/// One update per pivot, and the obvious representation is a vector of structs
+/// each owning its own entries. That costs a pointer chase per update and
+/// interleaves indices with values, so a substitution loop reading only the
+/// values still pulls the indices through cache with them.
+///
+/// Packed instead: two flat arrays with an offset table, indices narrowed to
+/// `u32`. A solve then walks each update as two contiguous runs, which is what
+/// a prefetcher and a vector unit both want, and the index array occupies half
+/// the cache lines it otherwise would. On the hot path of a simplex — which is
+/// this, since every iteration does one forward and one transposed solve — that
+/// is the difference between streaming and chasing.
+#[derive(Debug, Clone, Default)]
+struct Etas {
+    /// Row of each update's pivot.
+    pivot: Vec<u32>,
+    /// One over each pivot value.
+    recip: Vec<f64>,
+    /// Where each update's entries begin in `rows` and `vals`.
+    start: Vec<u32>,
+    rows: Vec<u32>,
+    vals: Vec<f64>,
+}
+
+impl Etas {
+    #[inline]
+    fn len(&self) -> usize {
+        self.pivot.len()
+    }
+
+    #[inline]
+    fn nonzeros(&self) -> usize {
+        self.rows.len()
+    }
+
+    fn clear(&mut self) {
+        self.pivot.clear();
+        self.recip.clear();
+        self.start.clear();
+        self.rows.clear();
+        self.vals.clear();
+    }
+
+    #[inline]
+    fn span(&self, k: usize) -> (usize, usize) {
+        let s = self.start[k] as usize;
+        let e = self
+            .start
+            .get(k + 1)
+            .map(|&x| x as usize)
+            .unwrap_or(self.rows.len());
+        (s, e)
+    }
 }
 
 /// The basis, as a factorisation plus its subsequent pivots.
@@ -71,7 +115,7 @@ struct Eta {
 pub struct Basis {
     m: usize,
     lu: Lu,
-    etas: Vec<Eta>,
+    etas: Etas,
 }
 
 #[derive(Debug, thiserror::Error, PartialEq)]
@@ -99,7 +143,7 @@ impl Basis {
         Self {
             m,
             lu: Lu::identity(m),
-            etas: Vec::new(),
+            etas: Etas::default(),
         }
     }
 
@@ -117,9 +161,25 @@ impl Basis {
         self.etas.len()
     }
 
+    /// Whether the accumulated updates have grown enough to be worth
+    /// discarding.
+    ///
+    /// A fixed pivot count is the usual rule and it is the wrong measure: what
+    /// costs time is the *nonzeros* in the updates, and how fast those
+    /// accumulate depends entirely on the problem. A run whose updates stay
+    /// nearly empty should not refactorise on a schedule, and one whose
+    /// updates fill in should not wait for a count. Comparing against the
+    /// factors themselves makes the rule scale-free: once the updates cost as
+    /// much to apply as the factorisation does, rebuilding pays for itself
+    /// within a handful of iterations.
+    #[inline]
+    pub fn updates_outweigh_factors(&self, ratio: f64) -> bool {
+        self.etas.nonzeros() as f64 > ratio * (self.lu.nonzeros().max(1) as f64)
+    }
+
     /// Nonzeros in the factors and the accumulated updates together.
     pub fn nonzeros(&self) -> usize {
-        self.lu.nonzeros() + self.etas.iter().map(|e| e.entries.len()).sum::<usize>()
+        self.lu.nonzeros() + self.etas.nonzeros()
     }
 
     /// Factorise a basis from its columns.
@@ -131,8 +191,19 @@ impl Basis {
         Ok(Self {
             m,
             lu: Lu::factor(m, cols)?,
-            etas: Vec::new(),
+            etas: Etas::default(),
         })
+    }
+
+    /// Refactorise in place, keeping the buffers already allocated.
+    ///
+    /// A solve runs every iteration and a refactorisation every few dozen, so
+    /// the allocation this avoids is not the point; not disturbing the
+    /// allocator between two hot loops is.
+    pub fn refactorise(&mut self, cols: &[Vec<(usize, f64)>]) -> Result<(), BasisError> {
+        self.lu = Lu::factor(self.m, cols)?;
+        self.etas.clear();
+        Ok(())
     }
 
     /// Solve `B x = b`.
@@ -146,12 +217,20 @@ impl Basis {
         let mut x = self.lu.solve(b);
         // Forward: the factorisation first, then each pivot in the order it
         // happened.
-        for eta in &self.etas {
-            let t = x[eta.row] * eta.recip;
-            for &(r, d) in &eta.entries {
-                x[r] -= d * t;
+        for k in 0..self.etas.len() {
+            let p = self.etas.pivot[k] as usize;
+            let t = x[p] * self.etas.recip[k];
+            if t != 0.0 {
+                let (s, e) = self.etas.span(k);
+                // Two contiguous runs, read in step. Splitting them out of the
+                // struct is what lets this compile to a vectorised loop.
+                let rows = &self.etas.rows[s..e];
+                let vals = &self.etas.vals[s..e];
+                for i in 0..rows.len() {
+                    x[rows[i] as usize] -= vals[i] * t;
+                }
             }
-            x[eta.row] = t;
+            x[p] = t;
         }
         Ok(x)
     }
@@ -167,12 +246,16 @@ impl Basis {
         // Transposed, the whole product reverses: the last pivot applies first
         // and the factorisation last.
         let mut y = c.to_vec();
-        for eta in self.etas.iter().rev() {
-            let mut acc = y[eta.row];
-            for &(r, d) in &eta.entries {
-                acc -= d * y[r];
+        for k in (0..self.etas.len()).rev() {
+            let p = self.etas.pivot[k] as usize;
+            let (s, e) = self.etas.span(k);
+            let rows = &self.etas.rows[s..e];
+            let vals = &self.etas.vals[s..e];
+            let mut acc = y[p];
+            for i in 0..rows.len() {
+                acc -= vals[i] * y[rows[i] as usize];
             }
-            y[eta.row] = acc * eta.recip;
+            y[p] = acc * self.etas.recip[k];
         }
         Ok(self.lu.solve_transpose(&y))
     }
@@ -193,17 +276,15 @@ impl Basis {
         if pivot.abs() < 1e-11 {
             return Err(BasisError::TinyPivot { row, pivot });
         }
-        let mut entries = Vec::new();
+        self.etas.start.push(self.etas.rows.len() as u32);
+        self.etas.pivot.push(row as u32);
+        self.etas.recip.push(1.0 / pivot);
         for (r, &d) in direction.iter().enumerate() {
             if r != row && d != 0.0 {
-                entries.push((r, d));
+                self.etas.rows.push(r as u32);
+                self.etas.vals.push(d);
             }
         }
-        self.etas.push(Eta {
-            row,
-            entries,
-            recip: 1.0 / pivot,
-        });
         Ok(())
     }
 }

@@ -130,6 +130,15 @@ pub struct Options {
     /// Rebuild the inverse after this many updates, to stop rounding error
     /// accumulating through repeated rank-one updates.
     pub refactor_every: usize,
+    /// Refactorise once the accumulated updates carry this multiple of the
+    /// factorisation's own nonzeros.
+    ///
+    /// The count above is a backstop; this is the rule that actually fires,
+    /// because what costs time in a solve is nonzeros rather than pivots. How
+    /// fast updates fill in varies by orders of magnitude between problems, so
+    /// a fixed count either refactorises a cheap run pointlessly or lets an
+    /// expensive one drag. Zero disables it and leaves only the count.
+    pub refactor_fill_ratio: f64,
 }
 
 impl Default for Options {
@@ -140,6 +149,7 @@ impl Default for Options {
             primal_tolerance: 1e-8,
             pivot_tolerance: 1e-9,
             refactor_every: 64,
+            refactor_fill_ratio: 0.5,
         }
     }
 }
@@ -446,7 +456,10 @@ fn iterate(t: &mut Tab<'_>, iters: &mut usize) -> Result<Status, BasisError> {
         }
         *iters += 1;
 
-        if t.since_refactor >= t.o.refactor_every {
+        if t.since_refactor >= t.o.refactor_every
+            || (t.o.refactor_fill_ratio > 0.0
+                && t.inv.updates_outweigh_factors(t.o.refactor_fill_ratio))
+        {
             t.refactor()?;
             t.recompute()?;
         }

@@ -193,36 +193,92 @@ impl Lu {
         // into a sparse column during elimination is what makes a naive sparse
         // LU slower than a dense one.
         let mut work = vec![0.0f64; m];
-        let mut touched: Vec<usize> = Vec::with_capacity(m);
         // Where each eliminated row sits in the pivot sequence.
         let mut pivot_rank = vec![usize::MAX; m];
+        // The symbolic search, and the nonzero pattern it discovers.
+        let mut visited = vec![false; m];
+        let mut dfs: Vec<usize> = Vec::with_capacity(m);
+        let mut reach: Vec<usize> = Vec::with_capacity(m);
+        let mut pattern: Vec<usize> = Vec::with_capacity(m);
 
         for k in 0..m {
-            // Scatter the column, applying the eliminations already performed.
-            touched.clear();
+            // Scatter the column into the dense accumulator, and seed the
+            // symbolic search from the rows it occupies.
+            pattern.clear();
             for &(r, v) in &active[k] {
                 if v == 0.0 {
                     continue;
                 }
-                if work[r] == 0.0 {
-                    touched.push(r);
+                if !visited[r] {
+                    visited[r] = true;
+                    pattern.push(r);
                 }
                 work[r] += v;
             }
 
-            // Apply previous pivots in order. Each one eliminates its row from
-            // this column and pushes a multiple of its L column into the rest.
-            for step in 0..k {
-                let pr = perm[step];
-                let f = work[pr];
+            // Which earlier pivots reach this column, and which rows the result
+            // will occupy. The two are the same question.
+            //
+            // Scanning all `k` previous pivots is the obvious thing and it is
+            // what makes a sparse LU no faster than a dense one: the scan alone
+            // costs `O(m²)` over the factorisation whatever the matrix looks
+            // like, and at twenty thousand rows that is four hundred million
+            // iterations per refactorisation spent finding nothing.
+            //
+            // The pattern is knowable in advance. A pivot contributes only if
+            // this column reaches its row through the structure of `L`, so a
+            // depth-first search over that structure finds exactly the
+            // contributing set — and the rows it visits are exactly the rows
+            // the result will be nonzero in. This is the symbolic half of
+            // Gilbert and Peierls' left-looking factorisation; without it the
+            // numeric half has nothing to save.
+            reach.clear();
+            let seeds = pattern.len();
+            for i in 0..seeds {
+                let seed = pattern[i];
+                if pivot_rank[seed] == usize::MAX {
+                    continue;
+                }
+                dfs.push(seed);
+                while let Some(&top) = dfs.last() {
+                    let rank = pivot_rank[top];
+                    if rank == usize::MAX {
+                        dfs.pop();
+                        continue;
+                    }
+                    // Descend into the rows this pivot writes to, then record
+                    // it on the way back out.
+                    let (rows, _) = l.column(rank);
+                    let mut descended = false;
+                    for &rr in rows {
+                        if !visited[rr] {
+                            visited[rr] = true;
+                            pattern.push(rr);
+                            if pivot_rank[rr] != usize::MAX {
+                                dfs.push(rr);
+                                descended = true;
+                                break;
+                            }
+                        }
+                    }
+                    if !descended {
+                        reach.push(rank);
+                        dfs.pop();
+                    }
+                }
+            }
+
+            // Ascending pivot order is a topological order of the elimination
+            // graph, since a pivot can only depend on earlier ones.
+            reach.sort_unstable();
+            reach.dedup();
+            for &step in &reach {
+                let f = work[perm[step]];
                 if f == 0.0 {
                     continue;
                 }
                 let (rows, vals) = l.column(step);
                 for (idx, &r) in rows.iter().enumerate() {
-                    if work[r] == 0.0 {
-                        touched.push(r);
-                    }
                     work[r] -= f * vals[idx];
                 }
             }
@@ -230,28 +286,35 @@ impl Lu {
             // Choose a pivot among the rows not yet eliminated: within a
             // threshold of the largest, the one whose row is sparsest.
             let mut largest = 0.0f64;
-            for &r in &touched {
+            for &r in &pattern {
                 if !eliminated[r] {
                     largest = largest.max(work[r].abs());
                 }
             }
             if largest < TINY {
+                for &r in &pattern {
+                    work[r] = 0.0;
+                    visited[r] = false;
+                }
                 return Err(LuError::Singular(col_order[k]));
             }
             let floor = largest * PIVOT_THRESHOLD;
             let mut pivot_row = usize::MAX;
             let mut best_fill = usize::MAX;
-            for &r in &touched {
+            for &r in &pattern {
                 if eliminated[r] || work[r].abs() < floor {
                     continue;
                 }
-                let fill = row_count[r];
-                if fill < best_fill {
-                    best_fill = fill;
+                if row_count[r] < best_fill {
+                    best_fill = row_count[r];
                     pivot_row = r;
                 }
             }
             if pivot_row == usize::MAX {
+                for &r in &pattern {
+                    work[r] = 0.0;
+                    visited[r] = false;
+                }
                 return Err(LuError::Singular(col_order[k]));
             }
 
@@ -264,29 +327,30 @@ impl Lu {
             // L takes the rest, scaled by the pivot.
             u.open();
             l.open();
-            // Sorted so that the triangular solves walk rows predictably and
-            // so that the factorisation is reproducible.
-            touched.sort_unstable();
-            for &r in &touched {
+            // Sorted so the triangular solves walk rows predictably and the
+            // factorisation is reproducible run to run.
+            pattern.sort_unstable();
+            for i in 0..pattern.len() {
+                let r = pattern[i];
                 let v = work[r];
                 work[r] = 0.0;
-                if v == 0.0 {
-                    continue;
-                }
-                if r == pivot_row {
+                visited[r] = false;
+                if v == 0.0 || r == pivot_row {
                     continue;
                 }
                 if eliminated[r] {
                     u.push(r, v);
                 } else {
                     l.push(r, v / pivot);
-                    row_count[r] = row_count[r].saturating_sub(1);
+                    // Row counts follow the fill rather than the original
+                    // matrix, so the pivot choice above stays informed as
+                    // elimination proceeds.
+                    row_count[r] = row_count[r].saturating_add(1);
                 }
             }
             // The diagonal goes last, which is what lets the back substitution
             // find it without searching.
             u.push(pivot_row, pivot);
-            work[pivot_row] = 0.0;
         }
         u.close();
         l.close();
