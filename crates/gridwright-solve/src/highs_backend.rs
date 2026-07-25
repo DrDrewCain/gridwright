@@ -20,6 +20,13 @@ pub struct HighsSolver {
     pub threads: i32,
     /// Wall clock limit in seconds. Non-finite means no limit.
     pub time_limit: f64,
+    /// Relative optimality gap accepted for mixed integer problems.
+    ///
+    /// Ignored for pure LPs, which are solved to optimality anyway. Unit
+    /// commitment is where this earns its keep: proving the last fraction of a
+    /// percent of a branch and bound tree routinely costs more than the rest of
+    /// the solve combined, and buys an answer nobody's decision changes on.
+    pub mip_rel_gap: f64,
 }
 
 impl Default for HighsSolver {
@@ -28,6 +35,7 @@ impl Default for HighsSolver {
             verbose: false,
             threads: 0,
             time_limit: f64::INFINITY,
+            mip_rel_gap: 1e-4,
         }
     }
 }
@@ -70,6 +78,9 @@ impl HighsSolver {
         if self.time_limit.is_finite() {
             set_double("time_limit", self.time_limit);
         }
+        if self.mip_rel_gap.is_finite() && self.mip_rel_gap >= 0.0 {
+            set_double("mip_rel_gap", self.mip_rel_gap);
+        }
     }
 }
 
@@ -84,7 +95,13 @@ fn status_from(code: i32) -> Status {
         c if c == hs::kHighsModelStatusInfeasible => Status::Infeasible,
         c if c == hs::kHighsModelStatusUnbounded => Status::Unbounded,
         c if c == hs::kHighsModelStatusUnboundedOrInfeasible => Status::Infeasible,
-        c if c == hs::kHighsModelStatusTimeLimit || c == hs::kHighsModelStatusIterationLimit => {
+        c if c == hs::kHighsModelStatusTimeLimit
+            || c == hs::kHighsModelStatusIterationLimit
+            || c == hs::kHighsModelStatusSolutionLimit
+            || c == hs::kHighsModelStatusObjectiveBound
+            || c == hs::kHighsModelStatusObjectiveTarget
+            || c == hs::kHighsModelStatusInterrupt =>
+        {
             Status::Limit
         }
         other => Status::Other(other),
@@ -118,6 +135,13 @@ impl Solver for HighsSolver {
 
         let cols = model.columns();
         let (row_lower, row_upper) = model.row_bounds();
+
+        // HiGHS wants one integrality code per column, or a null pointer for a
+        // pure LP. Building the vector only when it is needed keeps the LP path
+        // free of an allocation the size of the model.
+        let integrality: Option<Vec<i32>> = model
+            .is_mip()
+            .then(|| cols.integer.iter().map(|&b| i32::from(b)).collect());
 
         // SAFETY: `Highs_create` returns an owned instance, wrapped immediately
         // so it is destroyed on every exit path.
@@ -160,7 +184,9 @@ impl Solver for HighsSolver {
                 std::ptr::null(),
                 std::ptr::null(),
                 std::ptr::null(),
-                std::ptr::null(),
+                integrality
+                    .as_ref()
+                    .map_or(std::ptr::null(), |v| v.as_ptr()),
             )
         };
         if pass != hs::kHighsStatusOk {

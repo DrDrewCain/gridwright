@@ -162,6 +162,75 @@ impl TimeSeries {
 pub struct Bus {
     pub name: String,
     pub country: String,
+    /// The synchronous area this node belongs to.
+    ///
+    /// Voltage angles are only comparable inside one. The United States has
+    /// three asynchronous interconnections (Eastern, Western, ERCOT) and Japan
+    /// has two grids at different frequencies, joined only by HVDC converters.
+    /// Two consequences follow, and both are enforced rather than assumed: an
+    /// AC line may not span two areas, and each area needs its own angle
+    /// reference, because an angle in Texas means nothing relative to one in
+    /// Ohio.
+    pub synchronous_area: String,
+    /// The energy carrier this node balances: electricity, hydrogen, heat, gas.
+    ///
+    /// Balance is enforced per bus, so a bus of a different carrier is simply a
+    /// separate balance. Sector coupling then needs no new machinery beyond a
+    /// component that moves energy between two of them at an efficiency, which
+    /// is what [`Link`] is.
+    pub carrier: String,
+}
+
+impl Default for Bus {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            country: "??".into(),
+            synchronous_area: "main".into(),
+            carrier: "AC".into(),
+        }
+    }
+}
+
+/// A controllable conversion between two buses, possibly of different carriers.
+///
+/// An electrolyser is a link from an electricity bus to a hydrogen bus at about
+/// 70% efficiency. A heat pump is a link to a heat bus with efficiency above
+/// one, because it moves heat rather than creating it. A gas turbine is a link
+/// the other way. One component covers all of them, because they are the same
+/// equation.
+#[derive(Debug, Clone)]
+pub struct Link {
+    pub name: String,
+    /// Where energy is withdrawn.
+    pub bus0: usize,
+    /// Where energy arrives, multiplied by `efficiency`.
+    pub bus1: usize,
+    /// Rated throughput measured at `bus0`.
+    pub p_nom: f64,
+    /// Output per unit of input. May exceed one for heat pumps.
+    pub efficiency: f64,
+    /// Cost per unit of input.
+    pub marginal_cost: f64,
+    pub p_nom_extendable: bool,
+    pub p_nom_max: f64,
+    pub capital_cost: f64,
+}
+
+impl Default for Link {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            bus0: 0,
+            bus1: 0,
+            p_nom: 0.0,
+            efficiency: 1.0,
+            marginal_cost: 0.0,
+            p_nom_extendable: false,
+            p_nom_max: f64::INFINITY,
+            capital_cost: 0.0,
+        }
+    }
 }
 
 /// A dispatchable or variable generator attached to one bus.
@@ -197,6 +266,22 @@ pub struct Generator {
     pub capital_cost: f64,
     /// Tonnes of CO2 per MWh generated.
     pub co2_emissions: f64,
+    /// Whether this unit's on/off state is a decision rather than implied.
+    ///
+    /// Turning this on makes the problem a MILP. A thermal plant cannot run at
+    /// 8% of rating: below its stable minimum it is off, and the choice between
+    /// those two states is genuinely discrete. Modelling it continuously lets a
+    /// coal unit idle at a physically impossible output, which understates both
+    /// cost and emissions.
+    pub committable: bool,
+    /// Cost of bringing the unit from cold to synchronised, per start.
+    pub start_up_cost: f64,
+    /// Cost of shutting down, per stop.
+    pub shut_down_cost: f64,
+    /// Snapshots the unit must remain on once started.
+    pub min_up_time: usize,
+    /// Snapshots the unit must remain off once stopped.
+    pub min_down_time: usize,
 }
 
 impl Default for Generator {
@@ -211,6 +296,11 @@ impl Default for Generator {
             p_nom_max: f64::INFINITY,
             capital_cost: 0.0,
             co2_emissions: 0.0,
+            committable: false,
+            start_up_cost: 0.0,
+            shut_down_cost: 0.0,
+            min_up_time: 0,
+            min_down_time: 0,
         }
     }
 }
@@ -300,6 +390,13 @@ pub struct StorageUnit {
     /// from `max_hours`, so a battery's duration is a design input rather than
     /// a second decision variable.
     pub capital_cost: f64,
+    /// Whether water may be released without generating.
+    ///
+    /// A reservoir taking more inflow than it can hold or turbine has to spill,
+    /// and without somewhere for that energy to go the model is simply
+    /// infeasible in a wet week. Batteries have no equivalent and leave this
+    /// off.
+    pub spillable: bool,
 }
 
 impl Default for StorageUnit {
@@ -315,8 +412,28 @@ impl Default for StorageUnit {
             p_nom_extendable: false,
             p_nom_max: f64::INFINITY,
             capital_cost: 0.0,
+            spillable: false,
         }
     }
+}
+
+/// One decade, or whatever span capacity decisions are taken over.
+///
+/// Multi-period investment asks what to build *and when*. Capacity built in an
+/// earlier period is available in every later one, so the periods are coupled
+/// through a running total rather than being independent problems.
+#[derive(Debug, Clone)]
+pub struct InvestmentPeriod {
+    pub name: String,
+    /// Index of the first snapshot belonging to this period.
+    pub first_snapshot: usize,
+    /// Number of snapshots in this period.
+    pub n_snapshots: usize,
+    /// Multiplier applied to every cost incurred in this period.
+    ///
+    /// Money spent in 2050 is worth less than money spent today, and a model
+    /// that ignores that will always defer investment to the last period.
+    pub discount: f64,
 }
 
 /// The whole system.
@@ -328,16 +445,38 @@ pub struct Network {
     pub lines: Vec<Line>,
     pub loads: Vec<Load>,
     pub storage: Vec<StorageUnit>,
+    pub links: Vec<Link>,
+    /// Investment periods, in order. Empty means a single-period model, which
+    /// is the common case and costs nothing extra.
+    pub investment_periods: Vec<InvestmentPeriod>,
     /// Per-unit availability per generator per snapshot. Absent means 1.0.
     pub gen_availability: TimeSeries,
     /// Demand per load per snapshot. Absent means `Load::p_set`.
     pub load_profile: TimeSeries,
+    /// Natural inflow per storage unit per snapshot, in MW.
+    ///
+    /// Hydro's defining feature: energy arrives whether or not anyone asked for
+    /// it. Absent means none, which is right for a battery.
+    pub storage_inflow: TimeSeries,
     /// Cost of shedding load, per MWh.
     ///
     /// Present so infeasibility surfaces as an expensive answer rather than as
     /// a solver status. An energy model that merely reports INFEASIBLE tells
     /// the user nothing about where or when the system failed.
     pub value_of_lost_load: f64,
+    /// Firm capacity required above peak demand, as a fraction, per
+    /// synchronous area.
+    ///
+    /// An islanded system cannot import its way out of a shortfall, so planning
+    /// reserve is the constraint that actually sizes its fleet. Korea, Taiwan,
+    /// and every one of Indonesia's isolated grids are in this position, and so
+    /// is ERCOT for practical purposes. Continental Europe leans on its
+    /// neighbours instead, which is why the constraint is optional rather than
+    /// assumed.
+    ///
+    /// Applied per area rather than system wide, because capacity on the far
+    /// side of an asynchronous boundary is not firm for the area that needs it.
+    pub reserve_margin: Option<f64>,
     /// System wide CO2 budget in tonnes over the modelled horizon.
     ///
     /// One constraint spanning every generator and every snapshot, which is a
@@ -356,9 +495,13 @@ impl Network {
             lines: Vec::new(),
             loads: Vec::new(),
             storage: Vec::new(),
+            links: Vec::new(),
+            investment_periods: Vec::new(),
             gen_availability: TimeSeries::empty(),
             load_profile: TimeSeries::empty(),
+            storage_inflow: TimeSeries::empty(),
             value_of_lost_load: 10_000.0,
+            reserve_margin: None,
             co2_limit: None,
         }
     }
@@ -372,8 +515,57 @@ impl Network {
         self.buses.push(Bus {
             name: name.into(),
             country: country.into(),
+            ..Default::default()
         });
         self.buses.len() - 1
+    }
+
+    /// A bus carrying something other than electricity.
+    pub fn add_carrier_bus(
+        &mut self,
+        name: impl Into<String>,
+        country: impl Into<String>,
+        carrier: impl Into<String>,
+    ) -> usize {
+        self.buses.push(Bus {
+            name: name.into(),
+            country: country.into(),
+            carrier: carrier.into(),
+            ..Default::default()
+        });
+        self.buses.len() - 1
+    }
+
+    /// A bus in a named synchronous area, for systems with more than one.
+    pub fn add_bus_in_area(
+        &mut self,
+        name: impl Into<String>,
+        country: impl Into<String>,
+        area: impl Into<String>,
+    ) -> usize {
+        self.buses.push(Bus {
+            name: name.into(),
+            country: country.into(),
+            synchronous_area: area.into(),
+            ..Default::default()
+        });
+        self.buses.len() - 1
+    }
+
+    /// Distinct synchronous areas, in order of first appearance, with the index
+    /// of a bus in each to serve as that area's angle reference.
+    ///
+    /// Deterministic by construction: first appearance rather than hash order,
+    /// so the same network always produces the same reference buses and the
+    /// same solution.
+    pub fn synchronous_areas(&self) -> Vec<(String, usize)> {
+        let mut seen: Vec<(String, usize)> = Vec::new();
+        for (i, b) in self.buses.iter().enumerate() {
+            if !seen.iter().any(|(a, _)| a == &b.synchronous_area) {
+                seen.push((b.synchronous_area.clone(), i));
+            }
+        }
+        seen
     }
 
     pub fn add_generator(&mut self, g: Generator) -> usize {
@@ -394,6 +586,122 @@ impl Network {
     pub fn add_storage(&mut self, s: StorageUnit) -> usize {
         self.storage.push(s);
         self.storage.len() - 1
+    }
+
+    pub fn add_link(&mut self, l: Link) -> usize {
+        self.links.push(l);
+        self.links.len() - 1
+    }
+
+    /// Links attached to each bus, with the sign and coefficient they enter
+    /// that bus's balance with.
+    ///
+    /// A link withdraws one unit at `bus0` and delivers `efficiency` units at
+    /// `bus1`, so the same variable appears in two balances with different
+    /// coefficients. That asymmetry is the whole of sector coupling.
+    pub fn links_by_bus(&self) -> SignedAdjacency {
+        let n = self.buses.len();
+        let mut starts = vec![0u32; n + 1];
+        for l in &self.links {
+            starts[l.bus0 + 1] += 1;
+            starts[l.bus1 + 1] += 1;
+        }
+        for b in 0..n {
+            starts[b + 1] += starts[b];
+        }
+        let mut cursor = starts.clone();
+        let mut items = vec![(0u32, 0f64); 2 * self.links.len()];
+        for (i, l) in self.links.iter().enumerate() {
+            let a = cursor[l.bus0] as usize;
+            items[a] = (i as u32, -1.0);
+            cursor[l.bus0] += 1;
+            let b = cursor[l.bus1] as usize;
+            items[b] = (i as u32, l.efficiency);
+            cursor[l.bus1] += 1;
+        }
+        SignedAdjacency { starts, items }
+    }
+
+    /// The investment period each snapshot belongs to, or a single period
+    /// covering everything when none were declared.
+    pub fn period_of_snapshot(&self) -> Vec<usize> {
+        let t = self.n_snapshots();
+        if self.investment_periods.is_empty() {
+            return vec![0; t];
+        }
+        let mut out = vec![0usize; t];
+        for (p, period) in self.investment_periods.iter().enumerate() {
+            let end = (period.first_snapshot + period.n_snapshots).min(t);
+            for slot in out.iter_mut().take(end).skip(period.first_snapshot) {
+                *slot = p;
+            }
+        }
+        out
+    }
+
+    /// A lossy, bidirectional HVDC tie, built from a pair of links.
+    ///
+    /// Losses are not a rounding error at continental distance. China's UHVDC
+    /// loses roughly 3% per 1,000 km, so a 3,000 km line from the western
+    /// resource base to the eastern load centres arrives about 9% short, and
+    /// that gap is large enough to change where it is worth building anything.
+    /// Indonesia's inter-island subsea cables have the same problem for the
+    /// same reason.
+    ///
+    /// Implemented as two one-directional links rather than as a new component,
+    /// because a link already carries exactly the right equation: withdraw one
+    /// unit here, deliver `efficiency` units there. A signed line variable
+    /// cannot express that, since the loss must apply to whichever end is
+    /// receiving, and which end that is changes hour to hour.
+    ///
+    /// Returns both link indices, forward then reverse.
+    pub fn add_hvdc_tie(
+        &mut self,
+        name: impl Into<String>,
+        bus_a: usize,
+        bus_b: usize,
+        p_nom: f64,
+        efficiency: f64,
+    ) -> (usize, usize) {
+        let name = name.into();
+        let fwd = self.add_link(Link {
+            name: format!("{name}_fwd"),
+            bus0: bus_a,
+            bus1: bus_b,
+            p_nom,
+            efficiency,
+            ..Default::default()
+        });
+        let rev = self.add_link(Link {
+            name: format!("{name}_rev"),
+            bus0: bus_b,
+            bus1: bus_a,
+            p_nom,
+            efficiency,
+            ..Default::default()
+        });
+        (fwd, rev)
+    }
+
+    /// Efficiency of a DC line of a given length, from a per-1000 km loss rate.
+    ///
+    /// A convenience for the common case, since the figures quoted in the
+    /// literature are per distance and what the model needs is a multiplier.
+    /// UHVDC is about 0.03 per 1000 km; conventional HVDC nearer 0.07.
+    pub fn dc_efficiency(km: f64, loss_per_1000km: f64) -> f64 {
+        (1.0 - loss_per_1000km * km / 1000.0).clamp(0.0, 1.0)
+    }
+
+    /// Number of investment periods, at least one.
+    #[inline]
+    pub fn n_periods(&self) -> usize {
+        self.investment_periods.len().max(1)
+    }
+
+    /// Discount multiplier for a period.
+    #[inline]
+    pub fn discount(&self, p: usize) -> f64 {
+        self.investment_periods.get(p).map_or(1.0, |x| x.discount)
     }
 
     /// Generators grouped by the bus they sit on.
@@ -553,6 +861,15 @@ impl Network {
             // Expanding an AC line would change its susceptance, making the DC
             // flow constraint bilinear. Refusing is better than linearising
             // silently around an assumed value nobody chose.
+            if !l.is_transport()
+                && self.buses[l.bus0].synchronous_area != self.buses[l.bus1].synchronous_area
+            {
+                return Err(NetError::AcLineCrossesAreas {
+                    index: i,
+                    area0: self.buses[l.bus0].synchronous_area.clone(),
+                    area1: self.buses[l.bus1].synchronous_area.clone(),
+                });
+            }
             if l.s_nom_extendable && !l.is_transport() {
                 return Err(NetError::ExtendableAcLine { index: i });
             }
@@ -716,6 +1033,16 @@ pub enum NetError {
         index: usize,
         floor: f64,
         ceiling: f64,
+    },
+    #[error(
+        "line {index} carries a susceptance but joins synchronous areas `{area0}` and \
+         `{area1}`; asynchronous grids can only be linked by a controllable HVDC tie, \
+         which is modelled by leaving susceptance at zero"
+    )]
+    AcLineCrossesAreas {
+        index: usize,
+        area0: String,
+        area1: String,
     },
     #[error("CO2 limit {0} must be finite and non-negative")]
     BadCo2Limit(f64),

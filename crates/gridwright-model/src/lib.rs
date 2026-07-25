@@ -75,11 +75,18 @@ impl VarBlock {
 }
 
 /// Variable bounds and objective coefficients, stored column wise.
+///
+/// `integer` is kept as a parallel bitless `Vec<bool>` rather than a variable
+/// type enum because the overwhelming majority of columns in these models are
+/// continuous, and the flag is read once when the model is handed to a solver.
+/// A byte per column against eight bytes for each bound is not the place to
+/// economise.
 #[derive(Debug, Default, Clone)]
 pub struct Columns {
     pub lower: Vec<f64>,
     pub upper: Vec<f64>,
     pub obj: Vec<f64>,
+    pub integer: Vec<bool>,
 }
 
 impl Columns {
@@ -242,6 +249,27 @@ impl Model {
         self.cols.lower.reserve(n);
         self.cols.upper.reserve(n);
         self.cols.obj.reserve(n);
+        self.cols.integer.reserve(n);
+    }
+
+    /// Whether any column is integral, which is what makes this a MILP rather
+    /// than an LP. Worth knowing before choosing a solver strategy, and worth
+    /// reporting to a user who did not expect to have written one.
+    #[inline]
+    pub fn is_mip(&self) -> bool {
+        self.cols.integer.iter().any(|&b| b)
+    }
+
+    /// Number of integral columns.
+    pub fn num_integer(&self) -> usize {
+        self.cols.integer.iter().filter(|&&b| b).count()
+    }
+
+    /// Mark a block as integral. Binary variables are this plus bounds of
+    /// zero and one, which is how commitment status is represented.
+    pub fn set_integer(&mut self, block: VarBlock) {
+        let s = block.start as usize;
+        self.cols.integer[s..s + block.len as usize].fill(true);
     }
 
     /// Allocate `n` variables sharing bounds and objective coefficient.
@@ -255,7 +283,15 @@ impl Model {
         self.cols.lower.resize(new_len, lower);
         self.cols.upper.resize(new_len, upper);
         self.cols.obj.resize(new_len, obj);
+        self.cols.integer.resize(new_len, false);
         VarBlock { start, len: n }
+    }
+
+    /// Allocate a block of binary variables.
+    pub fn add_binary_block(&mut self, n: u32, obj: f64) -> VarBlock {
+        let block = self.add_block(n, 0.0, 1.0, obj);
+        self.set_integer(block);
+        block
     }
 
     /// Allocate a block whose bounds vary per element, e.g. a wind generator
@@ -276,6 +312,7 @@ impl Model {
         self.cols.lower.extend_from_slice(lower);
         self.cols.upper.extend_from_slice(upper);
         self.cols.obj.resize(self.cols.len(), obj);
+        self.cols.integer.resize(self.cols.len(), false);
         Ok(VarBlock {
             start,
             len: lower.len() as u32,
@@ -303,6 +340,11 @@ impl Model {
     pub fn fill_obj(&mut self, block: VarBlock, obj: f64) {
         let s = block.start as usize;
         self.cols.obj[s..s + block.len as usize].fill(obj);
+    }
+
+    /// Set one element of a block's objective.
+    pub fn set_obj_at(&mut self, block: VarBlock, i: u32, obj: f64) {
+        self.cols.obj[block.at(i) as usize] = obj;
     }
 
     /// Overwrite the objective coefficients of an existing block.
@@ -392,6 +434,39 @@ mod tests {
         assert_eq!(b.at(0), 3);
         assert_eq!(m.num_cols(), 5);
         assert_eq!(a.range(), 0..3);
+    }
+
+    #[test]
+    fn a_fresh_model_is_not_a_mip() {
+        let mut m = Model::new();
+        m.add_block(4, 0.0, 1.0, 0.0);
+        assert!(!m.is_mip());
+        assert_eq!(m.num_integer(), 0);
+    }
+
+    #[test]
+    fn binary_blocks_are_bounded_and_integral() {
+        let mut m = Model::new();
+        m.add_block(2, 0.0, 10.0, 1.0);
+        let b = m.add_binary_block(3, 5.0);
+        assert!(m.is_mip());
+        assert_eq!(m.num_integer(), 3);
+        for i in b.range() {
+            let i = i as usize;
+            assert_eq!(m.columns().lower[i], 0.0);
+            assert_eq!(m.columns().upper[i], 1.0);
+            assert!(m.columns().integer[i]);
+        }
+        // The continuous block before it must be untouched.
+        assert!(!m.columns().integer[0]);
+    }
+
+    #[test]
+    fn integrality_tracks_blocks_allocated_with_per_element_bounds() {
+        let mut m = Model::new();
+        m.add_block_with(&[0.0, 0.0], &[1.0, 2.0], 0.0).unwrap();
+        assert_eq!(m.columns().integer.len(), m.num_cols());
+        assert!(!m.is_mip());
     }
 
     #[test]

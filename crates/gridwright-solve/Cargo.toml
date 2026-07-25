@@ -15,5 +15,6 @@ highs = ["dep:highs-sys"]
 gridwright-model.workspace = true
 gridwright-build.workspace = true
 gridwright-net.workspace = true
+gridwright-io.workspace = true
 thiserror.workspace = true
 highs-sys = { version = "1.6", optional = true }

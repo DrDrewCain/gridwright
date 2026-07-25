@@ -101,6 +101,32 @@ impl Solution {
         &self.row_dual[s..s + n_snapshots]
     }
 
+    /// Capacity added by the optimiser, summed over every investment period.
+    ///
+    /// This is *additional* capacity, not total. The variable is the decision,
+    /// and the existing fleet is a constant the decision is added to, which is
+    /// why a unit that already has 60 MW and should not grow reports zero here
+    /// rather than sixty. Use [`Solution::total_capacity`] for the installed
+    /// figure.
+    pub fn capacity_built(&self, block: gridwright_model::VarBlock) -> f64 {
+        self.trajectory(block).iter().sum()
+    }
+
+    /// Existing capacity plus everything built, which is what gets reported to
+    /// a human and what the next model run would start from.
+    pub fn total_capacity(
+        &self,
+        block: Option<gridwright_model::VarBlock>,
+        existing: f64,
+    ) -> f64 {
+        existing + block.map_or(0.0, |b| self.capacity_built(b))
+    }
+
+    /// Capacity built in one specific period, for reading an investment path.
+    pub fn capacity_built_in(&self, block: gridwright_model::VarBlock, period: usize) -> f64 {
+        self.trajectory(block)[period]
+    }
+
     /// Total unserved energy across the whole system.
     pub fn total_shed(&self, vars: &VarIndex) -> f64 {
         vars.shed

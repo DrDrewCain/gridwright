@@ -22,6 +22,13 @@ fn main() {
             bench(buses, hours, solve);
         }
         "demo" => demo(),
+        "case" => {
+            let Some(path) = args.get(1) else {
+                eprintln!("usage: gw case <matpower.m>");
+                std::process::exit(2);
+            };
+            run_case(path);
+        }
         "run" => {
             let Some(dir) = args.get(1) else {
                 eprintln!("usage: gw run <network-dir> [--out <dir>]");
@@ -39,6 +46,7 @@ fn main() {
                 "gw — gridwright: cross-border energy system modelling\n\
                  \n  gw demo                              two-country dispatch example\
                  \n  gw run <dir> [--out <dir>]           solve a network of CSV files\
+                 \n  gw case <file.m>                     solve a MATPOWER case\
                  \n  gw bench [--buses N] [--hours H] [--solve]\n\
                  \n\
                  bench reports construction time separately from solve time,\n\
@@ -387,17 +395,17 @@ fn run(dir: &str, out: Option<&str>) {
     let mut built = Vec::new();
     for (g, unit) in net.generators.iter().enumerate() {
         if let Some(cap) = lopf.vars.gen_capacity[g] {
-            built.push((unit.name.clone(), sol.trajectory(cap)[0]));
+            built.push((unit.name.clone(), sol.total_capacity(Some(cap), unit.p_nom)));
         }
     }
     for (l, line) in net.lines.iter().enumerate() {
         if let Some(cap) = lopf.vars.line_capacity[l] {
-            built.push((line.name.clone(), sol.trajectory(cap)[0]));
+            built.push((line.name.clone(), sol.total_capacity(Some(cap), line.s_nom)));
         }
     }
     for (s, unit) in net.storage.iter().enumerate() {
         if let Some(cap) = lopf.vars.storage_capacity[s] {
-            built.push((unit.name.clone(), sol.trajectory(cap)[0]));
+            built.push((unit.name.clone(), sol.total_capacity(Some(cap), unit.p_nom)));
         }
     }
     if !built.is_empty() {
@@ -427,5 +435,72 @@ fn run(dir: &str, out: Option<&str>) {
             Ok(()) => println!("\n  results written to {out}/"),
             Err(e) => eprintln!("could not write results: {e}"),
         }
+    }
+}
+
+/// Solve a MATPOWER case: the IEEE test systems, PGLib-OPF, and anything else
+/// distributed in that format.
+fn run_case(path: &str) {
+    let case = match gridwright_io::matpower::load_case(path) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("could not load {path}: {e}");
+            std::process::exit(1);
+        }
+    };
+    let net = &case.network;
+    println!("{}", case.name);
+    println!(
+        "  {} buses, {} branches, {} generators, {} loads, {} synchronous areas",
+        net.buses.len(),
+        net.lines.len(),
+        net.generators.len(),
+        net.loads.len(),
+        net.synchronous_areas().len()
+    );
+    for n in &case.notes {
+        println!("  note: {n}");
+    }
+
+    let t0 = Instant::now();
+    let lopf = match build_lopf(net) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("build failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let build_ms = t0.elapsed().as_secs_f64() * 1e3;
+
+    let t1 = Instant::now();
+    let sol = match HighsSolver::default().solve(&lopf) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("solve failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let solve_ms = t1.elapsed().as_secs_f64() * 1e3;
+
+    let demand: f64 = (0..net.loads.len())
+        .map(|l| net.load_profile.at(l, 0).unwrap_or(net.loads[l].p_set))
+        .sum();
+    let served: f64 = (0..net.generators.len())
+        .map(|g| sol.dispatch(&lopf.vars, g)[0])
+        .sum();
+
+    println!(
+        "  {} cols, {} rows, {} nonzeros",
+        lopf.model.num_cols(),
+        lopf.model.num_rows(),
+        lopf.model.nnz()
+    );
+    println!("  build {build_ms:.3} ms, solve {solve_ms:.3} ms");
+    println!("  status {:?}", sol.status);
+    println!("  DC-OPF cost {:.2}", sol.objective);
+    println!("  demand {demand:.1} MW, generation {served:.1} MW");
+    let shed = sol.total_shed(&lopf.vars);
+    if shed > 1e-4 {
+        println!("  unserved {shed:.2} MW");
     }
 }

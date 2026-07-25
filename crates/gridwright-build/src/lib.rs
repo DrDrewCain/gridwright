@@ -59,6 +59,18 @@ pub struct VarIndex {
     pub line_capacity: Vec<Option<VarBlock>>,
     /// Installed storage power rating, per extendable storage unit.
     pub storage_capacity: Vec<Option<VarBlock>>,
+    /// Throughput of each link, measured at its input bus.
+    pub link_flow: Vec<VarBlock>,
+    /// Installed link capacity, per extendable link.
+    pub link_capacity: Vec<Option<VarBlock>>,
+    /// Commitment status, per committable generator. Binary.
+    pub status: Vec<Option<VarBlock>>,
+    /// Start-up indicator, per committable generator.
+    pub start_up: Vec<Option<VarBlock>>,
+    /// Shut-down indicator, per committable generator.
+    pub shut_down: Vec<Option<VarBlock>>,
+    /// Spilled energy, per spillable storage unit.
+    pub spill: Vec<Option<VarBlock>>,
 }
 
 /// A built linear program plus the map back to what its variables mean.
@@ -78,13 +90,18 @@ pub struct RowCounts {
     pub storage: usize,
     /// Dispatch tied to built capacity, for extendable components.
     pub capacity: usize,
+    /// Commitment: status bounds, transitions and minimum run times.
+    pub commitment: usize,
+    /// Planning reserve, one per synchronous area.
+    pub reserve: usize,
     /// The single system wide emissions row, if there is one.
     pub co2: usize,
 }
 
 impl RowCounts {
     pub fn total(self) -> usize {
-        self.balance + self.dc_flow + self.storage + self.capacity + self.co2
+        self.balance + self.dc_flow + self.storage + self.capacity + self.commitment
+            + self.reserve + self.co2
     }
 }
 
@@ -110,7 +127,28 @@ impl Lopf {
             balance: net.buses.len() * t,
             dc_flow: dc_lines * t,
             storage: net.storage.len() * t,
-            capacity,
+            capacity: capacity + net.links.iter().filter(|l| l.p_nom_extendable).count() * t,
+            commitment: net
+                .generators
+                .iter()
+                .filter(|g| g.committable)
+                .map(|g| {
+                    // upper bound, transition, and optionally a minimum output
+                    // row plus the two ramping windows
+                    let mut per = 2;
+                    if g.p_min_pu > 0.0 {
+                        per += 1;
+                    }
+                    per * t
+                        + usize::from(g.min_up_time > 1) * t.saturating_sub(g.min_up_time - 1)
+                        + usize::from(g.min_down_time > 1) * t.saturating_sub(g.min_down_time - 1)
+                })
+                .sum(),
+            reserve: if net.reserve_margin.is_some() {
+                net.synchronous_areas().len()
+            } else {
+                0
+            },
             co2: usize::from(net.co2_limit.is_some()),
         }
     }
@@ -139,6 +177,8 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     // every line is a transport corridor the angles are pure overhead, so
     // they are never created rather than created and left free.
     let needs_angles = net.lines.iter().any(|l| !l.is_transport());
+    let n_periods = net.n_periods();
+    let period_of = net.period_of_snapshot();
 
     let mut model = Model::new();
     model.sense = Sense::Minimize;
@@ -154,7 +194,7 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         + net.buses.len()
         + if needs_angles { net.buses.len() } else { 0 })
         * t
-        + n_extendable;
+        + n_extendable * n_periods;
     if n_vars > u32::MAX as usize {
         return Err(BuildError::TooManyVariables(n_vars));
     }
@@ -194,6 +234,23 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
                 }
                 None => model.add_block(t32, 0.0, ceiling, 0.0),
             }
+        } else if unit.committable {
+            // A committable unit's floor belongs to the commitment constraint,
+            // not to its bounds. Putting p_min in the lower bound would force
+            // output even when the unit is switched off, which contradicts
+            // p <= p_max * u and makes every such model infeasible.
+            match net.gen_availability.row(g) {
+                Some(avail) => {
+                    lo_buf.clear();
+                    up_buf.clear();
+                    for &a in avail {
+                        up_buf.push(unit.p_nom * a);
+                        lo_buf.push(0.0);
+                    }
+                    model.add_block_with(&lo_buf, &up_buf, 0.0)?
+                }
+                None => model.add_block(t32, 0.0, unit.p_nom, 0.0),
+            }
         } else {
             match net.gen_availability.row(g) {
                 Some(avail) => {
@@ -221,8 +278,17 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     // does not un-build itself.
     vars.gen_capacity.reserve(net.generators.len());
     for unit in &net.generators {
+        // One build variable per investment period, not one overall. Capacity
+        // built in an early period is available in every later one, so the
+        // periods couple through a running total rather than being independent
+        // problems. Single-period models get a block of length one and pay
+        // nothing for the generality.
         vars.gen_capacity.push(unit.p_nom_extendable.then(|| {
-            model.add_block(1, unit.p_nom, unit.p_nom_max, unit.capital_cost)
+            let b = model.add_block(n_periods as u32, 0.0, unit.p_nom_max, 0.0);
+            for period in 0..n_periods {
+                model.set_obj_at(b, period as u32, unit.capital_cost * net.discount(period));
+            }
+            b
         }));
     }
 
@@ -238,10 +304,13 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     }
     vars.line_capacity.reserve(net.lines.len());
     for l in &net.lines {
-        vars.line_capacity.push(
-            l.s_nom_extendable
-                .then(|| model.add_block(1, l.s_nom, l.s_nom_max, l.capital_cost)),
-        );
+        vars.line_capacity.push(l.s_nom_extendable.then(|| {
+            let b = model.add_block(n_periods as u32, 0.0, l.s_nom_max, 0.0);
+            for period in 0..n_periods {
+                model.set_obj_at(b, period as u32, l.capital_cost * net.discount(period));
+            }
+            b
+        }));
     }
 
     // Storage: charge and discharge are separate non-negative variables rather
@@ -263,9 +332,59 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     }
     vars.storage_capacity.reserve(net.storage.len());
     for s in &net.storage {
-        vars.storage_capacity.push(
-            s.p_nom_extendable
-                .then(|| model.add_block(1, s.p_nom, s.p_nom_max, s.capital_cost)),
+        vars.storage_capacity.push(s.p_nom_extendable.then(|| {
+            let b = model.add_block(n_periods as u32, 0.0, s.p_nom_max, 0.0);
+            for period in 0..n_periods {
+                model.set_obj_at(b, period as u32, s.capital_cost * net.discount(period));
+            }
+            b
+        }));
+    }
+
+    // Links, measured at the input bus.
+    vars.link_flow.reserve(net.links.len());
+    for l in &net.links {
+        let rating = if l.p_nom_extendable { l.p_nom_max } else { l.p_nom };
+        vars.link_flow.push(model.add_block(t32, 0.0, rating, 0.0));
+    }
+    vars.link_capacity.reserve(net.links.len());
+    for l in &net.links {
+        vars.link_capacity.push(l.p_nom_extendable.then(|| {
+            let b = model.add_block(n_periods as u32, 0.0, l.p_nom_max, 0.0);
+            for period in 0..n_periods {
+                model.set_obj_at(b, period as u32, l.capital_cost * net.discount(period));
+            }
+            b
+        }));
+    }
+
+    // Commitment. Status is binary, which is what turns this into a MILP;
+    // start-up and shut-down are continuous because the status constraint
+    // forces them to integral values anyway, and relaxing them shrinks the
+    // branch and bound tree substantially for no loss of correctness.
+    vars.status.reserve(net.generators.len());
+    vars.start_up.reserve(net.generators.len());
+    vars.shut_down.reserve(net.generators.len());
+    for unit in &net.generators {
+        if unit.committable {
+            vars.status.push(Some(model.add_binary_block(t32, 0.0)));
+            vars.start_up
+                .push(Some(model.add_block(t32, 0.0, 1.0, unit.start_up_cost)));
+            vars.shut_down
+                .push(Some(model.add_block(t32, 0.0, 1.0, unit.shut_down_cost)));
+        } else {
+            vars.status.push(None);
+            vars.start_up.push(None);
+            vars.shut_down.push(None);
+        }
+    }
+
+    // Spill, for reservoirs that can release water without generating.
+    vars.spill.reserve(net.storage.len());
+    for unit in &net.storage {
+        vars.spill.push(
+            unit.spillable
+                .then(|| model.add_block(t32, 0.0, f64::INFINITY, 0.0)),
         );
     }
 
@@ -285,11 +404,16 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         }
         // Angles are only meaningful relative to each other, so without a
         // reference the model carries a free constant per snapshot and the
-        // basis is degenerate. Pinning bus 0 removes it.
-        let slack = vars.angle[0];
-        let s = slack.start() as usize;
-        model.columns_mut_lower()[s..s + t].fill(0.0);
-        model.columns_mut_upper()[s..s + t].fill(0.0);
+        // basis is degenerate. One reference is not enough: angles are only
+        // comparable within a synchronous area, so an interconnection that has
+        // three of them, as the United States does, needs three references.
+        // Pinning only the first would leave the others floating.
+        for (_, bus) in net.synchronous_areas() {
+            let slack = vars.angle[bus];
+            let s = slack.start() as usize;
+            model.columns_mut_lower()[s..s + t].fill(0.0);
+            model.columns_mut_upper()[s..s + t].fill(0.0);
+        }
     }
 
     // ---- Objective. ----
@@ -297,22 +421,35 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     // Cost is per MWh, so each snapshot's contribution scales by its weight.
     // The uniform case folds the weight into a scalar and takes the memset
     // path; only genuinely non-uniform weights pay for a per-element vector.
+    // Money spent in 2050 is worth less than money spent today. A model that
+    // ignores that will defer every decision to the final period, which is a
+    // artefact of the arithmetic rather than a finding.
+    let single_period = n_periods == 1 && net.investment_periods.is_empty();
     let mut obj_buf = Vec::with_capacity(t);
+    let cost_at = |base: f64, step: usize| base * weights[step] * net.discount(period_of[step]);
+
     for (g, unit) in net.generators.iter().enumerate() {
-        if uniform_weights {
+        if uniform_weights && single_period {
             model.fill_obj(vars.dispatch[g], unit.marginal_cost * weights[0]);
         } else {
             obj_buf.clear();
-            obj_buf.extend(weights.iter().map(|w| unit.marginal_cost * w));
+            obj_buf.extend((0..t).map(|s| cost_at(unit.marginal_cost, s)));
             model.set_obj(vars.dispatch[g], &obj_buf)?;
         }
     }
+    for (k, link) in net.links.iter().enumerate() {
+        if link.marginal_cost != 0.0 {
+            obj_buf.clear();
+            obj_buf.extend((0..t).map(|s| cost_at(link.marginal_cost, s)));
+            model.set_obj(vars.link_flow[k], &obj_buf)?;
+        }
+    }
     for b in 0..net.buses.len() {
-        if uniform_weights {
+        if uniform_weights && single_period {
             model.fill_obj(vars.shed[b], net.value_of_lost_load * weights[0]);
         } else {
             obj_buf.clear();
-            obj_buf.extend(weights.iter().map(|w| net.value_of_lost_load * w));
+            obj_buf.extend((0..t).map(|s| cost_at(net.value_of_lost_load, s)));
             model.set_obj(vars.shed[b], &obj_buf)?;
         }
     }
@@ -323,16 +460,26 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     let loads_at = net.loads_by_bus();
     let storage_at = net.storage_by_bus();
     let lines_at = net.lines_by_bus();
+    let links_at = net.links_by_bus();
 
-    let mut all = build_balance(net, &vars, &gens_at, &loads_at, &storage_at, &lines_at, t);
+    let incidence = BusIncidence {
+        gens: gens_at,
+        loads: loads_at,
+        storage: storage_at,
+        lines: lines_at,
+        links: links_at,
+    };
+    let mut all = build_balance(net, &vars, &incidence, t);
     if needs_angles {
         all.extend(build_dc_flow(net, &vars, t));
     }
     all.extend(build_storage(net, &vars, t));
     all.extend(build_capacity_ties(net, &vars, t));
+    all.extend(build_commitment(net, &vars, t));
     if let Some(batch) = build_co2(net, &vars, t) {
         all.push(batch);
     }
+    all.extend(build_reserve(net, &vars));
     model.absorb_all(&all);
 
     Ok(Lopf {
@@ -347,15 +494,24 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
 /// Parallelised over buses rather than snapshots. Both axes are independent,
 /// but the bus axis means each thread reads one contiguous run of every time
 /// series it touches, which the snapshot axis would turn into a stride.
+/// Everything attached to each bus, gathered once so the balance builder takes
+/// one argument instead of five.
+struct BusIncidence {
+    gens: Adjacency,
+    loads: Adjacency,
+    storage: Adjacency,
+    lines: SignedAdjacency,
+    links: SignedAdjacency,
+}
+
 fn build_balance(
     net: &Network,
     vars: &VarIndex,
-    gens_at: &Adjacency,
-    loads_at: &Adjacency,
-    storage_at: &Adjacency,
-    lines_at: &SignedAdjacency,
+    at: &BusIncidence,
     t: usize,
 ) -> Vec<RowBatch> {
+    let (gens_at, loads_at, storage_at, lines_at, links_at) =
+        (&at.gens, &at.loads, &at.storage, &at.lines, &at.links);
     (0..net.buses.len())
         .into_par_iter()
         .map(|b| {
@@ -363,10 +519,11 @@ fn build_balance(
             let loads = loads_at.of(b);
             let stores = storage_at.of(b);
             let lines = lines_at.of(b);
+            let links = links_at.of(b);
 
             // Every row in this bucket has the same width, so the batch is
             // sized exactly rather than grown.
-            let per_row = gens.len() + lines.len() + 2 * stores.len() + 1;
+            let per_row = gens.len() + lines.len() + links.len() + 2 * stores.len() + 1;
             let mut batch = RowBatch::with_capacity(t, t * per_row);
             let mut terms: Vec<(u32, f64)> = Vec::with_capacity(per_row);
 
@@ -383,6 +540,13 @@ fn build_balance(
                     let si = s as usize;
                     terms.push((vars.discharge[si].at(ti), 1.0));
                     terms.push((vars.charge[si].at(ti), -1.0));
+                }
+                // A link withdraws one unit at bus0 and delivers `efficiency`
+                // units at bus1, so the same variable carries a different
+                // coefficient into each balance. That is sector coupling in one
+                // line: nothing else about the formulation changes.
+                for &(k, coeff) in links {
+                    terms.push((vars.link_flow[k as usize].at(ti), coeff));
                 }
                 terms.push((vars.shed[b].at(ti), 1.0));
 
@@ -443,42 +607,46 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
         .par_iter()
         .enumerate()
         .map(|(s, unit)| {
-            let mut batch = RowBatch::with_capacity(t, t * 4);
+            let mut batch = RowBatch::with_capacity(t, t * 6);
             let soc = vars.soc[s];
             let ch = vars.charge[s];
             let di = vars.discharge[s];
+            let spill = vars.spill[s];
             for (step, &w) in weights.iter().enumerate().take(t) {
                 let ti = step as u32;
                 let store_coeff = -unit.efficiency_store * w;
                 let dispatch_coeff = w / unit.efficiency_dispatch;
 
-                if step == 0 && !unit.cyclic {
-                    // Non-cyclic units start empty, so the first row has no
-                    // predecessor term: soc[0] = inflow - outflow.
-                    batch.push_eq(
-                        [
-                            (soc.at(ti), 1.0),
-                            (ch.at(ti), store_coeff),
-                            (di.at(ti), dispatch_coeff),
-                        ],
-                        0.0,
-                    );
-                    continue;
+                // Natural inflow arrives whether or not anyone wanted it, so
+                // it is a constant on the right hand side rather than a
+                // decision. Spill is the release valve: without it a reservoir
+                // taking more water than it can hold makes the model infeasible
+                // in exactly the weeks a hydro model exists to study.
+                let inflow = net.storage_inflow.at(s, step).unwrap_or(0.0) * w;
+                let mut terms: Vec<(u32, f64)> = Vec::with_capacity(5);
+                terms.push((soc.at(ti), 1.0));
+                if step > 0 || unit.cyclic {
+                    let prev = if step == 0 {
+                        soc.at(t as u32 - 1)
+                    } else {
+                        soc.at(ti - 1)
+                    };
+                    // Same degeneracy as commitment: a one snapshot cyclic
+                    // store is its own predecessor, and the duplicate column
+                    // would be rejected. Cancelling leaves soc unconstrained by
+                    // its own past, which is exactly right when there is none.
+                    if prev == soc.at(ti) {
+                        terms.remove(0);
+                    } else {
+                        terms.push((prev, -1.0));
+                    }
                 }
-                let prev = if step == 0 {
-                    soc.at(t as u32 - 1)
-                } else {
-                    soc.at(ti - 1)
-                };
-                batch.push_eq(
-                    [
-                        (soc.at(ti), 1.0),
-                        (prev, -1.0),
-                        (ch.at(ti), store_coeff),
-                        (di.at(ti), dispatch_coeff),
-                    ],
-                    0.0,
-                );
+                terms.push((ch.at(ti), store_coeff));
+                terms.push((di.at(ti), dispatch_coeff));
+                if let Some(sp) = spill {
+                    terms.push((sp.at(ti), w));
+                }
+                batch.push_eq(terms, inflow);
             }
             batch
         })
@@ -494,27 +662,45 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
 /// snapshot per component. It is usually the largest constraint family in an
 /// expansion model.
 fn build_capacity_ties(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    let period_of = net.period_of_snapshot();
+
+    // Capacity available at a snapshot is the existing fleet plus everything
+    // built in this period or any earlier one. Expressed by summing the build
+    // variables up to that period rather than by carrying a stock variable,
+    // which would need its own balance row per period for no benefit.
+    let available =
+        |cap: gridwright_model::VarBlock, step: usize, coeff: f64, terms: &mut Vec<(u32, f64)>| {
+            for q in 0..=period_of[step] {
+                terms.push((cap.at(q as u32), coeff));
+            }
+        };
+
     let mut batches: Vec<RowBatch> = net
         .generators
         .par_iter()
         .enumerate()
         .filter_map(|(g, unit)| {
             let cap = vars.gen_capacity[g]?;
-            let cap_col = cap.at(0);
             let p = vars.dispatch[g];
             let must_run = unit.p_min_pu > 0.0;
             let rows = if must_run { 2 * t } else { t };
-            let mut batch = RowBatch::with_capacity(rows, 2 * rows);
+            let mut batch = RowBatch::with_capacity(rows, 3 * rows);
+            let mut terms: Vec<(u32, f64)> = Vec::with_capacity(net.n_periods() + 1);
             for step in 0..t {
                 let ti = step as u32;
                 let a = net.gen_availability.at(g, step).unwrap_or(1.0);
-                // p - a * P <= 0
-                batch.push_le([(p.at(ti), 1.0), (cap_col, -a)], 0.0);
+                // p - a * (built so far) <= a * p_nom
+                terms.clear();
+                terms.push((p.at(ti), 1.0));
+                available(cap, step, -a, &mut terms);
+                batch.push_le(terms.iter().copied(), a * unit.p_nom);
                 if must_run {
-                    // p - p_min_pu * a * P >= 0. Scaling the floor by
-                    // availability as well is what stops a must-run wind farm
-                    // from being infeasible in a calm hour.
-                    batch.push_ge([(p.at(ti), 1.0), (cap_col, -unit.p_min_pu * a)], 0.0);
+                    // Scaling the floor by availability too is what stops a
+                    // must-run wind farm being infeasible in a calm hour.
+                    terms.clear();
+                    terms.push((p.at(ti), 1.0));
+                    available(cap, step, -unit.p_min_pu * a, &mut terms);
+                    batch.push_ge(terms.iter().copied(), unit.p_min_pu * a * unit.p_nom);
                 }
             }
             Some(batch)
@@ -526,14 +712,21 @@ fn build_capacity_ties(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch
         net.lines
             .par_iter()
             .enumerate()
-            .filter_map(|(l, _)| {
-                let cap_col = vars.line_capacity[l]?.at(0);
+            .filter_map(|(l, line)| {
+                let cap = vars.line_capacity[l]?;
                 let f = vars.flow[l];
-                let mut batch = RowBatch::with_capacity(2 * t, 4 * t);
+                let mut batch = RowBatch::with_capacity(2 * t, 6 * t);
+                let mut terms: Vec<(u32, f64)> = Vec::with_capacity(net.n_periods() + 1);
                 for step in 0..t {
                     let ti = step as u32;
-                    batch.push_le([(f.at(ti), 1.0), (cap_col, -1.0)], 0.0);
-                    batch.push_ge([(f.at(ti), 1.0), (cap_col, 1.0)], 0.0);
+                    terms.clear();
+                    terms.push((f.at(ti), 1.0));
+                    available(cap, step, -1.0, &mut terms);
+                    batch.push_le(terms.iter().copied(), line.s_nom);
+                    terms.clear();
+                    terms.push((f.at(ti), 1.0));
+                    available(cap, step, 1.0, &mut terms);
+                    batch.push_ge(terms.iter().copied(), -line.s_nom);
                 }
                 Some(batch)
             })
@@ -547,14 +740,45 @@ fn build_capacity_ties(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch
             .par_iter()
             .enumerate()
             .filter_map(|(s, unit)| {
-                let cap_col = vars.storage_capacity[s]?.at(0);
+                let cap = vars.storage_capacity[s]?;
                 let (ch, di, soc) = (vars.charge[s], vars.discharge[s], vars.soc[s]);
-                let mut batch = RowBatch::with_capacity(3 * t, 6 * t);
+                let mut batch = RowBatch::with_capacity(3 * t, 9 * t);
+                let mut terms: Vec<(u32, f64)> = Vec::with_capacity(net.n_periods() + 1);
                 for step in 0..t {
                     let ti = step as u32;
-                    batch.push_le([(ch.at(ti), 1.0), (cap_col, -1.0)], 0.0);
-                    batch.push_le([(di.at(ti), 1.0), (cap_col, -1.0)], 0.0);
-                    batch.push_le([(soc.at(ti), 1.0), (cap_col, -unit.max_hours)], 0.0);
+                    for (var, coeff, rhs) in [
+                        (ch, -1.0, unit.p_nom),
+                        (di, -1.0, unit.p_nom),
+                        (soc, -unit.max_hours, unit.p_nom * unit.max_hours),
+                    ] {
+                        terms.clear();
+                        terms.push((var.at(ti), 1.0));
+                        available(cap, step, coeff, &mut terms);
+                        batch.push_le(terms.iter().copied(), rhs);
+                    }
+                }
+                Some(batch)
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    // Link throughput bounded by built capacity. One row per snapshot, not two,
+    // because link flow is non-negative by construction.
+    batches.extend(
+        net.links
+            .par_iter()
+            .enumerate()
+            .filter_map(|(k, link)| {
+                let cap = vars.link_capacity[k]?;
+                let f = vars.link_flow[k];
+                let mut batch = RowBatch::with_capacity(t, 3 * t);
+                let mut terms: Vec<(u32, f64)> = Vec::with_capacity(net.n_periods() + 1);
+                for step in 0..t {
+                    let ti = step as u32;
+                    terms.clear();
+                    terms.push((f.at(ti), 1.0));
+                    available(cap, step, -1.0, &mut terms);
+                    batch.push_le(terms.iter().copied(), link.p_nom);
                 }
                 Some(batch)
             })
@@ -562,6 +786,187 @@ fn build_capacity_ties(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch
     );
 
     batches
+}
+
+/// Unit commitment: the on/off state of thermal plant, and what it costs to
+/// change it.
+///
+/// Four families, and each exists because leaving it out produces a specific
+/// wrong answer:
+///
+/// - `p <= p_max * u` and `p >= p_min * u`, so a unit that is off produces
+///   nothing and a unit that is on respects its stable minimum. Without the
+///   second, a coal plant idles at 8% of rating, which no coal plant can do.
+/// - `u[t] - u[t-1] = su[t] - sd[t]`, which defines starts and stops in terms
+///   of the status they follow from. Costing starts without this lets the
+///   optimiser claim it never started.
+/// - minimum up time, so a unit that starts stays on. Without it, plant
+///   flickers on and off hourly to chase prices, which is free in the model and
+///   impossible in a boiler.
+/// - minimum down time, the same argument in reverse.
+fn build_commitment(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    net.generators
+        .par_iter()
+        .enumerate()
+        .filter_map(|(g, unit)| {
+            let status = vars.status[g]?;
+            let su = vars.start_up[g]?;
+            let sd = vars.shut_down[g]?;
+            let p = vars.dispatch[g];
+
+            let mut batch = RowBatch::with_capacity(4 * t, 12 * t);
+            for step in 0..t {
+                let ti = step as u32;
+                let avail = net.gen_availability.at(g, step).unwrap_or(1.0);
+                let p_max = unit.p_nom * avail;
+                let p_min = unit.p_nom * unit.p_min_pu * avail;
+
+                // Output is zero unless committed, and at least the stable
+                // minimum when it is.
+                batch.push_le([(p.at(ti), 1.0), (status.at(ti), -p_max)], 0.0);
+                if p_min > 0.0 {
+                    batch.push_ge([(p.at(ti), 1.0), (status.at(ti), -p_min)], 0.0);
+                }
+
+                // State transition. The first snapshot wraps, so a horizon can
+                // be studied without pretending every unit began offline.
+                //
+                // With a single snapshot the wrap makes the predecessor the
+                // same variable as the successor, and the two status terms
+                // would cancel into one column appearing twice in one row.
+                // Solvers reject that outright, so the degenerate case emits
+                // the cancelled form instead: with nowhere to transition to,
+                // starts and stops must simply match.
+                let prev = if step == 0 {
+                    status.at(t as u32 - 1)
+                } else {
+                    status.at(ti - 1)
+                };
+                if prev == status.at(ti) {
+                    batch.push_eq([(su.at(ti), -1.0), (sd.at(ti), 1.0)], 0.0);
+                } else {
+                    batch.push_eq(
+                        [
+                            (status.at(ti), 1.0),
+                            (prev, -1.0),
+                            (su.at(ti), -1.0),
+                            (sd.at(ti), 1.0),
+                        ],
+                        0.0,
+                    );
+                }
+
+                // Minimum up time: having started at any point in the preceding
+                // window, the unit must still be on now. Expressed as a sum over
+                // the window rather than one row per pair, which is the tighter
+                // formulation and the smaller matrix.
+                if unit.min_up_time > 1 && step + 1 >= unit.min_up_time {
+                    let mut terms: Vec<(u32, f64)> = Vec::with_capacity(unit.min_up_time + 1);
+                    for k in (step + 1 - unit.min_up_time)..=step {
+                        terms.push((su.at(k as u32), 1.0));
+                    }
+                    terms.push((status.at(ti), -1.0));
+                    batch.push_le(terms, 0.0);
+                }
+                if unit.min_down_time > 1 && step + 1 >= unit.min_down_time {
+                    let mut terms: Vec<(u32, f64)> = Vec::with_capacity(unit.min_down_time + 1);
+                    for k in (step + 1 - unit.min_down_time)..=step {
+                        terms.push((sd.at(k as u32), 1.0));
+                    }
+                    terms.push((status.at(ti), 1.0));
+                    batch.push_le(terms, 1.0);
+                }
+            }
+            Some(batch)
+        })
+        .collect()
+}
+
+/// Planning reserve, one row per synchronous area.
+///
+/// Firm capacity in the area must cover its own peak demand plus a margin.
+/// Capacity across an asynchronous boundary does not count, which is the whole
+/// reason this is per area: an islanded system genuinely cannot borrow.
+///
+/// Variable renewables contribute at their minimum availability over the
+/// horizon rather than their nameplate, because a reserve margin met by solar
+/// at midnight is not met at all. That is a deliberately conservative reading,
+/// and a cruder one than the capacity-credit calculations a utility would use,
+/// but it errs in the direction of building too much rather than too little.
+fn build_reserve(net: &Network, vars: &VarIndex) -> Vec<RowBatch> {
+    let Some(margin) = net.reserve_margin else {
+        return Vec::new();
+    };
+    let t = net.n_snapshots();
+    let areas = net.synchronous_areas();
+
+    areas
+        .iter()
+        .map(|(area, _)| {
+            // Peak demand inside this area, over the whole horizon.
+            let mut peak: f64 = 0.0;
+            for step in 0..t {
+                let mut demand = 0.0;
+                for (l, load) in net.loads.iter().enumerate() {
+                    if &net.buses[load.bus].synchronous_area == area {
+                        demand += net.load_profile.at(l, step).unwrap_or(load.p_set);
+                    }
+                }
+                peak = peak.max(demand);
+            }
+
+            let mut terms: Vec<(u32, f64)> = Vec::new();
+            let mut firm_fixed = 0.0;
+            for (g, unit) in net.generators.iter().enumerate() {
+                if &net.buses[unit.bus].synchronous_area != area {
+                    continue;
+                }
+                // The worst hour this unit could be asked to cover.
+                let credit = (0..t)
+                    .map(|s| net.gen_availability.at(g, s).unwrap_or(1.0))
+                    .fold(f64::INFINITY, f64::min)
+                    .min(1.0);
+                if credit <= 0.0 {
+                    continue;
+                }
+                match vars.gen_capacity[g] {
+                    Some(cap) => {
+                        firm_fixed += unit.p_nom * credit;
+                        for q in 0..net.n_periods() {
+                            terms.push((cap.at(q as u32), credit));
+                        }
+                    }
+                    None => firm_fixed += unit.p_nom * credit,
+                }
+            }
+            for (s, unit) in net.storage.iter().enumerate() {
+                if &net.buses[unit.bus].synchronous_area != area {
+                    continue;
+                }
+                match vars.storage_capacity[s] {
+                    Some(cap) => {
+                        firm_fixed += unit.p_nom;
+                        for q in 0..net.n_periods() {
+                            terms.push((cap.at(q as u32), 1.0));
+                        }
+                    }
+                    None => firm_fixed += unit.p_nom,
+                }
+            }
+
+            let required = peak * (1.0 + margin) - firm_fixed;
+            let mut batch = RowBatch::with_capacity(1, terms.len().max(1));
+            if terms.is_empty() {
+                // Nothing extendable to satisfy it with. The row is still
+                // emitted so that an unmeetable requirement shows up as an
+                // infeasible model rather than as silence.
+                batch.push_ge([(0u32, 0.0)], required.min(0.0));
+            } else {
+                batch.push_ge(terms, required);
+            }
+            batch
+        })
+        .collect()
 }
 
 /// The system wide emissions budget, as one row.

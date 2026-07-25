@@ -58,7 +58,7 @@ fn cheap_capital_gets_built_and_displaces_expensive_fuel() {
     let sol = HighsSolver::default().solve(&lopf).unwrap();
 
     assert_eq!(sol.status, Status::Optimal);
-    let built = sol.trajectory(lopf.vars.gen_capacity[1].unwrap())[0];
+    let built = sol.capacity_built(lopf.vars.gen_capacity[1].unwrap());
     assert_close(built, 80.0, "capacity built");
     assert_close(sol.objective, 12_000.0, "total system cost");
     // The existing plant should now be idle.
@@ -75,7 +75,7 @@ fn capital_above_break_even_is_not_built() {
     let lopf = build_lopf(&net).unwrap();
     let sol = HighsSolver::default().solve(&lopf).unwrap();
 
-    let built = sol.trajectory(lopf.vars.gen_capacity[1].unwrap())[0];
+    let built = sol.capacity_built(lopf.vars.gen_capacity[1].unwrap());
     assert_close(built, 0.0, "nothing should be built above break-even");
     assert_close(sol.objective, 80.0 * 10.0 * 200.0, "cost of running existing");
 }
@@ -90,7 +90,7 @@ fn the_break_even_capital_cost_is_where_the_decision_flips() {
         let lopf = build_lopf(&net).unwrap();
         let sol = HighsSolver::default().solve(&lopf).unwrap();
         (
-            sol.trajectory(lopf.vars.gen_capacity[1].unwrap())[0],
+            sol.capacity_built(lopf.vars.gen_capacity[1].unwrap()),
             sol.objective,
         )
     };
@@ -113,8 +113,18 @@ fn existing_capacity_is_a_floor_that_cannot_be_un_built() {
     net.generators[1].p_nom = 60.0;
     let lopf = build_lopf(&net).unwrap();
     let sol = HighsSolver::default().solve(&lopf).unwrap();
-    let built = sol.trajectory(lopf.vars.gen_capacity[1].unwrap())[0];
-    assert_close(built, 60.0, "capacity floor is the existing fleet");
+    // The variable is additional build, so an incumbent that should not grow
+    // reports zero new capacity and sixty installed.
+    assert_close(
+        sol.capacity_built(lopf.vars.gen_capacity[1].unwrap()),
+        0.0,
+        "nothing new should be built",
+    );
+    assert_close(
+        sol.total_capacity(lopf.vars.gen_capacity[1], net.generators[1].p_nom),
+        60.0,
+        "installed capacity is the existing fleet",
+    );
 }
 
 #[test]
@@ -126,7 +136,7 @@ fn expansion_respects_the_capacity_ceiling() {
     let lopf = build_lopf(&net).unwrap();
     let sol = HighsSolver::default().solve(&lopf).unwrap();
 
-    let built = sol.trajectory(lopf.vars.gen_capacity[1].unwrap())[0];
+    let built = sol.capacity_built(lopf.vars.gen_capacity[1].unwrap());
     assert_close(built, 200.0, "build up to the ceiling");
     assert_close(sol.dispatch(&lopf.vars, 1)[0], 200.0, "new plant at full output");
     assert_close(sol.dispatch(&lopf.vars, 0)[0], 300.0, "incumbent covers the rest");
@@ -159,7 +169,7 @@ fn an_availability_profile_scales_what_built_capacity_can_deliver() {
     let lopf = build_lopf(&net).unwrap();
     let sol = HighsSolver::default().solve(&lopf).unwrap();
     assert_eq!(sol.status, Status::Optimal);
-    let built = sol.trajectory(lopf.vars.gen_capacity[0].unwrap())[0];
+    let built = sol.capacity_built(lopf.vars.gen_capacity[0].unwrap());
     assert_close(built, 200.0, "must build double to deliver through 50% availability");
     assert_close(sol.dispatch(&lopf.vars, 0)[0], 100.0, "delivered energy");
 }
@@ -205,10 +215,22 @@ fn transmission_expansion_relieves_a_binding_interconnector() {
     let lopf = build_lopf(&net).unwrap();
     let sol = HighsSolver::default().solve(&lopf).unwrap();
     assert_eq!(sol.status, Status::Optimal);
-    let built = sol.trajectory(lopf.vars.line_capacity[0].unwrap())[0];
-    assert_close(built, 100.0, "reinforce to carry the full transfer");
-    // 100 MW * 4 h at 5/MWh, plus 100 MW of line at 5/MW.
-    assert_close(sol.objective, 100.0 * 4.0 * 5.0 + 100.0 * 5.0, "total cost");
+    // 10 MW already exists, so 90 MW is added to reach the 100 MW transfer.
+    assert_close(
+        sol.capacity_built(lopf.vars.line_capacity[0].unwrap()),
+        90.0,
+        "reinforcement added",
+    );
+    assert_close(
+        sol.total_capacity(lopf.vars.line_capacity[0], net.lines[0].s_nom),
+        100.0,
+        "total transfer capability",
+    );
+    // 100 MW * 4 h at 5/MWh, plus capital on the 90 MW *added*. The 10 MW that
+    // already existed is not paid for again, which an earlier version of this
+    // model got wrong by charging capital on total capacity rather than on the
+    // build.
+    assert_close(sol.objective, 100.0 * 4.0 * 5.0 + 90.0 * 5.0, "total cost");
 }
 
 #[test]
@@ -344,7 +366,7 @@ fn a_carbon_cap_and_expansion_together_build_clean_capacity() {
 
     let coal_total: f64 = sol.dispatch(&lopf.vars, 0).iter().sum();
     assert_close(coal_total, 400.0, "coal limited by the carbon budget");
-    let built = sol.trajectory(lopf.vars.gen_capacity[1].unwrap())[0];
+    let built = sol.capacity_built(lopf.vars.gen_capacity[1].unwrap());
     assert_close(built, 60.0, "solar built to cover the remainder");
     assert_close(sol.objective, 16_000.0, "fuel plus capital");
     assert!(sol.total_shed(&lopf.vars) < 1e-4, "demand must still be met");
@@ -388,7 +410,7 @@ fn a_cap_that_does_not_bind_changes_nothing() {
     let coal_total: f64 = sol.dispatch(&lopf.vars, 0).iter().sum();
     assert_close(coal_total, 0.0, "cheap solar displaces coal without any cap");
     assert_close(
-        sol.trajectory(lopf.vars.gen_capacity[1].unwrap())[0],
+        sol.capacity_built(lopf.vars.gen_capacity[1].unwrap()),
         100.0,
         "build enough solar to serve everything",
     );
@@ -426,12 +448,13 @@ fn storage_expansion_is_driven_by_the_value_of_shifting_energy() {
         p_nom_extendable: true,
         p_nom_max: 500.0,
         capital_cost: 2.0,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).unwrap();
     let sol = HighsSolver::default().solve(&lopf).unwrap();
     assert_eq!(sol.status, Status::Optimal);
-    let built = sol.trajectory(lopf.vars.storage_capacity[0].unwrap())[0];
+    let built = sol.capacity_built(lopf.vars.storage_capacity[0].unwrap());
     assert_close(built, 50.0, "storage rating built to meet the peak");
     assert!(sol.total_shed(&lopf.vars) < 1e-4, "demand must be met");
 }
@@ -468,7 +491,7 @@ fn a_built_store_may_not_exceed_its_energy_ceiling() {
     let lopf = build_lopf(&net).unwrap();
     let sol = HighsSolver::default().solve(&lopf).unwrap();
     assert_eq!(sol.status, Status::Optimal);
-    let built = sol.trajectory(lopf.vars.storage_capacity[0].unwrap())[0];
+    let built = sol.capacity_built(lopf.vars.storage_capacity[0].unwrap());
     for &e in sol.trajectory(lopf.vars.soc[0]) {
         assert!(
             e <= built * 4.0 + 1e-4,

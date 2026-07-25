@@ -31,6 +31,7 @@ use gridwright_net::{
 };
 
 pub mod csv;
+pub mod matpower;
 
 use csv::{CsvError, Table};
 
@@ -68,6 +69,8 @@ pub enum IoError {
     },
     #[error("network is not valid: {0}")]
     Invalid(#[from] NetError),
+    #[error("reading MATPOWER case: {0}")]
+    Matpower(#[from] matpower::MatpowerError),
 }
 
 fn read(dir: &Path, name: &str) -> Result<Option<String>, IoError> {
@@ -168,6 +171,13 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 p_nom_max: f("p_nom_max", f64::INFINITY)?,
                 capital_cost: f("capital_cost", 0.0)?,
                 co2_emissions: f("co2_emissions", 0.0)?,
+                committable: t
+                    .boolean(r, "committable", false)
+                    .map_err(|e| field(e, "generators.csv"))?,
+                start_up_cost: f("start_up_cost", 0.0)?,
+                shut_down_cost: f("shut_down_cost", 0.0)?,
+                min_up_time: f("min_up_time", 0.0)? as usize,
+                min_down_time: f("min_down_time", 0.0)? as usize,
             });
         }
     }
@@ -224,6 +234,9 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                     .map_err(|e| field(e, "storage_units.csv"))?,
                 p_nom_max: f("p_nom_max", f64::INFINITY)?,
                 capital_cost: f("capital_cost", 0.0)?,
+                spillable: t
+                    .boolean(r, "spillable", false)
+                    .map_err(|e| field(e, "storage_units.csv"))?,
             });
         }
     }
