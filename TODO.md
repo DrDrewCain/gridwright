@@ -14,10 +14,20 @@ concrete in the way, named.
       basic feasibility after every pivot and looking at the first failure.
       Now agrees with HiGHS on all five IEEE networks, on all 118 nodal prices
       in case118, and on mixed models at 1, 4, 12 and 24 hours.
-- [ ] Sparse LU with Forrest-Tomlin updates, replacing the dense `m × m`
-      inverse. The dense basis caps us at a few thousand rows, and the
-      differential suite already takes 33 seconds because of it. Correct but
-      slow was the right first target; this is the second.
+- [ ] **Sparse LU with Forrest-Tomlin updates**, replacing the dense `m × m`
+      basis inverse. **This is now the gating item for everything else**, and
+      the numbers say why. Measured on a synthetic ring, the pure-Rust solver
+      runs 216 rows in 33 ms, 432 in 150 ms and 864 in 1.2 s: roughly `O(m^2.7)`,
+      which is the dense factorisation showing through rather than anything
+      about the machine. Extrapolated, 2,000 rows is about 12 seconds and 5,000
+      is minutes.
+      
+      That ceiling is what stands between the library and a usable interface.
+      A browser cannot call HiGHS, so anything solved in the page goes through
+      this solver, and at 864 rows the practical limit is a network of perhaps
+      twenty buses over a day. Illustrative, not a study. Sparse LU turns the
+      per-pivot cost from `O(m²)` into something proportional to the fill, which
+      on these matrices is a small multiple of the nonzeros.
 - [ ] Branch and bound, so the pure-Rust backend can do unit commitment. It
       currently declines MIPs rather than returning a relaxation, which is the
       right behaviour but a real limitation.
@@ -125,6 +135,25 @@ concrete in the way, named.
       Checked against solving the same horizon whole, and that more lookahead
       never costs more.
 
+## Flexible demand
+
+- [ ] **Shiftable load.** Demand is currently either served or shed, with no way
+      to move it in time. That leaves out demand response entirely, and it is
+      the single largest gap for the use this keeps being suggested for: a data
+      centre is a very large load that can genuinely choose when to run, and the
+      marginal carbon intensity per bus per snapshot this already computes is
+      exactly the signal such a load would schedule against. The formulation is
+      not hard — energy conserved over a window, with bounds on how far it can
+      move — and it reuses the storage machinery almost entirely.
+- [ ] **Price-elastic demand**, as a step beyond shifting: a load that declines
+      rather than moves when the price is high. A piecewise-linear willingness
+      to pay, which is a set of demand blocks at descending values, and the
+      shedding machinery already carries the shape of it.
+- [ ] **Interruptible contracts**, which are neither shedding nor shifting: a
+      load that may be curtailed a bounded number of times for a bounded
+      duration, at a stated compensation. Discrete, so it belongs with
+      commitment.
+
 ## Data formats
 
 Every reader targets the same `Network`, and every one returns a `Case` whose
@@ -177,15 +206,79 @@ Still missing:
 
 ## Interface
 
+The library side is done: the engine, the format layer and the pure-Rust solver
+all build for `wasm32-unknown-unknown`, every reader takes bytes rather than a
+path, and a network round-trips losslessly through JSON. What remains is the
+binding layer, the interface itself, and one piece of solver work that decides
+what the interface can honestly offer.
+
+- [ ] **Sparse LU first.** See the solver section. At 864 rows the in-page
+      solver takes a second, and that is the whole constraint on what a browser
+      build can do unaided.
+- [ ] **`wasm-bindgen` wrapper**: load a file, edit a network, solve, read
+      results, all across the JavaScript boundary. Small, and blocked on
+      nothing.
+- [ ] **Decide where the solve happens.** Two honest designs, and the choice
+      changes the product rather than the plumbing. Either the page edits and
+      visualises while a server runs HiGHS, which handles real studies and needs
+      a server; or everything runs in the page, which needs nothing and is
+      bounded by the paragraph above. Both are defensible and doing one well
+      beats hedging.
 - [ ] Rust GUI (Dioxus) importing the engine as a library, compiled to WASM for
-      the browser and natively for desktop. **Unblocked:** the pure-Rust solver
-      returns prices and compiles to `wasm32-unknown-unknown` with one
-      dependency.
-- [ ] Network editing with live rebuild. The engine builds a 16M-variable model
-      in ~100 ms, so editing a line and watching the model rebuild immediately
-      is achievable and is a demo nothing else in this space can offer.
+      the browser and natively for desktop.
+- [ ] Network editing with live rebuild. Construction being fast is worth most
+      here rather than in batch: an edit that rebuilds in a hundred milliseconds
+      is a different interaction from one that takes a second.
 - [ ] Result visualisation: flows on a map, price duration curves, dispatch
       stacks, capacity build-out by period.
+- [ ] Show the *status* of an answer, not just the number. An AC result that is
+      a relaxation rather than an operating point, a head iteration that did not
+      converge, and a branch-and-bound that stopped on its node limit are all
+      things the engine now reports and an interface would be wrong to hide.
+
+## What the scaling measurements established
+
+Worth writing down, because one of them cuts against this project's own
+headline and it is better to have that on record than to discover it later.
+
+Full year at hourly resolution, synthetic ring, solved whole:
+
+| Buses | Variables | Build | Solve |
+| --- | --- | --- | --- |
+| 16 | 1.0M | 11 ms | 20 s |
+| 32 | 2.0M | 14 ms | 194 s |
+| 64 | 4.1M | — | did not finish in seven minutes |
+
+The solve grows about 9.5× for a doubling, and construction is 0.0–0.1% of
+runtime. **At full resolution the fast builder buys almost nothing**, which the
+README has always said and which is now measured rather than asserted.
+
+The same year through a rolling horizon of 96-hour windows keeping 72:
+
+| Buses | Windows | Total |
+| --- | --- | --- |
+| 16 | 122 | 4.0 s |
+| 32 | 122 | 8.5 s |
+| 64 | 122 | 23 s |
+| 128 | 122 | 72 s |
+
+Twenty-three times faster than solving whole at 32 buses, and it finishes at 64
+and 128 where the monolithic solve does not. Scaling falls to roughly
+`O(n^1.6)`.
+
+Note what that does to the argument. Rolling performs **122 builds instead of
+one**, and construction still does not register. So the build speed is not what
+makes this scale; decomposition is. What the fast builder actually buys is
+interactive rebuild, scenario sweeps where the same network is assembled
+hundreds of times, and the memory ceiling. Those are real and they are a
+narrower claim than "construction is the bottleneck".
+
+- [ ] Re-run these on real networks rather than a synthetic ring once a large
+      case with a full year of time series is assembled, since the ring's
+      regular topology may flatter the solve.
+- [ ] Measure where the rolling horizon's window length stops paying: shorter
+      windows solve faster and lose more foresight, and nobody has established
+      the trade on a case with storage that matters.
 
 ## Benchmarks and validation
 
