@@ -54,6 +54,33 @@ impl Table {
         })
     }
 
+    /// Build a table from columns already in memory.
+    ///
+    /// For sources that are not text: Parquet and spreadsheets arrive as typed
+    /// columns, and rendering them through the same `Table` means every format
+    /// shares one interpretation of what `p_nom_extendable` or an empty cell
+    /// means, rather than each growing its own.
+    pub fn from_parts(header: Vec<String>, rows: Vec<Vec<String>>) -> Self {
+        let index = header
+            .iter()
+            .enumerate()
+            .map(|(i, h)| (h.trim().to_ascii_lowercase(), i))
+            .collect();
+        let width = header.len();
+        let rows = rows
+            .into_iter()
+            .map(|mut r| {
+                r.resize(width, String::new());
+                r
+            })
+            .collect();
+        Self {
+            header,
+            rows,
+            index,
+        }
+    }
+
     /// Column position by case-insensitive name.
     pub fn column(&self, name: &str) -> Option<usize> {
         self.index.get(&name.to_ascii_lowercase()).copied()

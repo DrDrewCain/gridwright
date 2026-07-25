@@ -15,7 +15,7 @@ default = ["json"]
 json = ["dep:serde", "dep:serde_json", "gridwright-net/serde"]
 # Columnar time series. A year of hourly data for a national fleet is the case
 # CSV handles badly and this handles well.
-parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema"]
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema", "dep:arrow-cast"]
 # Spreadsheets, which is how a great deal of national statistics is published.
 excel = ["dep:calamine"]
 # ENTSO-E CGMES, the European grid exchange standard.
@@ -34,6 +34,7 @@ serde_json = { workspace = true, optional = true }
 parquet = { workspace = true, optional = true }
 arrow-array = { workspace = true, optional = true }
 arrow-schema = { workspace = true, optional = true }
+arrow-cast = { workspace = true, optional = true }
 calamine = { workspace = true, optional = true }
 quick-xml = { workspace = true, optional = true }
 hdf5-pure = { workspace = true, optional = true }
