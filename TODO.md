@@ -149,14 +149,13 @@ concrete in the way, named.
 
 ## Flexible demand
 
-- [ ] **Shiftable load.** Demand is currently either served or shed, with no way
-      to move it in time. That leaves out demand response entirely, and it is
-      the single largest gap for the use this keeps being suggested for: a data
-      centre is a very large load that can genuinely choose when to run, and the
-      marginal carbon intensity per bus per snapshot this already computes is
-      exactly the signal such a load would schedule against. The formulation is
-      not hard — energy conserved over a window, with bounds on how far it can
-      move — and it reuses the storage machinery almost entirely.
+- [x] ~~**Shiftable load.**~~ **Done.** A signed deviation from the demand
+      profile, bounded by a per-load fraction, summing to zero over a window so
+      that what leaves one snapshot arrives in another. That conservation is the
+      whole distinction from shedding, which simply deletes the expensive hours.
+      Movement is charged in both directions, since a signed variable cannot
+      carry a cost on its own and without one the optimiser slides demand
+      between equally priced snapshots for no reason.
 - [ ] **Price-elastic demand**, as a step beyond shifting: a load that declines
       rather than moves when the price is high. A piecewise-linear willingness
       to pay, which is a set of demand blocks at descending values, and the

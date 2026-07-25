@@ -33,6 +33,7 @@ fn two_bus() -> Network {
         bus: b,
         p_set: 100.0,
         q_set: 40.0,
+        ..Default::default()
     });
     net.add_line(Line {
         name: "AB".into(),
@@ -158,6 +159,7 @@ fn triangle() -> Network {
         bus: b,
         p_set: 120.0,
         q_set: 30.0,
+        ..Default::default()
     });
     for (n0, n1, x) in [(a, b, 0.10), (b, c, 0.12), (c, a, 0.08)] {
         net.add_line(Line {

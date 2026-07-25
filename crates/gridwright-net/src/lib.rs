@@ -551,6 +551,36 @@ pub struct Load {
     pub p_set: f64,
     /// Constant reactive demand, MVAr. AC only.
     pub q_set: f64,
+    /// Fraction of this load that can be moved to another snapshot.
+    ///
+    /// Demand is otherwise either served where it stands or shed, which leaves
+    /// out demand response entirely. A great deal of load can in fact choose
+    /// when to run: industrial batch processes, water pumping, vehicle
+    /// charging, and computation. A data centre is the extreme case, being a
+    /// very large load whose work is often indifferent to which hour it happens
+    /// in, and it is the case where the marginal carbon intensity this engine
+    /// already reports per bus per snapshot is exactly the signal such a load
+    /// would schedule against.
+    ///
+    /// Zero means fixed. One means the whole load may move. The energy is
+    /// conserved rather than lost: what leaves one snapshot arrives in another,
+    /// which is what distinguishes shifting from shedding.
+    pub shiftable_pu: f64,
+    /// Snapshots over which shifted energy must balance.
+    ///
+    /// A load that may move within a day is a different thing from one that may
+    /// move within a year, and the window is where that difference lives.
+    /// Vehicle charging shifts within a night; an aluminium smelter shifts
+    /// within a shift. Zero, or a value at least as long as the horizon, lets
+    /// energy move anywhere inside it.
+    pub shift_window: usize,
+    /// Cost per MWh moved, in either direction.
+    ///
+    /// Shifting is rarely free even when it is possible, and without some cost
+    /// the optimiser will move demand back and forth between equally priced
+    /// snapshots for no reason, which produces a schedule nobody would run. A
+    /// small figure is enough to make the answer determinate.
+    pub shift_cost: f64,
 }
 
 /// A store that can shift energy between snapshots.

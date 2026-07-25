@@ -11,7 +11,7 @@ fn two_bus(r: f64, x: f64, demand: f64, cost: f64) -> Network {
         name: "g".into(), bus: a, p_nom: 10.0, marginal_cost: cost,
         q_min: -10.0, q_max: 10.0, ..Default::default()
     });
-    net.add_load(Load { name: "l".into(), bus: b, p_set: demand, q_set: 0.0 });
+    net.add_load(Load { name: "l".into(), bus: b, p_set: demand, q_set: 0.0, ..Default::default() });
     net.add_line(Line {
         name: "AB".into(), bus0: a, bus1: b, s_nom: 100.0,
         resistance: r, reactance: x, susceptance: 1.0 / x, ..Default::default()

@@ -609,6 +609,7 @@ pub fn parse_model(
                     bus,
                     p_set: p,
                     q_set: q,
+            ..Default::default()
                 });
             }
             _ => {}

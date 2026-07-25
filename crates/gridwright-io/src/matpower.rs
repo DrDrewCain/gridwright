@@ -162,6 +162,7 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
             bus: idx,
             p_set: pd,
             q_set: qd,
+            ..Default::default()
         });
     }
 

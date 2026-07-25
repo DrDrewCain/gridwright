@@ -201,6 +201,7 @@ pub fn parse_powermodels(text: &str, name: impl Into<String>) -> Result<Case, Js
             bus,
             p_set: num(l, "pd").unwrap_or(0.0) * scale,
             q_set: num(l, "qd").unwrap_or(0.0) * scale,
+            ..Default::default()
         });
     }
 

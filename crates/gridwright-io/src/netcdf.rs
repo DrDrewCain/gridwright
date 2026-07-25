@@ -309,6 +309,7 @@ fn read(nc: Nc, name: &str) -> Result<Case, NetcdfError> {
             bus: bus_of("loads_bus", &at[i])?,
             p_set: p_set[i],
             q_set: q_set[i],
+            ..Default::default()
         });
     }
 

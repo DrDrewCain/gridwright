@@ -322,6 +322,9 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
                 bus: lookup(&t, r, "bus", &src.label("loads"))?,
                 p_set: t.number(r, "p_set", 0.0).map_err(|e| field(e, &src.label("loads")))?,
                 q_set: t.number(r, "q_set", 0.0).map_err(|e| field(e, &src.label("loads")))?,
+                shiftable_pu: t.number(r, "shiftable_pu", 0.0).map_err(|e| field(e, &src.label("loads")))?,
+                shift_window: t.number(r, "shift_window", 0.0).map_err(|e| field(e, &src.label("loads")))? as usize,
+                shift_cost: t.number(r, "shift_cost", 0.0).map_err(|e| field(e, &src.label("loads")))?,
             });
         }
     }
@@ -570,11 +573,12 @@ tap_ratio,phase_shift,loss,s_nom_extendable,s_nom_max,capital_cost\n",
     }
     write_csv(dir, "lines.csv", &out)?;
 
-    let mut out = String::from("name,bus,p_set,q_set\n");
+    let mut out = String::from("name,bus,p_set,q_set,shiftable_pu,shift_window,shift_cost\n");
     for l in &net.loads {
         out.push_str(&format!(
-            "{},{},{},{}\n",
-            q(&l.name), bus(l.bus), f(l.p_set), f(l.q_set)
+            "{},{},{},{},{},{},{}\n",
+            q(&l.name), bus(l.bus), f(l.p_set), f(l.q_set), f(l.shiftable_pu),
+            l.shift_window, f(l.shift_cost)
         ));
     }
     write_csv(dir, "loads.csv", &out)?;

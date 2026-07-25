@@ -823,6 +823,7 @@ pub fn parse_raw(text: &str, name: impl Into<String>) -> Result<Case, PsseError>
             bus,
             p_set: pl,
             q_set: ql,
+            ..Default::default()
         });
     }
 

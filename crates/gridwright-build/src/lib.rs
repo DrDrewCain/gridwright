@@ -75,6 +75,14 @@ pub struct VarIndex {
     pub spill: Vec<Option<VarBlock>>,
     /// Loss on each lossy line, always non-negative.
     pub line_loss: Vec<Option<VarBlock>>,
+    /// Signed deviation from the demand profile, per shiftable load.
+    ///
+    /// Positive means more consumed in that snapshot than the profile asked
+    /// for, negative less. The sum over each window is zero, which is what
+    /// makes this shifting rather than shedding.
+    pub load_shift: Vec<Option<VarBlock>>,
+    /// The magnitude of that deviation, for loads that charge for moving.
+    pub load_shift_abs: Vec<Option<VarBlock>>,
     /// Which head band a reservoir is in, per storage unit. Binary, empty when
     /// the conversion effect is off for that unit.
     pub head_band: Vec<Vec<VarBlock>>,
@@ -381,6 +389,37 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         }));
     }
 
+    // Shiftable demand: a signed deviation from the profile, per snapshot.
+    // One variable rather than two, since a load that both defers and advances
+    // in the same snapshot is not a thing, and splitting it would only give the
+    // optimiser a way to book cost against itself.
+    vars.load_shift.reserve(net.loads.len());
+    for (l, load) in net.loads.iter().enumerate() {
+        let profile_max = (0..t)
+            .map(|step| net.load_profile.at(l, step).unwrap_or(load.p_set))
+            .fold(0.0f64, f64::max);
+        if load.shiftable_pu > 0.0 && profile_max > 0.0 {
+            let bound = load.shiftable_pu.min(1.0) * profile_max;
+            // Cost applies to movement in either direction, and a signed
+            // variable cannot carry it directly, so it is charged on the
+            // magnitude below.
+            vars.load_shift.push(Some(model.add_block(t32, -bound, bound, 0.0)));
+        } else {
+            vars.load_shift.push(None);
+        }
+    }
+    // The magnitude of that deviation, which is what carries the cost.
+    vars.load_shift_abs.reserve(net.loads.len());
+    for (l, load) in net.loads.iter().enumerate() {
+        if vars.load_shift[l].is_some() && load.shift_cost > 0.0 {
+            let bound = f64::INFINITY;
+            vars.load_shift_abs
+                .push(Some(model.add_block(t32, 0.0, bound, load.shift_cost)));
+        } else {
+            vars.load_shift_abs.push(None);
+        }
+    }
+
     // Head bands, for the storage units whose energy conversion depends on
     // level. One binary per band per snapshot picks which band the reservoir
     // is in, and one continuous variable per band per snapshot carries the
@@ -534,6 +573,7 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     all.extend(build_capacity_ties(net, &vars, t));
     all.extend(build_commitment(net, &vars, t));
     all.extend(build_ramps(net, &vars, t));
+    all.extend(build_shiftable(net, &vars, t));
     all.extend(build_head(net, &vars, t));
     all.extend(build_head_conversion(net, &vars, t));
     all.extend(build_losses(net, &vars, t));
@@ -629,6 +669,14 @@ fn build_balance(
                     }
                 }
                 terms.push((vars.shed[b].at(ti), 1.0));
+                // A shifted load consumes more or less than its profile said,
+                // so the deviation is a withdrawal alongside the demand on the
+                // right hand side rather than part of it.
+                for &ld in loads {
+                    if let Some(shift) = vars.load_shift[ld as usize] {
+                        terms.push((shift.at(ti), -1.0));
+                    }
+                }
 
                 // Demand moves to the right hand side.
                 let mut demand = 0.0;
@@ -1201,6 +1249,69 @@ fn head_band_level(unit: &gridwright_net::StorageUnit, b: usize) -> f64 {
 /// The level that matters is the one at the *start* of the period, for the same
 /// reason [`build_head`] uses it: water leaves at the head it had on the way
 /// out, and using the end level would make the constraint self-limiting.
+/// Demand that moves in time rather than being served or shed.
+///
+/// Two families of row. The first conserves energy: over each window the
+/// deviations sum to zero, so what leaves one snapshot arrives in another. That
+/// is the whole distinction between shifting and shedding, and without it the
+/// optimiser would simply delete the expensive hours.
+///
+/// The second pins the magnitude, for loads that charge for moving. A signed
+/// variable cannot carry a cost in both directions, so `|shift| ≤ magnitude` is
+/// written as the two linear halves and the cost sits on the magnitude. The
+/// optimiser drives it down to the magnitude on its own, since paying for more
+/// than it moved is never worth doing.
+fn build_shiftable(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    net.loads
+        .par_iter()
+        .enumerate()
+        .filter(|(l, _)| vars.load_shift[*l].is_some())
+        .map(|(l, load)| {
+            let shift = vars.load_shift[l].expect("filtered");
+            // A window at least as long as the horizon means one window.
+            let window = if load.shift_window == 0 || load.shift_window > t {
+                t
+            } else {
+                load.shift_window
+            };
+            let windows = t.div_ceil(window);
+            let mut batch = RowBatch::with_capacity(windows + 2 * t, windows * window + 4 * t);
+
+            for w in 0..windows {
+                let from = w * window;
+                let to = ((w + 1) * window).min(t);
+                batch.push_eq(
+                    (from..to).map(|step| (shift.at(step as u32), 1.0)),
+                    0.0,
+                );
+            }
+
+            if let Some(mag) = vars.load_shift_abs[l] {
+                for step in 0..t {
+                    let ti = step as u32;
+                    //  shift - magnitude <= 0
+                    batch.push_le([(shift.at(ti), 1.0), (mag.at(ti), -1.0)], 0.0);
+                    // -shift - magnitude <= 0
+                    batch.push_le([(shift.at(ti), -1.0), (mag.at(ti), -1.0)], 0.0);
+                }
+            }
+
+            // A load cannot be deferred below nothing. The variable's own
+            // bounds use the profile's peak, which is right for a flat profile
+            // and too generous for a peaky one, so the floor is pinned per
+            // snapshot against what that snapshot actually asked for.
+            for step in 0..t {
+                let ti = step as u32;
+                let demand = net.load_profile.at(l, step).unwrap_or(load.p_set);
+                let floor = -load.shiftable_pu.min(1.0) * demand;
+                batch.push_ge([(shift.at(ti), 1.0)], floor);
+                batch.push_le([(shift.at(ti), 1.0)], -floor);
+            }
+            batch
+        })
+        .collect()
+}
+
 fn build_head_conversion(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
     net.storage
         .par_iter()
