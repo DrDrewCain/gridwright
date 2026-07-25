@@ -76,29 +76,37 @@ concrete in the way, named.
       is bilinear in flow and volume rather than linear, so unlike the capacity
       effect it cannot go into the LP as written. It needs either a piecewise
       linearisation over head bands or the same convex-envelope treatment the
-      AC relaxation uses. Until then a cascade's energy yield is understated at
-      high storage and overstated at low.
-- [ ] **Spatial branch and bound on the McCormick boxes.** This is the one that
-      would close the AC relaxation gap properly. The envelopes are exact at the
-      corners of a box and loose in its interior — deliberately, and provably —
-      so tightening them means splitting the box and recursing, which is a
-      branch-and-bound search over variable ranges rather than over integers.
-      Everything else in the AC formulation is a lower bound waiting on this.
+      AC relaxation uses — and the machinery for the second now exists, in
+      `gridwright-acopf::bnb`.
+- [x] ~~Spatial branch and bound on the McCormick boxes.~~ **Done.** Over a box
+      `R² + I²` lies under its corner secant and `u_i·u_j` lies over its
+      McCormick underestimator, so `secant ≥ McCormick` is implied by the
+      equality Jabr drops: no feasible point is ever cut off, and both sides
+      collapse onto the truth as the box closes. Splitting is then what buys
+      tightness. case57's relaxation is only a bound at the root and 33 nodes
+      prove its optimum to 4e-11; on case118 the bound climbs and the cone gap
+      falls twenty-five fold.
+- [x] ~~A small cone gap was being read as "this solution is physical".~~
+      **Fixed.** The cone is a per-branch statement and says nothing about
+      angles closing around a loop, so a cycle-inconsistent point could be
+      reported as optimal. Cycle consistency is now measured from the solution
+      and folded into the status.
 - [ ] **Cycle constraints for fundamental cycles longer than three.** Same
       identity, more factors: the imaginary part of a product around a loop
       still has to vanish, but the envelope tower grows with the cycle length
       and the auxiliary variables multiply faster than the tightening repays.
-      Triangles are done. Longer cycles want the branch and bound above first,
-      since without it they add variables to a bound that is loose for a
-      different reason.
-- [ ] **Bus shunt admittances** (`Gs`, `Bs`), currently read and ignored. Zero
-      on most test cases and emphatically not zero on real ones: reactive
-      compensation is how voltage is actually held, and an AC answer that
-      ignores it is answering about a network with no capacitor banks.
-- [ ] **Transformer phase shift angles**, the other half of the branch model.
-      Tap ratios are handled; the shift is not, so a phase-shifting transformer
-      currently reads as an ordinary one and the flow it was installed to
-      control is unconstrained.
+      Triangles are done, and now that the search can narrow the boxes those
+      envelopes are drawn over, longer cycles are worth revisiting.
+- [x] ~~Bus shunt admittances.~~ **Done.** A conductance draws real power that
+      somebody has to generate — case300 carries over a megawatt of it — and a
+      susceptance injects the reactive power capacitor banks exist to supply.
+- [x] ~~Transformer phase shift angles.~~ **Done**, and why they had looked
+      absent is worth recording: the Jabr cone is invariant under rotation of
+      `(R, I)`, so no plain relaxation can distinguish a network with a phase
+      shifter from one without. Only the spatial search, narrowing the boxes
+      until the cycle envelopes bind, makes the device visible.
+- [ ] Apparent power limits on lines, which are a second-order cone per line
+      rather than the pair of linear bounds a DC model uses.
 - [x] ~~N-1 security constraints.~~ **Done.** Formulated through line outage
       distribution factors, so security costs rows rather than columns: the
       naive approach duplicates every flow variable per contingency, while LODF
@@ -157,6 +165,11 @@ Still missing:
       MATPOWER, PSS/E, netCDF and CIM do not. Converting *into* a format the
       rest of someone's toolchain speaks is half of what an import layer is for,
       and right now the arrows only point one way.
+- [x] ~~Reading with no filesystem.~~ **Done.** `load_bytes` takes a name and a
+      buffer; `load_files` takes a set, which is what a picker or a dropped
+      folder gives and the only way to express a CSV directory or a CGMES model
+      split across profiles. The whole layer builds for
+      `wasm32-unknown-unknown`, which is what the planned interface needs.
 - [ ] **Streaming the large time series.** A year of hourly data for a
       continental model is read whole into memory. Parquet is chunked on disk
       and the reader already walks it in batches, so bounding memory is a matter
