@@ -285,6 +285,15 @@ interactive rebuild, scenario sweeps where the same network is assembled
 hundreds of times, and the memory ceiling. Those are real and they are a
 narrower claim than "construction is the bottleneck".
 
+- [x] ~~Pin the thread count to the performance cores on Apple Silicon.~~
+      **Measured and rejected.** An M3 Max has ten performance cores and four
+      efficiency ones at roughly a third of the speed, so the obvious worry is
+      that the slow cores become stragglers in a work-stealing loop. Over five
+      runs each, ten threads and fourteen are indistinguishable: medians of
+      103.9 ms and 104.1 ms. The work is fine-grained enough that the efficiency
+      cores simply take fewer chunks. Recorded because it is a plausible
+      optimisation that measurement refuses, and adding the knob anyway would
+      have been a knob nobody needs.
 - [ ] Re-run these on real networks rather than a synthetic ring once a large
       case with a full year of time series is assembled, since the ring's
       regular topology may flatter the solve.
