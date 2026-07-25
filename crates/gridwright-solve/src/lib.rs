@@ -160,6 +160,7 @@ mod tests {
             p_nom: 100.0,
             marginal_cost: 40.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         n.add_generator(Generator {
             name: "fr_nuclear".into(),
@@ -167,6 +168,7 @@ mod tests {
             p_nom: 200.0,
             marginal_cost: 10.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         n.add_line(Line {
             name: "DE-FR".into(),
@@ -174,6 +176,7 @@ mod tests {
             bus1: fr,
             s_nom: link,
             susceptance: 0.0,
+            ..Default::default()
         });
         n.add_load(Load {
             name: "de_load".into(),
@@ -272,6 +275,7 @@ mod tests {
             p_nom: 100.0,
             marginal_cost: 5.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         net.add_load(Load {
             name: "l".into(),
@@ -286,6 +290,7 @@ mod tests {
             efficiency_store: 1.0,
             efficiency_dispatch: 1.0,
             cyclic: false,
+            ..Default::default()
         });
         net.gen_availability = TimeSeries::from_rows(&[vec![1.0, 0.0]], 2).unwrap();
 
@@ -322,6 +327,7 @@ mod tests {
             p_nom: 100.0,
             marginal_cost: 1.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         net.add_load(Load {
             name: "sink".into(),
@@ -335,6 +341,7 @@ mod tests {
                 bus1: n1,
                 s_nom: 1000.0,
                 susceptance: 1.0,
+                ..Default::default()
             });
         }
         let lopf = build_lopf(&net).unwrap();

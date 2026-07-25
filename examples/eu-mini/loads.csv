@@ -1,0 +1,5 @@
+name,bus,p_set
+de_load,DE,5500
+fr_load,FR,4800
+nl_load,NL,1800
+dk_load,DK,900

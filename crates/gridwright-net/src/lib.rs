@@ -165,16 +165,54 @@ pub struct Bus {
 }
 
 /// A dispatchable or variable generator attached to one bus.
+///
+/// Constructed with `..Default::default()` in practice. Most fields describe
+/// capacity expansion, and a model that only dispatches existing plant should
+/// not have to mention them.
 #[derive(Debug, Clone)]
 pub struct Generator {
     pub name: String,
     pub bus: usize,
-    /// Nameplate capacity, MW.
+    /// Nameplate capacity, MW. When extendable this is the starting point and
+    /// the lower bound on what gets built.
     pub p_nom: f64,
     /// Cost per MWh dispatched.
     pub marginal_cost: f64,
-    /// Minimum output as a fraction of `p_nom`, for must-run plant.
+    /// Minimum output as a fraction of capacity, for must-run plant.
     pub p_min_pu: f64,
+    /// Whether the optimiser may build more of this.
+    ///
+    /// This is the difference between asking "how should today be run" and
+    /// "what should we build", and the second question is the one energy
+    /// policy actually asks.
+    pub p_nom_extendable: bool,
+    /// Ceiling on installed capacity, MW. Land and grid connection are finite.
+    pub p_nom_max: f64,
+    /// Annualised cost per MW of capacity built.
+    ///
+    /// Annualised rather than overnight, so it is commensurate with the
+    /// marginal costs accumulated over the modelled horizon. Mixing a lifetime
+    /// capital cost with one year of operation is the classic way to get an
+    /// answer that is wrong by an order of magnitude.
+    pub capital_cost: f64,
+    /// Tonnes of CO2 per MWh generated.
+    pub co2_emissions: f64,
+}
+
+impl Default for Generator {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            bus: 0,
+            p_nom: 0.0,
+            marginal_cost: 0.0,
+            p_min_pu: 0.0,
+            p_nom_extendable: false,
+            p_nom_max: f64::INFINITY,
+            capital_cost: 0.0,
+            co2_emissions: 0.0,
+        }
+    }
 }
 
 /// A transmission link between two buses.
@@ -192,6 +230,31 @@ pub struct Line {
     /// Thermal rating, MW, applied symmetrically.
     pub s_nom: f64,
     pub susceptance: f64,
+    /// Whether the optimiser may reinforce this corridor.
+    ///
+    /// Only meaningful for transport links. Expanding an AC line changes its
+    /// susceptance too, which makes the DC flow constraint bilinear and puts
+    /// it outside a linear program; see [`Network::validate`], which refuses
+    /// the combination rather than silently solving the wrong problem.
+    pub s_nom_extendable: bool,
+    pub s_nom_max: f64,
+    /// Annualised cost per MW of transfer capacity built.
+    pub capital_cost: f64,
+}
+
+impl Default for Line {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            bus0: 0,
+            bus1: 0,
+            s_nom: 0.0,
+            susceptance: 0.0,
+            s_nom_extendable: false,
+            s_nom_max: f64::INFINITY,
+            capital_cost: 0.0,
+        }
+    }
 }
 
 impl Line {
@@ -206,7 +269,7 @@ impl Line {
 }
 
 /// Inelastic demand at a bus.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Load {
     pub name: String,
     pub bus: usize,
@@ -230,6 +293,30 @@ pub struct StorageUnit {
     /// Without this a finite horizon model simply empties the store before the
     /// end, which is free energy and makes the result meaningless.
     pub cyclic: bool,
+    /// Whether the optimiser may build more of this.
+    pub p_nom_extendable: bool,
+    pub p_nom_max: f64,
+    /// Annualised cost per MW of power rating built. Energy capacity follows
+    /// from `max_hours`, so a battery's duration is a design input rather than
+    /// a second decision variable.
+    pub capital_cost: f64,
+}
+
+impl Default for StorageUnit {
+    fn default() -> Self {
+        Self {
+            name: String::new(),
+            bus: 0,
+            p_nom: 0.0,
+            max_hours: 0.0,
+            efficiency_store: 1.0,
+            efficiency_dispatch: 1.0,
+            cyclic: true,
+            p_nom_extendable: false,
+            p_nom_max: f64::INFINITY,
+            capital_cost: 0.0,
+        }
+    }
 }
 
 /// The whole system.
@@ -251,6 +338,13 @@ pub struct Network {
     /// a solver status. An energy model that merely reports INFEASIBLE tells
     /// the user nothing about where or when the system failed.
     pub value_of_lost_load: f64,
+    /// System wide CO2 budget in tonnes over the modelled horizon.
+    ///
+    /// One constraint spanning every generator and every snapshot, which is a
+    /// very different shape from everything else here: a single row millions of
+    /// entries wide. It is also the constraint most decarbonisation questions
+    /// are actually asked through, so it earns its place.
+    pub co2_limit: Option<f64>,
 }
 
 impl Network {
@@ -265,6 +359,7 @@ impl Network {
             gen_availability: TimeSeries::empty(),
             load_profile: TimeSeries::empty(),
             value_of_lost_load: 10_000.0,
+            co2_limit: None,
         }
     }
 
@@ -454,6 +549,56 @@ impl Network {
             }
         }
 
+        for (i, l) in self.lines.iter().enumerate() {
+            // Expanding an AC line would change its susceptance, making the DC
+            // flow constraint bilinear. Refusing is better than linearising
+            // silently around an assumed value nobody chose.
+            if l.s_nom_extendable && !l.is_transport() {
+                return Err(NetError::ExtendableAcLine { index: i });
+            }
+            if l.s_nom_extendable && l.s_nom_max < l.s_nom {
+                return Err(NetError::CapacityCeilingBelowFloor {
+                    component: "line",
+                    index: i,
+                    floor: l.s_nom,
+                    ceiling: l.s_nom_max,
+                });
+            }
+        }
+        for (i, g) in self.generators.iter().enumerate() {
+            if g.p_nom_extendable && g.p_nom_max < g.p_nom {
+                return Err(NetError::CapacityCeilingBelowFloor {
+                    component: "generator",
+                    index: i,
+                    floor: g.p_nom,
+                    ceiling: g.p_nom_max,
+                });
+            }
+            if g.co2_emissions < 0.0 || !g.co2_emissions.is_finite() {
+                return Err(NetError::BadParameter {
+                    component: "generator",
+                    index: i,
+                    field: "co2_emissions",
+                    value: g.co2_emissions,
+                });
+            }
+        }
+        for (i, s) in self.storage.iter().enumerate() {
+            if s.p_nom_extendable && s.p_nom_max < s.p_nom {
+                return Err(NetError::CapacityCeilingBelowFloor {
+                    component: "storage",
+                    index: i,
+                    floor: s.p_nom,
+                    ceiling: s.p_nom_max,
+                });
+            }
+        }
+        if let Some(cap) = self.co2_limit
+            && (cap < 0.0 || !cap.is_finite())
+        {
+            return Err(NetError::BadCo2Limit(cap));
+        }
+
         if !self.gen_availability.is_empty() {
             let want = self.generators.len() * t;
             if self.gen_availability.len() != want {
@@ -560,6 +705,20 @@ pub enum NetError {
     },
     #[error("time series has {got} values, expected {want}")]
     TimeSeriesShape { got: usize, want: usize },
+    #[error(
+        "line {index} is extendable but has a susceptance; expanding an AC line \
+         changes its impedance, which a linear DC flow model cannot represent"
+    )]
+    ExtendableAcLine { index: usize },
+    #[error("{component} {index} has capacity ceiling {ceiling} below its floor {floor}")]
+    CapacityCeilingBelowFloor {
+        component: &'static str,
+        index: usize,
+        floor: f64,
+        ceiling: f64,
+    },
+    #[error("CO2 limit {0} must be finite and non-negative")]
+    BadCo2Limit(f64),
     #[error("time series row {component} has {got} values, expected {want}")]
     TimeSeriesRow {
         component: usize,
@@ -582,6 +741,7 @@ mod tests {
             p_nom: 100.0,
             marginal_cost: 40.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         n.add_generator(Generator {
             name: "fr_nuclear".into(),
@@ -589,6 +749,7 @@ mod tests {
             p_nom: 200.0,
             marginal_cost: 10.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         n.add_line(Line {
             name: "DE-FR".into(),
@@ -596,6 +757,7 @@ mod tests {
             bus1: fr,
             s_nom: 50.0,
             susceptance: 0.0,
+            ..Default::default()
         });
         n.add_load(Load {
             name: "de_load".into(),
@@ -656,6 +818,7 @@ mod tests {
             efficiency_store: 0.0,
             efficiency_dispatch: 0.9,
             cyclic: true,
+            ..Default::default()
         });
         assert!(matches!(
             n.validate(),

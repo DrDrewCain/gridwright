@@ -27,7 +27,7 @@ not solving.
 
 ## What it does today
 
-Linear optimal power flow across a multi-country network:
+**Dispatch.** Linear optimal power flow across a multi-country network:
 
 - nodal energy balance at every bus in every snapshot
 - DC power flow for AC lines, transport limits for controllable HVDC links
@@ -36,6 +36,41 @@ Linear optimal power flow across a multi-country network:
 - load shedding priced at the value of lost load, so an unservable system
   reports *where and when* it failed instead of the word `INFEASIBLE`
 - nodal marginal prices, which are what make a model actually useful
+
+**Capacity expansion.** Not just "how should today be run" but "what should we
+build", which is the question energy policy actually asks. Generators, storage
+and transport links can be extendable, with a capital cost, a floor at the
+existing fleet and a ceiling for land and grid connection. Expanding an AC line
+is *refused* rather than linearised, because widening a conductor changes its
+impedance and the DC flow equation would become bilinear.
+
+**Emissions.** A system-wide CO2 budget as a single constraint. Structurally
+unlike everything else here — one row millions of entries wide instead of many
+narrow ones — and the lever most decarbonisation questions are asked through.
+
+**Data.** Networks load from a directory of CSVs in the layout PyPSA writes, so
+existing data mostly already looks right. Results write back the same shape.
+
+```
+$ gw run examples/eu-mini
+loaded 4 buses, 4 lines, 7 generators, 4 loads, 1 storage, 24 snapshots
+  531 cols, 336 rows, 1128 nonzeros
+  build 0.752 ms, solve 2.741 ms
+  status Optimal, objective 6043793.50
+
+  capacity built:
+    de_solar_new           14240.35 MW
+    dk_wind_new               31.63 MW
+    de_batt                 3334.06 MW
+```
+
+Tighten the carbon budget on that example and the investment shifts, which is
+the whole point of having the lever:
+
+| CO2 budget | Solar built | Wind built | Battery built | Cost |
+| --- | --- | --- | --- | --- |
+| none / 300 kt | 14,240 MW | 32 MW | 3,334 MW | 6.044 M |
+| 50 kt | 14,666 MW | 278 MW | 3,760 MW | 6.086 M |
 
 ```
 $ gw demo
@@ -130,6 +165,7 @@ assembled in order to rebuild it inside someone else's representation.
 | `gridwright-net` | Network domain: buses, lines, generators, storage, loads. |
 | `gridwright-build` | Parallel LP assembly. |
 | `gridwright-solve` | Solver trait plus the HiGHS backend. |
+| `gridwright-io` | CSV loading and result export, including its own parser. |
 | `gridwright-cli` | The `gw` binary. |
 
 ## Build
@@ -138,8 +174,9 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace          # 58 tests
+cargo test --workspace          # 99 tests
 ./target/release/gw demo
+./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw bench --buses 256 --hours 8760 --solve
 ```
 
@@ -157,13 +194,22 @@ is fast and wrong is worthless:
 - the parallel transpose agrees with the serial one byte for byte at scale
 - repeated builds of the same network produce identical matrices, so results
   never depend on how the thread pool happened to schedule
+- capacity is built exactly to the analytic break-even and not a MW past it,
+  checked by straddling the threshold from both sides
+- a carbon cap substitutes clean for dirty by precisely the binding amount, and
+  a slack cap changes nothing, so the test can tell the two apart
+
+Two of these tests were wrong before the code was. A transport loop turned out
+to have no unique flow solution, and a carbon cap turned out never to bind
+because the clean option was cheap enough to build on economics alone. Both
+now assert what is actually determinate, and say why in the test itself.
 
 ## Status
 
-Early. The formulation is dispatch only: capacity expansion, unit commitment,
-multi-period investment and sector coupling are not implemented. Data loaders
-for real networks are not written yet, so benchmarks use synthetic topologies
-of realistic shape rather than real data, and are labelled as such.
+Early, but no longer dispatch-only. Not implemented: unit commitment (needs
+binaries, so MILP rather than LP), multi-period investment across decades,
+sector coupling, and hydro cascades. Benchmarks still use synthetic topologies
+of realistic shape rather than real data, and say so where they appear.
 
 ## Licence
 

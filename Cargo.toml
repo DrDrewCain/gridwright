@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/gridwright-model",
     "crates/gridwright-net",
+    "crates/gridwright-io",
     "crates/gridwright-build",
     "crates/gridwright-solve",
     "crates/gridwright-cli",
@@ -18,6 +19,7 @@ rust-version = "1.90"
 [workspace.dependencies]
 gridwright-model = { path = "crates/gridwright-model" }
 gridwright-net = { path = "crates/gridwright-net" }
+gridwright-io = { path = "crates/gridwright-io" }
 gridwright-build = { path = "crates/gridwright-build" }
 gridwright-solve = { path = "crates/gridwright-solve" }
 rayon = "1.10"

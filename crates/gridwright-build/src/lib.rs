@@ -49,6 +49,16 @@ pub struct VarIndex {
     pub shed: Vec<VarBlock>,
     /// Voltage angle, per bus. Empty when no line needs DC flow.
     pub angle: Vec<VarBlock>,
+    /// Installed generator capacity, one variable per extendable generator.
+    ///
+    /// Length one rather than one per snapshot: you build a plant once, not
+    /// hourly. That asymmetry is why capacity cannot simply reuse the dispatch
+    /// block machinery.
+    pub gen_capacity: Vec<Option<VarBlock>>,
+    /// Installed transfer capacity, per extendable line.
+    pub line_capacity: Vec<Option<VarBlock>>,
+    /// Installed storage power rating, per extendable storage unit.
+    pub storage_capacity: Vec<Option<VarBlock>>,
 }
 
 /// A built linear program plus the map back to what its variables mean.
@@ -66,11 +76,15 @@ pub struct RowCounts {
     pub balance: usize,
     pub dc_flow: usize,
     pub storage: usize,
+    /// Dispatch tied to built capacity, for extendable components.
+    pub capacity: usize,
+    /// The single system wide emissions row, if there is one.
+    pub co2: usize,
 }
 
 impl RowCounts {
     pub fn total(self) -> usize {
-        self.balance + self.dc_flow + self.storage
+        self.balance + self.dc_flow + self.storage + self.capacity + self.co2
     }
 }
 
@@ -79,10 +93,25 @@ impl Lopf {
     pub fn row_counts(net: &Network) -> RowCounts {
         let t = net.n_snapshots();
         let dc_lines = net.lines.iter().filter(|l| !l.is_transport()).count();
+        // An extendable generator needs its dispatch bounded by what was
+        // built, in every snapshot: p[g,t] <= P_g * availability[g,t]. A line
+        // needs two rows per snapshot because flow is signed.
+        let ext_gen = net.generators.iter().filter(|g| g.p_nom_extendable).count();
+        let ext_line = net.lines.iter().filter(|l| l.s_nom_extendable).count();
+        let ext_store = net.storage.iter().filter(|s| s.p_nom_extendable).count();
+        let capacity = (ext_gen + 2 * ext_line + 3 * ext_store) * t
+            + net
+                .generators
+                .iter()
+                .filter(|g| g.p_nom_extendable && g.p_min_pu > 0.0)
+                .count()
+                * t;
         RowCounts {
             balance: net.buses.len() * t,
             dc_flow: dc_lines * t,
             storage: net.storage.len() * t,
+            capacity,
+            co2: usize::from(net.co2_limit.is_some()),
         }
     }
 }
@@ -114,12 +143,18 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     let mut model = Model::new();
     model.sense = Sense::Minimize;
 
+    // Capacity variables are one apiece rather than one per snapshot, so they
+    // are counted outside the multiplication.
+    let n_extendable = net.generators.iter().filter(|g| g.p_nom_extendable).count()
+        + net.lines.iter().filter(|l| l.s_nom_extendable).count()
+        + net.storage.iter().filter(|s| s.p_nom_extendable).count();
     let n_vars = (net.generators.len()
         + net.lines.len()
         + 3 * net.storage.len()
         + net.buses.len()
         + if needs_angles { net.buses.len() } else { 0 })
-        * t;
+        * t
+        + n_extendable;
     if n_vars > u32::MAX as usize {
         return Err(BuildError::TooManyVariables(n_vars));
     }
@@ -136,29 +171,77 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     let mut lo_buf: Vec<f64> = Vec::with_capacity(t);
     let mut up_buf: Vec<f64> = Vec::with_capacity(t);
     for (g, unit) in net.generators.iter().enumerate() {
-        let block = match net.gen_availability.row(g) {
-            Some(avail) => {
-                lo_buf.clear();
-                up_buf.clear();
-                for &a in avail {
-                    let ceiling = unit.p_nom * a;
-                    up_buf.push(ceiling);
-                    // A must-run floor cannot exceed a reduced ceiling. A wind
-                    // farm with p_min_pu set and no wind must be allowed to
-                    // produce nothing rather than render the model infeasible.
-                    lo_buf.push((unit.p_nom * unit.p_min_pu).min(ceiling));
+        // When capacity is a decision the ceiling is no longer a constant, so
+        // it cannot live in the bounds. Dispatch is left loosely bounded here
+        // and tied to the capacity variable by a constraint instead. The loose
+        // bound still uses p_nom_max where it is finite, because a tighter
+        // bound the solver can see is strictly better than one it must derive.
+        let block = if unit.p_nom_extendable {
+            let ceiling = if unit.p_nom_max.is_finite() {
+                unit.p_nom_max
+            } else {
+                f64::INFINITY
+            };
+            match net.gen_availability.row(g) {
+                Some(avail) => {
+                    up_buf.clear();
+                    lo_buf.clear();
+                    for &a in avail {
+                        up_buf.push(ceiling * a);
+                        lo_buf.push(0.0);
+                    }
+                    model.add_block_with(&lo_buf, &up_buf, 0.0)?
                 }
-                model.add_block_with(&lo_buf, &up_buf, 0.0)?
+                None => model.add_block(t32, 0.0, ceiling, 0.0),
             }
-            None => model.add_block(t32, unit.p_nom * unit.p_min_pu, unit.p_nom, 0.0),
+        } else {
+            match net.gen_availability.row(g) {
+                Some(avail) => {
+                    lo_buf.clear();
+                    up_buf.clear();
+                    for &a in avail {
+                        let ceiling = unit.p_nom * a;
+                        up_buf.push(ceiling);
+                        // A must-run floor cannot exceed a reduced ceiling. A
+                        // wind farm with p_min_pu set and no wind must be
+                        // allowed to produce nothing rather than render the
+                        // model infeasible.
+                        lo_buf.push((unit.p_nom * unit.p_min_pu).min(ceiling));
+                    }
+                    model.add_block_with(&lo_buf, &up_buf, 0.0)?
+                }
+                None => model.add_block(t32, unit.p_nom * unit.p_min_pu, unit.p_nom, 0.0),
+            }
         };
         vars.dispatch.push(block);
+    }
+
+    // Capacity variables. One per extendable component, not one per snapshot:
+    // a plant is built once. `p_nom` becomes the floor, since existing plant
+    // does not un-build itself.
+    vars.gen_capacity.reserve(net.generators.len());
+    for unit in &net.generators {
+        vars.gen_capacity.push(unit.p_nom_extendable.then(|| {
+            model.add_block(1, unit.p_nom, unit.p_nom_max, unit.capital_cost)
+        }));
     }
 
     // Line flows, symmetric about zero.
     vars.flow.reserve(net.lines.len());
     for l in &net.lines {
-        vars.flow.push(model.add_block(t32, -l.s_nom, l.s_nom, 0.0));
+        let rating = if l.s_nom_extendable {
+            l.s_nom_max
+        } else {
+            l.s_nom
+        };
+        vars.flow.push(model.add_block(t32, -rating, rating, 0.0));
+    }
+    vars.line_capacity.reserve(net.lines.len());
+    for l in &net.lines {
+        vars.line_capacity.push(
+            l.s_nom_extendable
+                .then(|| model.add_block(1, l.s_nom, l.s_nom_max, l.capital_cost)),
+        );
     }
 
     // Storage: charge and discharge are separate non-negative variables rather
@@ -168,10 +251,22 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     vars.charge.reserve(net.storage.len());
     vars.discharge.reserve(net.storage.len());
     for s in &net.storage {
+        let rating = if s.p_nom_extendable {
+            s.p_nom_max
+        } else {
+            s.p_nom
+        };
         vars.soc
-            .push(model.add_block(t32, 0.0, s.p_nom * s.max_hours, 0.0));
-        vars.charge.push(model.add_block(t32, 0.0, s.p_nom, 0.0));
-        vars.discharge.push(model.add_block(t32, 0.0, s.p_nom, 0.0));
+            .push(model.add_block(t32, 0.0, rating * s.max_hours, 0.0));
+        vars.charge.push(model.add_block(t32, 0.0, rating, 0.0));
+        vars.discharge.push(model.add_block(t32, 0.0, rating, 0.0));
+    }
+    vars.storage_capacity.reserve(net.storage.len());
+    for s in &net.storage {
+        vars.storage_capacity.push(
+            s.p_nom_extendable
+                .then(|| model.add_block(1, s.p_nom, s.p_nom_max, s.capital_cost)),
+        );
     }
 
     // Load shedding, one per bus. Priced at the value of lost load so that a
@@ -234,6 +329,10 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         all.extend(build_dc_flow(net, &vars, t));
     }
     all.extend(build_storage(net, &vars, t));
+    all.extend(build_capacity_ties(net, &vars, t));
+    if let Some(batch) = build_co2(net, &vars, t) {
+        all.push(batch);
+    }
     model.absorb_all(&all);
 
     Ok(Lopf {
@@ -386,6 +485,118 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
         .collect()
 }
 
+/// Ties dispatch to built capacity for every extendable component.
+///
+/// This is what makes capacity expansion a different problem rather than a
+/// relabelled one. With fixed capacity the ceiling is a bound, which the
+/// solver handles for free. Once capacity is a variable the ceiling becomes
+/// `p[g,t] - availability[g,t] * P_g <= 0`, a real row, and there is one per
+/// snapshot per component. It is usually the largest constraint family in an
+/// expansion model.
+fn build_capacity_ties(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    let mut batches: Vec<RowBatch> = net
+        .generators
+        .par_iter()
+        .enumerate()
+        .filter_map(|(g, unit)| {
+            let cap = vars.gen_capacity[g]?;
+            let cap_col = cap.at(0);
+            let p = vars.dispatch[g];
+            let must_run = unit.p_min_pu > 0.0;
+            let rows = if must_run { 2 * t } else { t };
+            let mut batch = RowBatch::with_capacity(rows, 2 * rows);
+            for step in 0..t {
+                let ti = step as u32;
+                let a = net.gen_availability.at(g, step).unwrap_or(1.0);
+                // p - a * P <= 0
+                batch.push_le([(p.at(ti), 1.0), (cap_col, -a)], 0.0);
+                if must_run {
+                    // p - p_min_pu * a * P >= 0. Scaling the floor by
+                    // availability as well is what stops a must-run wind farm
+                    // from being infeasible in a calm hour.
+                    batch.push_ge([(p.at(ti), 1.0), (cap_col, -unit.p_min_pu * a)], 0.0);
+                }
+            }
+            Some(batch)
+        })
+        .collect();
+
+    // Flow is signed, so an extendable line needs both sides bounded.
+    batches.extend(
+        net.lines
+            .par_iter()
+            .enumerate()
+            .filter_map(|(l, _)| {
+                let cap_col = vars.line_capacity[l]?.at(0);
+                let f = vars.flow[l];
+                let mut batch = RowBatch::with_capacity(2 * t, 4 * t);
+                for step in 0..t {
+                    let ti = step as u32;
+                    batch.push_le([(f.at(ti), 1.0), (cap_col, -1.0)], 0.0);
+                    batch.push_ge([(f.at(ti), 1.0), (cap_col, 1.0)], 0.0);
+                }
+                Some(batch)
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    // Storage rating bounds charge and discharge; energy follows from the
+    // rating through max_hours, so it needs a row too rather than a bound.
+    batches.extend(
+        net.storage
+            .par_iter()
+            .enumerate()
+            .filter_map(|(s, unit)| {
+                let cap_col = vars.storage_capacity[s]?.at(0);
+                let (ch, di, soc) = (vars.charge[s], vars.discharge[s], vars.soc[s]);
+                let mut batch = RowBatch::with_capacity(3 * t, 6 * t);
+                for step in 0..t {
+                    let ti = step as u32;
+                    batch.push_le([(ch.at(ti), 1.0), (cap_col, -1.0)], 0.0);
+                    batch.push_le([(di.at(ti), 1.0), (cap_col, -1.0)], 0.0);
+                    batch.push_le([(soc.at(ti), 1.0), (cap_col, -unit.max_hours)], 0.0);
+                }
+                Some(batch)
+            })
+            .collect::<Vec<_>>(),
+    );
+
+    batches
+}
+
+/// The system wide emissions budget, as one row.
+///
+/// Shape worth noting: every other constraint here is narrow and numerous,
+/// while this is a single row potentially millions of entries wide. It is
+/// built serially because there is only one of it, and because a row that
+/// wide is memory bound rather than compute bound anyway.
+fn build_co2(net: &Network, vars: &VarIndex, t: usize) -> Option<RowBatch> {
+    let limit = net.co2_limit?;
+    let emitters: Vec<usize> = net
+        .generators
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| g.co2_emissions > 0.0)
+        .map(|(i, _)| i)
+        .collect();
+
+    // A budget with nothing to spend it on still constrains nothing, but the
+    // row is emitted regardless so that row counts stay predictable and the
+    // dual is available to report the (zero) carbon price.
+    let weights = net.snapshots.weights();
+    let mut batch = RowBatch::with_capacity(1, emitters.len() * t);
+    let mut terms: Vec<(u32, f64)> = Vec::with_capacity(emitters.len() * t);
+    for &g in &emitters {
+        let rate = net.generators[g].co2_emissions;
+        let p = vars.dispatch[g];
+        for (step, &w) in weights.iter().enumerate().take(t) {
+            terms.push((p.at(step as u32), rate * w));
+        }
+    }
+    batch.push_le(terms, limit);
+    Some(batch)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -401,6 +612,7 @@ mod tests {
             p_nom: 100.0,
             marginal_cost: 40.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         n.add_generator(Generator {
             name: "fr_nuclear".into(),
@@ -408,6 +620,7 @@ mod tests {
             p_nom: 200.0,
             marginal_cost: 10.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         n.add_line(Line {
             name: "DE-FR".into(),
@@ -415,6 +628,7 @@ mod tests {
             bus1: fr,
             s_nom: 50.0,
             susceptance: 0.0,
+            ..Default::default()
         });
         n.add_load(Load {
             name: "de_load".into(),
@@ -522,6 +736,7 @@ mod tests {
             efficiency_store: 0.9,
             efficiency_dispatch: 0.9,
             cyclic: true,
+            ..Default::default()
         });
         let lopf = build_lopf(&net).unwrap();
         assert_eq!(lopf.vars.soc.len(), 1);
@@ -544,6 +759,7 @@ mod tests {
             efficiency_store: 1.0,
             efficiency_dispatch: 1.0,
             cyclic: true,
+            ..Default::default()
         });
         let lopf = build_lopf(&net).unwrap();
         let csc = lopf.model.to_csc();
@@ -568,6 +784,7 @@ mod tests {
             efficiency_store: 1.0,
             efficiency_dispatch: 1.0,
             cyclic: false,
+            ..Default::default()
         });
         let lopf = build_lopf(&net).unwrap();
         let csc = lopf.model.to_csc();
@@ -587,6 +804,7 @@ mod tests {
             efficiency_store: 0.95,
             efficiency_dispatch: 0.95,
             cyclic: true,
+            ..Default::default()
         });
         let lopf = build_lopf(&net).unwrap();
         let csc = lopf.model.to_csc();

@@ -8,6 +8,7 @@
 use std::time::Instant;
 
 use gridwright_build::{Lopf, build_lopf};
+use gridwright_io::{Results, load_network};
 use gridwright_net::{Generator, Line, Load, Network, Snapshots, StorageUnit, TimeSeries};
 use gridwright_solve::{HighsSolver, Solver};
 
@@ -21,10 +22,23 @@ fn main() {
             bench(buses, hours, solve);
         }
         "demo" => demo(),
+        "run" => {
+            let Some(dir) = args.get(1) else {
+                eprintln!("usage: gw run <network-dir> [--out <dir>]");
+                std::process::exit(2);
+            };
+            let out = args
+                .iter()
+                .position(|a| a == "--out")
+                .and_then(|i| args.get(i + 1))
+                .cloned();
+            run(dir, out.as_deref());
+        }
         _ => {
             eprintln!(
                 "gw — gridwright: cross-border energy system modelling\n\
                  \n  gw demo                              two-country dispatch example\
+                 \n  gw run <dir> [--out <dir>]           solve a network of CSV files\
                  \n  gw bench [--buses N] [--hours H] [--solve]\n\
                  \n\
                  bench reports construction time separately from solve time,\n\
@@ -65,6 +79,7 @@ fn synthetic(n_buses: usize, n_hours: usize) -> Network {
             bus1: (b + 1) % n_buses,
             s_nom: 3000.0,
             susceptance: 10.0,
+            ..Default::default()
         });
     }
     if n_buses > 8 {
@@ -77,6 +92,7 @@ fn synthetic(n_buses: usize, n_hours: usize) -> Network {
                     bus1: far,
                     s_nom: 1500.0,
                     susceptance: 6.0,
+                    ..Default::default()
                 });
             }
         }
@@ -92,6 +108,7 @@ fn synthetic(n_buses: usize, n_hours: usize) -> Network {
             p_nom: 800.0,
             marginal_cost: 12.0 + (b % 5) as f64,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         avail_rows.push(vec![1.0; n_hours]);
 
@@ -101,6 +118,7 @@ fn synthetic(n_buses: usize, n_hours: usize) -> Network {
             p_nom: 400.0,
             marginal_cost: 85.0 + (b % 11) as f64,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         avail_rows.push(vec![1.0; n_hours]);
 
@@ -110,6 +128,7 @@ fn synthetic(n_buses: usize, n_hours: usize) -> Network {
             p_nom: 600.0,
             marginal_cost: 0.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         // A daily cycle offset per bus, so profiles differ across the system
         // the way weather does, without pulling in a real weather dataset.
@@ -153,6 +172,7 @@ fn synthetic(n_buses: usize, n_hours: usize) -> Network {
             efficiency_store: 0.92,
             efficiency_dispatch: 0.92,
             cyclic: true,
+            ..Default::default()
         });
     }
 
@@ -254,6 +274,7 @@ fn demo() {
         p_nom: 100.0,
         marginal_cost: 40.0,
         p_min_pu: 0.0,
+        ..Default::default()
     });
     net.add_generator(Generator {
         name: "fr_nuclear".into(),
@@ -261,6 +282,7 @@ fn demo() {
         p_nom: 200.0,
         marginal_cost: 10.0,
         p_min_pu: 0.0,
+        ..Default::default()
     });
     net.add_line(Line {
         name: "DE-FR".into(),
@@ -268,6 +290,7 @@ fn demo() {
         bus1: fr,
         s_nom: 50.0,
         susceptance: 0.0,
+        ..Default::default()
     });
     net.add_load(Load {
         name: "de_load".into(),
@@ -304,4 +327,105 @@ fn demo() {
         "\n  the prices differ because the interconnector is full: once it\n  \
          saturates, the two countries stop being one market."
     );
+}
+
+/// Solve a network read from disk and optionally write the results back.
+fn run(dir: &str, out: Option<&str>) {
+    let net = match load_network(dir) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("could not load {dir}: {e}");
+            std::process::exit(1);
+        }
+    };
+    println!(
+        "loaded {} buses, {} lines, {} generators, {} loads, {} storage, {} snapshots",
+        net.buses.len(),
+        net.lines.len(),
+        net.generators.len(),
+        net.loads.len(),
+        net.storage.len(),
+        net.n_snapshots()
+    );
+
+    let t0 = Instant::now();
+    let lopf = match build_lopf(&net) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("build failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let build_ms = t0.elapsed().as_secs_f64() * 1e3;
+
+    let t1 = Instant::now();
+    let sol = match HighsSolver::default().solve(&lopf) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("solve failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    let solve_ms = t1.elapsed().as_secs_f64() * 1e3;
+
+    println!(
+        "  {} cols, {} rows, {} nonzeros",
+        lopf.model.num_cols(),
+        lopf.model.num_rows(),
+        lopf.model.nnz()
+    );
+    println!("  build {build_ms:.3} ms, solve {solve_ms:.3} ms");
+    println!("  status {:?}, objective {:.2}", sol.status, sol.objective);
+
+    let shed = sol.total_shed(&lopf.vars);
+    if shed > 1e-6 {
+        println!("  UNSERVED ENERGY: {shed:.1} MWh");
+    }
+
+    // Capacity decisions are the headline of an expansion run, so they are
+    // printed rather than left in a file the user has to go and open.
+    let mut built = Vec::new();
+    for (g, unit) in net.generators.iter().enumerate() {
+        if let Some(cap) = lopf.vars.gen_capacity[g] {
+            built.push((unit.name.clone(), sol.trajectory(cap)[0]));
+        }
+    }
+    for (l, line) in net.lines.iter().enumerate() {
+        if let Some(cap) = lopf.vars.line_capacity[l] {
+            built.push((line.name.clone(), sol.trajectory(cap)[0]));
+        }
+    }
+    for (s, unit) in net.storage.iter().enumerate() {
+        if let Some(cap) = lopf.vars.storage_capacity[s] {
+            built.push((unit.name.clone(), sol.trajectory(cap)[0]));
+        }
+    }
+    if !built.is_empty() {
+        println!("\n  capacity built:");
+        for (name, mw) in &built {
+            println!("    {name:<20} {mw:>10.2} MW");
+        }
+    }
+
+    if let Some(out) = out {
+        let n = net.n_snapshots();
+        let results = Results {
+            network: &net,
+            dispatch: (0..net.generators.len())
+                .map(|g| sol.dispatch(&lopf.vars, g))
+                .collect(),
+            flows: (0..net.lines.len())
+                .map(|l| sol.flow(&lopf.vars, l))
+                .collect(),
+            prices: (0..net.buses.len()).map(|b| sol.price(b, n)).collect(),
+            shed: (0..net.buses.len())
+                .map(|b| sol.shed(&lopf.vars, b))
+                .collect(),
+            built,
+        };
+        match results.write(out) {
+            Ok(()) => println!("\n  results written to {out}/"),
+            Err(e) => eprintln!("could not write results: {e}"),
+        }
+    }
 }

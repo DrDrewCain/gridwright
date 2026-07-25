@@ -42,6 +42,7 @@ fn merit_stack(demand: f64) -> Network {
             p_nom: 100.0,
             marginal_cost: cost,
             p_min_pu: 0.0,
+            ..Default::default()
         });
     }
     net.add_load(Load {
@@ -120,6 +121,7 @@ fn triangle(b_ab: f64, b_bc: f64, b_ca: f64, p: f64) -> Network {
         p_nom: 10_000.0,
         marginal_cost: 1.0,
         p_min_pu: 0.0,
+        ..Default::default()
     });
     net.add_load(Load {
         name: "sink".into(),
@@ -137,6 +139,7 @@ fn triangle(b_ab: f64, b_bc: f64, b_ca: f64, p: f64) -> Network {
             bus1: n1,
             s_nom: 100_000.0,
             susceptance: susc,
+            ..Default::default()
         });
     }
     net
@@ -273,6 +276,7 @@ fn round_trip_losses_come_out_exactly_as_the_product_of_efficiencies() {
         p_nom: 1_000.0,
         marginal_cost: 1.0,
         p_min_pu: 0.0,
+        ..Default::default()
     });
     net.add_load(Load {
         name: "l".into(),
@@ -289,6 +293,7 @@ fn round_trip_losses_come_out_exactly_as_the_product_of_efficiencies() {
         efficiency_store: 0.5,
         efficiency_dispatch: 0.5,
         cyclic: false,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).unwrap();
@@ -319,6 +324,7 @@ fn a_cyclic_store_returns_to_where_it_started() {
         p_nom: 1_000.0,
         marginal_cost: 10.0,
         p_min_pu: 0.0,
+        ..Default::default()
     });
     net.add_load(Load {
         name: "l".into(),
@@ -334,6 +340,7 @@ fn a_cyclic_store_returns_to_where_it_started() {
         efficiency_store: 1.0,
         efficiency_dispatch: 1.0,
         cyclic: true,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).unwrap();
@@ -370,6 +377,7 @@ fn snapshot_weights_scale_cost_without_changing_dispatch() {
             p_nom: 200.0,
             marginal_cost: 25.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         net.add_load(Load {
             name: "l".into(),
@@ -407,6 +415,7 @@ fn a_must_run_unit_is_dispatched_even_when_it_is_uneconomic() {
         p_nom: 200.0,
         marginal_cost: 10.0,
         p_min_pu: 0.0,
+        ..Default::default()
     });
     net.add_generator(Generator {
         name: "mustrun".into(),
@@ -414,6 +423,7 @@ fn a_must_run_unit_is_dispatched_even_when_it_is_uneconomic() {
         p_nom: 100.0,
         marginal_cost: 90.0,
         p_min_pu: 0.4,
+        ..Default::default()
     });
     net.add_load(Load {
         name: "l".into(),
@@ -442,6 +452,7 @@ fn curtailment_happens_when_free_energy_exceeds_demand() {
         p_nom: 300.0,
         marginal_cost: 0.0,
         p_min_pu: 0.0,
+        ..Default::default()
     });
     net.add_load(Load {
         name: "l".into(),
@@ -474,6 +485,7 @@ fn a_large_mixed_network_satisfies_its_own_physics() {
             bus1: (b + 1) % n_bus,
             s_nom: 900.0,
             susceptance: 5.0,
+            ..Default::default()
         });
     }
     let mut avail = Vec::new();
@@ -484,6 +496,7 @@ fn a_large_mixed_network_satisfies_its_own_physics() {
             p_nom: 300.0,
             marginal_cost: 15.0 + (b % 4) as f64,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         avail.push(vec![1.0; n_hours]);
         net.add_generator(Generator {
@@ -492,6 +505,7 @@ fn a_large_mixed_network_satisfies_its_own_physics() {
             p_nom: 250.0,
             marginal_cost: 0.0,
             p_min_pu: 0.0,
+            ..Default::default()
         });
         avail.push(
             (0..n_hours)
@@ -514,6 +528,7 @@ fn a_large_mixed_network_satisfies_its_own_physics() {
             efficiency_store: 0.9,
             efficiency_dispatch: 0.9,
             cyclic: true,
+            ..Default::default()
         });
     }
 

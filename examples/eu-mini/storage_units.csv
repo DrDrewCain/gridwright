@@ -1,0 +1,2 @@
+name,bus,p_nom,max_hours,efficiency_store,efficiency_dispatch,cyclic,p_nom_extendable,p_nom_max,capital_cost
+de_batt,DE,0,4,0.92,0.92,true,true,5000,164.4

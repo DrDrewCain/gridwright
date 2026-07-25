@@ -140,9 +140,18 @@ name = "gridwright-cli"
 version = "0.1.0"
 dependencies = [
  "gridwright-build",
+ "gridwright-io",
  "gridwright-model",
  "gridwright-net",
  "gridwright-solve",
+]
+
+[[package]]
+name = "gridwright-io"
+version = "0.1.0"
+dependencies = [
+ "gridwright-net",
+ "thiserror",
 ]
 
 [[package]]

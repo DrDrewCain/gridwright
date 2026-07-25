@@ -1,0 +1,12 @@
+[package]
+name = "gridwright-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "CSV network loading and result export for gridwright"
+
+[dependencies]
+gridwright-net.workspace = true
+thiserror.workspace = true

@@ -1,0 +1,5 @@
+name,bus0,bus1,s_nom,susceptance,s_nom_extendable,s_nom_max,capital_cost
+DE-FR,DE,FR,3000,12,false,inf,0
+DE-NL,DE,NL,2500,10,false,inf,0
+DE-DK,DE,DK,1500,8,false,inf,0
+NL-DK,NL,DK,700,6,false,inf,0
