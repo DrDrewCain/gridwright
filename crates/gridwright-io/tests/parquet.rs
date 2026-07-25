@@ -135,10 +135,10 @@ fn a_years_worth_of_hourly_data_goes_through_numerically() {
     let back = parquet::load_network(&dir).unwrap();
 
     assert_eq!(back.n_snapshots(), hours);
-    for g in 0..n_gen {
+    for (g, want) in rows.iter().enumerate() {
         assert_eq!(
             back.gen_availability.row(g),
-            Some(&rows[g][..]),
+            Some(&want[..]),
             "generator {g} came back wrong"
         );
     }

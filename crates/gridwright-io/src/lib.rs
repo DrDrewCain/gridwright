@@ -33,6 +33,9 @@ use gridwright_net::{
 pub mod csv;
 pub mod matpower;
 pub mod psse;
+pub mod detect;
+
+pub use detect::{Format, load_any, sniff};
 
 #[cfg(feature = "json")]
 pub mod json;
@@ -42,6 +45,8 @@ pub mod parquet;
 pub mod excel;
 #[cfg(feature = "netcdf")]
 pub mod netcdf;
+#[cfg(feature = "cgmes")]
+pub mod cgmes;
 
 /// A network read from a file, plus what had to be discarded to make it fit.
 ///
@@ -93,6 +98,8 @@ pub enum IoError {
     },
     #[error("network is not valid: {0}")]
     Invalid(#[from] NetError),
+    #[error("{0}")]
+    Detect(#[from] detect::DetectError),
     #[error("reading MATPOWER case: {0}")]
     Matpower(#[from] matpower::MatpowerError),
     #[error("reading PSS/E RAW case: {0}")]
@@ -109,6 +116,9 @@ pub enum IoError {
     #[cfg(feature = "netcdf")]
     #[error("reading netCDF: {0}")]
     Netcdf(#[from] netcdf::NetcdfError),
+    #[cfg(feature = "cgmes")]
+    #[error("reading CIM/CGMES: {0}")]
+    Cgmes(#[from] cgmes::CgmesError),
 }
 
 /// Where the tables come from.

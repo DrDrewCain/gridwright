@@ -161,9 +161,41 @@ the start of each period rather than the end — using the end level makes the
 constraint self-limiting, since discharging lowers the level that permits the
 discharge, and a brim-full reservoir could never reach its rating.
 
-**Data.** Networks load from a directory of CSVs in the layout PyPSA writes,
-and from **MATPOWER `.m` files**, which is how the IEEE test cases, PGLib-OPF,
-RTE's French network and the PEGASE European models are all distributed.
+**Data.** Someone with a network to model has a file, not a format. `load_any`
+takes a path, works out what it is from its content and its name, and returns a
+network:
+
+| Format | Where it comes from |
+| --- | --- |
+| CSV directory | The layout PyPSA writes. Reads and writes. |
+| Parquet directory | Same layout, columnar. Reads and writes. |
+| MATPOWER `.m` | IEEE test cases, PGLib-OPF, RTE's French network, PEGASE. |
+| PSS/E RAW, v29–v35 | What North American and most Asian utilities actually run. |
+| PowerModels JSON | The Julia optimisation ecosystem. |
+| Native JSON | Lossless both ways, for handing a network to a browser. |
+| Spreadsheets | `.xlsx`, `.xls`, `.xlsb`, `.ods`. How much of the world publishes. |
+| PyPSA netCDF | The largest open energy modelling ecosystem there is. |
+| CIM / CGMES | What European TSOs exchange grids in. |
+
+Every reader returns the network **and a list of what it had to drop**, because
+each format carries more than a linear model can hold and each carries a
+different more. Nothing is discarded silently.
+
+The conversions that decide whether a reader is useful are the unit
+conventions, and they are the ones that fail quietly rather than loudly. A
+PowerModels case states a 47.8 MW load as `0.478`; PyPSA and CIM state line
+impedance in ohms where the optimisation wants per unit; PSS/E moved its
+transformer section between revisions and states winding voltages three
+different ways. Each of those produces a network that loads without complaint
+and is wrong, so each has a test that pins the number.
+
+The IEEE 14-bus system is carried in five encodings written by five different
+tools, and a test asserts they all read to the same network.
+
+The binary formats sit behind feature flags, and detection does not: a build
+without Parquet says "this is Parquet and this build cannot read it" rather
+than claiming not to recognise the file. The netCDF reader is pure Rust, so the
+WebAssembly target keeps working.
 
 ```
 $ gw run examples/eu-mini
@@ -315,7 +347,8 @@ assembled in order to rebuild it inside someone else's representation.
 | `gridwright-simplex` | Our own bounded-variable simplex. Pure Rust, returns duals, compiles to WASM. |
 | `gridwright-acopf` | AC optimal power flow, via the Jabr second-order-cone relaxation. |
 | `gridwright-solve` | Solver trait, with HiGHS and pure-Rust backends. |
-| `gridwright-io` | CSV loading and result export, including its own parser. |
+| `gridwright-io` | Every data format, and result export. |
+| `gridwright-emissions` | Production and consumption carbon accounting, average and marginal. |
 | `gridwright-cli` | The `gw` binary. |
 
 ## Build
@@ -324,7 +357,7 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace          # 220 tests
+cargo test --workspace --all-features   # 309 tests
 ./target/release/gw demo
 ./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw case examples/pglib/case118_ieee.m

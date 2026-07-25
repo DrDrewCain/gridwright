@@ -1,0 +1,97 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+
+  <cim:BaseVoltage rdf:ID="_bv400">
+    <cim:IdentifiedObject.name>400kV</cim:IdentifiedObject.name>
+    <cim:BaseVoltage.nominalVoltage>400</cim:BaseVoltage.nominalVoltage>
+  </cim:BaseVoltage>
+  <cim:BaseVoltage rdf:ID="_bv220">
+    <cim:IdentifiedObject.name>220kV</cim:IdentifiedObject.name>
+    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+  </cim:BaseVoltage>
+
+  <cim:ACLineSegment rdf:ID="_line1">
+    <cim:IdentifiedObject.name>NORTH-SOUTH 1</cim:IdentifiedObject.name>
+    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_bv400"/>
+    <cim:ACLineSegment.r>2.0</cim:ACLineSegment.r>
+    <cim:ACLineSegment.x>20.0</cim:ACLineSegment.x>
+    <cim:ACLineSegment.bch>0.0001</cim:ACLineSegment.bch>
+  </cim:ACLineSegment>
+
+  <cim:PowerTransformer rdf:ID="_tx1">
+    <cim:IdentifiedObject.name>TX 400/220</cim:IdentifiedObject.name>
+  </cim:PowerTransformer>
+  <cim:PowerTransformerEnd rdf:ID="_tx1e1">
+    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_tx1"/>
+    <cim:TransformerEnd.Terminal rdf:resource="#_t_tx1_1"/>
+    <cim:PowerTransformerEnd.ratedU>400</cim:PowerTransformerEnd.ratedU>
+    <cim:PowerTransformerEnd.ratedS>500</cim:PowerTransformerEnd.ratedS>
+    <cim:PowerTransformerEnd.r>0.8</cim:PowerTransformerEnd.r>
+    <cim:PowerTransformerEnd.x>16.0</cim:PowerTransformerEnd.x>
+    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+  </cim:PowerTransformerEnd>
+  <cim:PowerTransformerEnd rdf:ID="_tx1e2">
+    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_tx1"/>
+    <cim:TransformerEnd.Terminal rdf:resource="#_t_tx1_2"/>
+    <cim:PowerTransformerEnd.ratedU>220</cim:PowerTransformerEnd.ratedU>
+    <cim:PowerTransformerEnd.ratedS>500</cim:PowerTransformerEnd.ratedS>
+    <cim:PowerTransformerEnd.r>0.0</cim:PowerTransformerEnd.r>
+    <cim:PowerTransformerEnd.x>0.0</cim:PowerTransformerEnd.x>
+    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+  </cim:PowerTransformerEnd>
+
+  <cim:ThermalGeneratingUnit rdf:ID="_unit1">
+    <cim:IdentifiedObject.name>CCGT UNIT</cim:IdentifiedObject.name>
+    <cim:GeneratingUnit.maxOperatingP>800</cim:GeneratingUnit.maxOperatingP>
+    <cim:GeneratingUnit.minOperatingP>200</cim:GeneratingUnit.minOperatingP>
+  </cim:ThermalGeneratingUnit>
+  <cim:SynchronousMachine rdf:ID="_gen1">
+    <cim:IdentifiedObject.name>CCGT</cim:IdentifiedObject.name>
+    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_unit1"/>
+    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_bv400"/>
+    <cim:SynchronousMachine.maxQ>300</cim:SynchronousMachine.maxQ>
+    <cim:SynchronousMachine.minQ>-150</cim:SynchronousMachine.minQ>
+  </cim:SynchronousMachine>
+
+  <cim:EnergyConsumer rdf:ID="_load1">
+    <cim:IdentifiedObject.name>CITY LOAD</cim:IdentifiedObject.name>
+    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_bv220"/>
+    <cim:EnergyConsumer.p>600</cim:EnergyConsumer.p>
+    <cim:EnergyConsumer.q>100</cim:EnergyConsumer.q>
+  </cim:EnergyConsumer>
+
+  <cim:Terminal rdf:ID="_t_line1_1">
+    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_line1"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_t_line1_2">
+    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_line1"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_t_tx1_1">
+    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_tx1"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_t_tx1_2">
+    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_tx1"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_t_gen1">
+    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_gen1"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_t_load1">
+    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_load1"/>
+  </cim:Terminal>
+
+  <cim:OperationalLimitSet rdf:ID="_ols_line1">
+    <cim:OperationalLimitSet.Terminal rdf:resource="#_t_line1_1"/>
+  </cim:OperationalLimitSet>
+  <cim:CurrentLimit rdf:ID="_cl_line1">
+    <cim:IdentifiedObject.name>PATL</cim:IdentifiedObject.name>
+    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_ols_line1"/>
+    <cim:CurrentLimit.value>1500</cim:CurrentLimit.value>
+  </cim:CurrentLimit>
+</rdf:RDF>

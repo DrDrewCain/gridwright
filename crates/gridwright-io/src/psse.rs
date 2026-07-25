@@ -72,6 +72,19 @@ pub enum PsseError {
     Invalid(#[from] gridwright_net::NetError),
 }
 
+/// The two windings' voltages, as the file states them.
+///
+/// Grouped because they are only ever meaningful together: a winding voltage
+/// means nothing without the one it is a ratio against, and the units of both
+/// depend on the same `CW` code.
+#[derive(Debug, Clone, Copy)]
+struct Winding {
+    windv1: f64,
+    nomv1: f64,
+    windv2: f64,
+    nomv2: f64,
+}
+
 /// One record: its fields, and the line it came from for error reporting.
 #[derive(Debug, Clone)]
 struct Record {
@@ -501,7 +514,17 @@ impl Parser {
             self.skip("phase-shifting transformers, angle ignored");
         }
 
-        let tap = self.tap_ratio(cw, bus0, bus1, windv1, nomv1, windv2, nomv2);
+        let tap = self.tap_ratio(
+            cw,
+            bus0,
+            bus1,
+            Winding {
+                windv1,
+                nomv1,
+                windv2,
+                nomv2,
+            },
+        );
         self.push_line(name, bus0, bus1, res, x, 0.0, rate, tap);
         Ok(consumed)
     }
@@ -522,16 +545,13 @@ impl Parser {
     /// `CW` is not a formatting detail. Reading a `CW = 2` file as if it were
     /// `CW = 1` gives a tap of 138/13.8 rather than 1.0, which is a ten-to-one
     /// error in the flow through that transformer.
-    fn tap_ratio(
-        &self,
-        cw: i64,
-        bus0: usize,
-        bus1: usize,
-        windv1: f64,
-        nomv1: f64,
-        windv2: f64,
-        nomv2: f64,
-    ) -> f64 {
+    fn tap_ratio(&self, cw: i64, bus0: usize, bus1: usize, w: Winding) -> f64 {
+        let Winding {
+            windv1,
+            nomv1,
+            windv2,
+            nomv2,
+        } = w;
         let kv = |b: usize| {
             let v = self.base_kv.get(b).copied().unwrap_or(0.0);
             if v > 0.0 { v } else { 1.0 }
@@ -616,7 +636,17 @@ impl Parser {
             let rate = w.opt(3).unwrap_or(0.0);
             // Each arm's ratio is against the star point, which is on the same
             // base by construction, so only this winding's own ratio applies.
-            let tap = self.tap_ratio(cw, bus, star, windv, nomv, 1.0, 0.0);
+            let tap = self.tap_ratio(
+                cw,
+                bus,
+                star,
+                Winding {
+                    windv1: windv,
+                    nomv1: nomv,
+                    windv2: 1.0,
+                    nomv2: 0.0,
+                },
+            );
             self.push_line(
                 format!("{name}_w{}", n + 1),
                 bus,
