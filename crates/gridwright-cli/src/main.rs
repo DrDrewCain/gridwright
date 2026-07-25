@@ -24,10 +24,29 @@ fn main() {
         "demo" => demo(),
         "case" => {
             let Some(path) = args.get(1) else {
-                eprintln!("usage: gw case <matpower.m>");
+                eprintln!("usage: gw case <file>");
                 std::process::exit(2);
             };
             run_case(path);
+        }
+        "formats" => list_formats(),
+        "identify" => {
+            let Some(path) = args.get(1) else {
+                eprintln!("usage: gw identify <file-or-directory>");
+                std::process::exit(2);
+            };
+            match gridwright_io::sniff(path) {
+                Ok(f) => {
+                    println!("{path}: {}", f.label());
+                    if !f.available() {
+                        println!("  this build cannot read it");
+                    }
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
         }
         "run" => {
             let Some(dir) = args.get(1) else {
@@ -46,7 +65,9 @@ fn main() {
                 "gw — gridwright: cross-border energy system modelling\n\
                  \n  gw demo                              two-country dispatch example\
                  \n  gw run <dir> [--out <dir>]           solve a network of CSV files\
-                 \n  gw case <file.m>                     solve a MATPOWER case\
+                 \n  gw case <file>                       solve a network in any format\
+                 \n  gw identify <file>                   say what a file is\
+                 \n  gw formats                           list every format this reads\
                  \n  gw bench [--buses N] [--hours H] [--solve]\n\
                  \n\
                  bench reports construction time separately from solve time,\n\
@@ -440,10 +461,45 @@ fn run(dir: &str, out: Option<&str>) {
     }
 }
 
-/// Solve a MATPOWER case: the IEEE test systems, PGLib-OPF, and anything else
-/// distributed in that format.
+/// What this build can read.
+fn list_formats() {
+    use gridwright_io::Format::*;
+    println!("gw reads, and identifies from the file itself:\n");
+    for f in [
+        CsvDirectory,
+        ParquetDirectory,
+        Matpower,
+        Psse,
+        PowerModels,
+        NativeJson,
+        Netcdf,
+        Excel,
+        Cgmes,
+    ] {
+        println!(
+            "  {:<20} {}",
+            f.label(),
+            if f.available() {
+                "yes"
+            } else {
+                "not built into this binary"
+            }
+        );
+    }
+    println!(
+        "\nEvery reader also reports what it had to drop, since each format\n\
+         carries more than a linear model can hold and each carries a\n\
+         different more."
+    );
+}
+
+/// Solve a network in whatever format it arrived in.
+///
+/// The format is worked out from the file rather than asked for, because
+/// someone who has been handed a grid model has a file and not necessarily any
+/// idea which of a dozen conventions produced it.
 fn run_case(path: &str) {
-    let case = match gridwright_io::matpower::load_case(path) {
+    let case = match gridwright_io::load_any(path) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("could not load {path}: {e}");

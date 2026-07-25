@@ -16,4 +16,4 @@ gridwright-model.workspace = true
 gridwright-net.workspace = true
 gridwright-build.workspace = true
 gridwright-solve.workspace = true
-gridwright-io.workspace = true
+gridwright-io = { workspace = true, features = ["all-formats"] }
