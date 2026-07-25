@@ -184,6 +184,8 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                     .boolean(r, "initially_on", false)
                     .ok()
                     .filter(|_| t.column("initially_on").is_some()),
+                q_min: f("q_min", f64::NEG_INFINITY)?,
+                q_max: f("q_max", f64::INFINITY)?,
             });
         }
     }
@@ -204,6 +206,13 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 s_nom_max: f("s_nom_max", f64::INFINITY)?,
                 capital_cost: f("capital_cost", 0.0)?,
                 loss: f("loss", 0.0)?,
+                resistance: f("resistance", 0.0)?,
+                reactance: f("reactance", 0.0)?,
+                shunt_susceptance: f("shunt_susceptance", 0.0)?,
+                tap_ratio: {
+                    let v = f("tap_ratio", 1.0)?;
+                    if v > 0.0 { v } else { 1.0 }
+                },
             });
         }
     }
@@ -218,6 +227,7 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 name,
                 bus: lookup(&t, r, "bus", "loads.csv")?,
                 p_set: t.number(r, "p_set", 0.0).map_err(|e| field(e, "loads.csv"))?,
+                q_set: t.number(r, "q_set", 0.0).map_err(|e| field(e, "loads.csv"))?,
             });
         }
     }

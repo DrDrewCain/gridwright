@@ -54,10 +54,29 @@ concrete in the way, named.
 
 ## Formulation
 
-- [ ] AC power flow via second-order cone relaxation. Needs a conic solver
-      behind a third backend; `clarabel` is pure Rust and would compile to WASM
-      alongside everything else. The README previously called this permanently
-      out of scope, which was wrong and has been corrected.
+- [x] ~~AC power flow via second-order cone relaxation.~~ **Done**, as the Jabr
+      relaxation solved with `clarabel`. Reports whether the relaxation came out
+      tight, because an inexact one returns voltages that describe no physical
+      state and saying so is the only honest option. Two things surfaced while
+      building it and both produced infeasibility rather than a wrong number,
+      which is the merciful failure mode: power is quoted in MW while impedances
+      are per unit, and MATPOWER cases carry transformer tap ratios that change
+      what each end of a branch sees.
+- [ ] **Strengthen the relaxation with cycle constraints.** The Jabr relaxation
+      is exact on radial networks and can loosen on meshed ones, which is where
+      transmission planning actually lives. Riccardi, Bernardelli and Gualandi
+      (arXiv:2604.00664) give the unifying account: angle differences must sum
+      to zero around every fundamental cycle, and enforcing that removes the
+      degrees of freedom the relaxation otherwise exploits. The catch is that
+      the exact constraint is a sum of arctangents and therefore nonconvex, so
+      it needs convex envelopes or spatial branch and bound rather than being
+      dropped into the conic problem. Not a small piece of work, and the paper
+      is the map for it.
+- [ ] Bus shunt admittances (`Gs`, `Bs`), currently read and ignored. Zero on
+      the PGLib IEEE cases but not in general.
+- [ ] Transformer phase shift angles, the other half of the branch model.
+- [ ] Apparent power limits on lines, which are a second-order cone per line
+      and therefore cheap to add now that the machinery is here.
 - [x] ~~N-1 security constraints.~~ **Done.** Formulated through line outage
       distribution factors, so security costs rows rather than columns: the
       naive approach duplicates every flow variable per contingency, while LODF

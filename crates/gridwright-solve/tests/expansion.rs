@@ -45,6 +45,7 @@ fn build_or_buy(hours: usize, demand: f64, capital: f64) -> Network {
         name: "l".into(),
         bus: b,
         p_set: demand,
+        ..Default::default()
     });
     net
 }
@@ -163,6 +164,7 @@ fn an_availability_profile_scales_what_built_capacity_can_deliver() {
         name: "l".into(),
         bus: b,
         p_set: 100.0,
+        ..Default::default()
     });
     net.gen_availability = TimeSeries::from_rows(&[vec![0.5]], 1).unwrap();
 
@@ -200,6 +202,7 @@ fn transmission_expansion_relieves_a_binding_interconnector() {
         name: "l".into(),
         bus: b,
         p_set: 100.0,
+        ..Default::default()
     });
     net.add_line(Line {
         name: "A-B".into(),
@@ -281,6 +284,7 @@ fn carbon_pair(demand: f64, cap: Option<f64>) -> Network {
         name: "l".into(),
         bus: b,
         p_set: demand,
+        ..Default::default()
     });
     net.co2_limit = cap;
     net
@@ -355,6 +359,7 @@ fn a_carbon_cap_and_expansion_together_build_clean_capacity() {
         name: "l".into(),
         bus: b,
         p_set: 100.0,
+        ..Default::default()
     });
     // 1000 MWh of demand over the horizon, 400 t of budget at 1 t/MWh means at
     // most 400 MWh from coal, so 600 MWh must come from built solar. Running
@@ -403,6 +408,7 @@ fn a_cap_that_does_not_bind_changes_nothing() {
         name: "l".into(),
         bus: b,
         p_set: 100.0,
+        ..Default::default()
     });
     net.co2_limit = Some(400.0);
 
@@ -435,6 +441,7 @@ fn storage_expansion_is_driven_by_the_value_of_shifting_energy() {
         name: "l".into(),
         bus: b,
         p_set: 0.0,
+        ..Default::default()
     });
     net.load_profile = TimeSeries::from_rows(&[vec![0.0, 50.0]], 2).unwrap();
     net.gen_availability = TimeSeries::from_rows(&[vec![1.0, 0.0]], 2).unwrap();
@@ -477,6 +484,7 @@ fn a_built_store_may_not_exceed_its_energy_ceiling() {
         name: "l".into(),
         bus: b,
         p_set: 20.0,
+        ..Default::default()
     });
     net.add_storage(StorageUnit {
         name: "batt".into(),

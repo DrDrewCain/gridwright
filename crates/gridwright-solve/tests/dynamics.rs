@@ -53,6 +53,7 @@ fn a_ramp_limit_stops_a_unit_following_a_step_in_demand() {
         name: "l".into(),
         bus: b,
         p_set: 0.0,
+        ..Default::default()
     });
     net.load_profile = TimeSeries::from_rows(&[vec![10.0, 90.0]], 2).unwrap();
 
@@ -93,6 +94,7 @@ fn without_a_ramp_limit_the_same_unit_follows_the_step_freely() {
         name: "l".into(),
         bus: b,
         p_set: 0.0,
+        ..Default::default()
     });
     net.load_profile = TimeSeries::from_rows(&[vec![10.0, 90.0]], 2).unwrap();
 
@@ -127,6 +129,7 @@ fn an_inflexible_unit_limits_what_it_dares_ramp_up_to() {
         name: "l".into(),
         bus: b,
         p_set: 0.0,
+        ..Default::default()
     });
     net.load_profile = TimeSeries::from_rows(&[vec![90.0, 10.0]], 2).unwrap();
 
@@ -170,6 +173,7 @@ fn two_bus_with_loss(loss: f64, demand: f64) -> Network {
         name: "l".into(),
         bus: b,
         p_set: demand,
+        ..Default::default()
     });
     net.add_line(Line {
         name: "A-B".into(),
@@ -246,6 +250,7 @@ fn loss_stays_positive_when_power_flows_the_other_way() {
         name: "l0".into(),
         bus: 0,
         p_set: 100.0,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).unwrap();
@@ -280,6 +285,7 @@ fn an_upstream_release_becomes_downstream_water() {
         name: "l".into(),
         bus: b,
         p_set: 20.0,
+        ..Default::default()
     });
     let lower = net.add_storage(StorageUnit {
         name: "lower".into(),
@@ -346,6 +352,7 @@ fn a_cascade_without_a_downstream_link_does_not_share_water() {
             name: "l".into(),
             bus: b,
             p_set: 20.0,
+            ..Default::default()
         });
         let lower = net.add_storage(StorageUnit {
             name: "lower".into(),
@@ -400,6 +407,7 @@ fn travel_time_delays_when_water_arrives_downstream() {
         name: "l".into(),
         bus: b,
         p_set: 5.0,
+        ..Default::default()
     });
     let lower = net.add_storage(StorageUnit {
         name: "lower".into(),
@@ -450,6 +458,7 @@ fn scenario_probabilities_weight_operating_cost() {
             name: "l".into(),
             bus: b,
             p_set: 100.0,
+            ..Default::default()
         });
         if stochastic {
             net.scenarios = vec![
@@ -498,6 +507,7 @@ fn one_investment_decision_is_shared_across_every_scenario() {
         name: "l".into(),
         bus: b,
         p_set: 0.0,
+        ..Default::default()
     });
     // A mild future and a severe one, the severe one unlikely.
     net.load_profile = TimeSeries::from_rows(&[vec![50.0, 300.0]], 2).unwrap();

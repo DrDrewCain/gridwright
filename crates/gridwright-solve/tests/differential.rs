@@ -130,6 +130,7 @@ fn mixed_network(hours: usize) -> Network {
             name: format!("ld{bus}"),
             bus,
             p_set: p,
+            ..Default::default()
         });
     }
     net.add_storage(StorageUnit {

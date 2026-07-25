@@ -130,6 +130,7 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
     let cost_rows = section(text, "gencost").unwrap_or_default();
 
     let mut net = Network::new(Snapshots::hourly(1));
+    net.base_mva = base_mva;
 
     // Buses. MATPOWER identifies them by an arbitrary integer, not by position,
     // so the mapping from label to index has to be built explicitly.
@@ -143,16 +144,26 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
         // synchronous area, and using it means a multi-area case such as a US
         // interconnection model is read correctly rather than fused into one.
         let idx = net.add_bus_in_area(format!("bus{id}"), format!("area{area}"), format!("a{area}"));
+        // Voltage limits are columns 12 and 11, and matter only to the AC model.
+        if let (Ok(vmax), Ok(vmin)) = (num(row, 11, "bus", r, 13), num(row, 12, "bus", r, 13))
+            && vmin > 0.0
+            && vmax > vmin
+        {
+            net.buses[idx].v_max = vmax;
+            net.buses[idx].v_min = vmin;
+        }
         index_of.insert(id, idx);
-        if pd.abs() > 0.0 {
-            loads.push((idx, pd, id));
+        let qd = num(row, 3, "bus", r, 13)?;
+        if pd.abs() > 0.0 || qd.abs() > 0.0 {
+            loads.push((idx, pd, qd, id));
         }
     }
-    for (idx, pd, id) in loads {
+    for (idx, pd, qd, id) in loads {
         net.add_load(Load {
             name: format!("load{id}"),
             bus: idx,
             p_set: pd,
+            q_set: qd,
         });
     }
 
@@ -168,6 +179,9 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
         }
         let p_max = num(row, 8, "gen", r, 10)?;
         let p_min = num(row, 9, "gen", r, 10)?;
+        // Reactive limits are columns 3 and 4; the AC formulation needs them.
+        let q_max = num(row, 3, "gen", r, 10).unwrap_or(f64::INFINITY);
+        let q_min = num(row, 4, "gen", r, 10).unwrap_or(f64::NEG_INFINITY);
         let bus = *index_of
             .get(&bus_id)
             .ok_or(MatpowerError::UnknownBus { row: r, bus: bus_id })?;
@@ -199,6 +213,8 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
             } else {
                 0.0
             },
+            q_min,
+            q_max,
             ..Default::default()
         });
     }
@@ -214,8 +230,15 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
         }
         let f = num(row, 0, "branch", r, 11)? as i64;
         let t = num(row, 1, "branch", r, 11)? as i64;
+        let res = num(row, 2, "branch", r, 11)?;
         let x = num(row, 3, "branch", r, 11)?;
+        let shunt = num(row, 4, "branch", r, 11).unwrap_or(0.0);
         let rate = num(row, 5, "branch", r, 11)?;
+        // MATPOWER writes 0 for "not a transformer", meaning a ratio of one.
+        let tap = match num(row, 8, "branch", r, 11) {
+            Ok(v) if v > 0.0 => v,
+            _ => 1.0,
+        };
         let (Some(&bus0), Some(&bus1)) = (index_of.get(&f), index_of.get(&t)) else {
             skipped_branches += 1;
             continue;
@@ -239,6 +262,13 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
             bus1,
             s_nom: if rate > 0.0 { rate } else { 1e6 },
             susceptance,
+            // Kept alongside the DC susceptance rather than instead of it: the
+            // two formulations want different things from the same line, and
+            // deriving one from the other loses information the file had.
+            resistance: res,
+            reactance: x,
+            shunt_susceptance: shunt,
+            tap_ratio: tap,
             ..Default::default()
         });
     }
@@ -259,7 +289,10 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
             "{quadratic} generators had quadratic costs, approximated by their linear term"
         ));
     }
-    notes.push(format!("baseMVA {base_mva}; reactive power and voltage limits ignored (DC model)"));
+    notes.push(format!(
+        "baseMVA {base_mva}; resistance, shunts, voltage limits and reactive power \
+         are read and used by the AC formulation, and ignored by the DC one"
+    ));
 
     net.validate()?;
     Ok(Case {

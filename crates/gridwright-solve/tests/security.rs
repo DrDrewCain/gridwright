@@ -25,7 +25,7 @@ fn triangle(direct_rating: f64, detour_rating: f64, demand: f64) -> Network {
         name: "local".into(), bus: b, p_nom: 1_000.0, marginal_cost: 90.0,
         ..Default::default()
     });
-    net.add_load(Load { name: "l".into(), bus: b, p_set: demand });
+    net.add_load(Load { name: "l".into(), bus: b, p_set: demand, ..Default::default() });
     for (n0, n1, s) in [(a, b, direct_rating), (a, c, detour_rating), (c, b, detour_rating)] {
         net.add_line(Line {
             name: format!("{n0}{n1}"), bus0: n0, bus1: n1, s_nom: s,

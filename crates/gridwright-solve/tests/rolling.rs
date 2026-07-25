@@ -24,7 +24,7 @@ fn shifting_system(hours: usize) -> Network {
         name: "backup".into(), bus: b, p_nom: 200.0, marginal_cost: 80.0,
         ..Default::default()
     });
-    net.add_load(Load { name: "l".into(), bus: b, p_set: 0.0 });
+    net.add_load(Load { name: "l".into(), bus: b, p_set: 0.0, ..Default::default() });
     net.load_profile = TimeSeries::from_rows(
         &[(0..hours).map(|t| 60.0 + 40.0 * ((t as f64) * 0.7).sin()).collect()], hours).unwrap();
     net.gen_availability = TimeSeries::from_rows(&[

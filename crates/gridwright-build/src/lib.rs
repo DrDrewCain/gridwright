@@ -1230,6 +1230,7 @@ mod tests {
             name: "de_load".into(),
             bus: de,
             p_set: 80.0,
+            ..Default::default()
         });
         n
     }

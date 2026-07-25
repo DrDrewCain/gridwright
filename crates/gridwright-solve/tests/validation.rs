@@ -49,6 +49,7 @@ fn merit_stack(demand: f64) -> Network {
         name: "l".into(),
         bus: b,
         p_set: demand,
+        ..Default::default()
     });
     net
 }
@@ -127,6 +128,7 @@ fn triangle(b_ab: f64, b_bc: f64, b_ca: f64, p: f64) -> Network {
         name: "sink".into(),
         bus: b,
         p_set: p,
+        ..Default::default()
     });
     for (name, n0, n1, susc) in [
         ("A-B", a, b, b_ab),
@@ -282,6 +284,7 @@ fn round_trip_losses_come_out_exactly_as_the_product_of_efficiencies() {
         name: "l".into(),
         bus: b,
         p_set: 0.0,
+        ..Default::default()
     });
     net.load_profile = TimeSeries::from_rows(&[vec![0.0, 25.0]], 2).unwrap();
     net.gen_availability = TimeSeries::from_rows(&[vec![1.0, 0.0]], 2).unwrap();
@@ -330,6 +333,7 @@ fn a_cyclic_store_returns_to_where_it_started() {
         name: "l".into(),
         bus: b,
         p_set: 50.0,
+        ..Default::default()
     });
     net.load_profile = TimeSeries::from_rows(&[vec![10.0, 90.0, 10.0, 90.0]], 4).unwrap();
     net.add_storage(StorageUnit {
@@ -383,6 +387,7 @@ fn snapshot_weights_scale_cost_without_changing_dispatch() {
             name: "l".into(),
             bus: b,
             p_set: 120.0,
+            ..Default::default()
         });
         let lopf = build_lopf(&net).unwrap();
         let sol = HighsSolver::default().solve(&lopf).unwrap();
@@ -429,6 +434,7 @@ fn a_must_run_unit_is_dispatched_even_when_it_is_uneconomic() {
         name: "l".into(),
         bus: b,
         p_set: 150.0,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).unwrap();
@@ -458,6 +464,7 @@ fn curtailment_happens_when_free_energy_exceeds_demand() {
         name: "l".into(),
         bus: b,
         p_set: 100.0,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).unwrap();
@@ -516,6 +523,7 @@ fn a_large_mixed_network_satisfies_its_own_physics() {
             name: format!("ld{b}"),
             bus: b,
             p_set: 200.0,
+            ..Default::default()
         });
     }
     net.gen_availability = TimeSeries::from_rows(&avail, n_hours).unwrap();

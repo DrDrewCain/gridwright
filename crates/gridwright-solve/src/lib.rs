@@ -221,6 +221,7 @@ mod tests {
             name: "de_load".into(),
             bus: de,
             p_set: load,
+            ..Default::default()
         });
         n
     }
@@ -320,6 +321,7 @@ mod tests {
             name: "l".into(),
             bus: b,
             p_set: 20.0,
+            ..Default::default()
         });
         net.add_storage(StorageUnit {
             name: "batt".into(),
@@ -372,6 +374,7 @@ mod tests {
             name: "sink".into(),
             bus: b,
             p_set: 30.0,
+            ..Default::default()
         });
         for (n0, n1) in [(a, b), (b, c), (c, a)] {
             net.add_line(Line {

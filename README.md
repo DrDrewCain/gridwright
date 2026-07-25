@@ -125,6 +125,27 @@ It declines integer problems rather than returning the relaxation, so unit
 commitment still needs HiGHS. A commitment answer with fractional on/off states
 is not an answer.
 
+**AC power flow.** DC flow is a linearisation, and the things it drops —
+losses, voltage magnitudes, reactive power — are often the binding constraints.
+So there is a genuine AC formulation too, through the Jabr second-order-cone
+relaxation solved with `clarabel`.
+
+Being precise about what that means, because it is easy to overclaim: AC-OPF is
+nonconvex and this does not solve it exactly. It solves a convex relaxation
+whose optimum is a rigorous lower bound. The relaxation is provably exact on
+radial networks, and can loosen on meshed ones. **Whether it came out tight is
+reported rather than assumed** — an inexact relaxation returns voltages that
+correspond to no physical operating point, and a model that does not say so is
+worse than one that cannot do AC at all.
+
+```
+$ cargo test -p gridwright-acopf
+```
+
+Real IEEE networks solve, with voltages inside their declared bands and
+generation exceeding demand by the resistive losses a DC model structurally
+cannot see.
+
 **Data.** Networks load from a directory of CSVs in the layout PyPSA writes,
 and from **MATPOWER `.m` files**, which is how the IEEE test cases, PGLib-OPF,
 RTE's French network and the PEGASE European models are all distributed.
@@ -277,6 +298,7 @@ assembled in order to rebuild it inside someone else's representation.
 | `gridwright-net` | Network domain: buses, lines, generators, storage, loads. |
 | `gridwright-build` | Parallel LP assembly. |
 | `gridwright-simplex` | Our own bounded-variable simplex. Pure Rust, returns duals, compiles to WASM. |
+| `gridwright-acopf` | AC optimal power flow, via the Jabr second-order-cone relaxation. |
 | `gridwright-solve` | Solver trait, with HiGHS and pure-Rust backends. |
 | `gridwright-io` | CSV loading and result export, including its own parser. |
 | `gridwright-cli` | The `gw` binary. |
@@ -287,7 +309,7 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace          # 195 tests
+cargo test --workspace          # 204 tests
 ./target/release/gw demo
 ./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw case examples/pglib/case118_ieee.m
@@ -324,19 +346,13 @@ Early, but the formulation now covers dispatch, capacity expansion, unit
 commitment, sector coupling, hydro with inflow and spill, multi-period
 investment, emissions budgets and planning reserve.
 
-Not implemented: **AC power flow**. The AC optimal power flow problem is
-nonconvex, so no linear program expresses it and neither backend here can
-solve it. An earlier version of this section said that made it permanently out
-of scope, which was too strong: the second-order-cone relaxation of AC-OPF is
-standard, and `clarabel` is a pure-Rust conic solver that would compile to WASM
-alongside everything else. It is a real piece of work behind a third backend,
-not an impossibility. What is here meanwhile is DC flow with linearised losses,
-which is what production planning models actually use, labelled as such
-wherever it appears.
+Absent: hydro head effects, where output per unit of water depends on how full
+the reservoir is. That one is bilinear rather than merely nonlinear, so it needs
+a concave piecewise approximation rather than a straight line.
 
-Also absent: hydro head effects, where output per unit of water depends on how
-full the reservoir is. That one is bilinear rather than merely nonlinear, so it
-needs a concave piecewise approximation rather than a straight line.
+Also absent: bus shunt admittances and transformer phase shifts in the AC model,
+and cycle constraints to tighten the relaxation on meshed networks. The last of
+those is the interesting one and `TODO.md` says why it is hard.
 
 Scaling benchmarks still use synthetic topologies, because no public dataset is
 conveniently available at 8760 snapshots and hundreds of buses in one file; they

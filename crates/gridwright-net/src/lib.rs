@@ -172,6 +172,14 @@ pub struct Bus {
     /// reference, because an angle in Texas means nothing relative to one in
     /// Ohio.
     pub synchronous_area: String,
+    /// Lowest acceptable voltage magnitude, per unit. AC only.
+    pub v_min: f64,
+    /// Highest acceptable voltage magnitude, per unit. AC only.
+    ///
+    /// Voltage has no meaning in a DC model, where only angle differences
+    /// matter and magnitudes are assumed to be one. These exist for the AC
+    /// formulation, where holding voltage inside a band is half the problem.
+    pub v_max: f64,
     /// The energy carrier this node balances: electricity, hydrogen, heat, gas.
     ///
     /// Balance is enforced per bus, so a bus of a different carrier is simply a
@@ -187,6 +195,8 @@ impl Default for Bus {
             name: String::new(),
             country: "??".into(),
             synchronous_area: "main".into(),
+            v_min: 0.9,
+            v_max: 1.1,
             carrier: "AC".into(),
         }
     }
@@ -293,6 +303,14 @@ pub struct Generator {
     /// Maximum decrease in output between consecutive snapshots, as a fraction
     /// of capacity.
     pub ramp_down: f64,
+    /// Reactive power limits, MVAr. AC only.
+    ///
+    /// Reactive power is what holds voltage up, and a generator's ability to
+    /// supply it is usually the binding constraint on how far power can be
+    /// moved. A DC model has no concept of it at all, which is one of the main
+    /// things a DC answer can be wrong about.
+    pub q_min: f64,
+    pub q_max: f64,
     /// Whether the unit was already running when the horizon began.
     ///
     /// Only meaningful for committable plant. A rolling horizon needs this: a
@@ -321,6 +339,8 @@ impl Default for Generator {
             min_down_time: 0,
             ramp_up: 0.0,
             ramp_down: 0.0,
+            q_min: f64::NEG_INFINITY,
+            q_max: f64::INFINITY,
             initially_on: None,
         }
     }
@@ -351,6 +371,29 @@ pub struct Line {
     pub s_nom_max: f64,
     /// Annualised cost per MW of transfer capacity built.
     pub capital_cost: f64,
+    /// Series resistance, per unit. AC only.
+    ///
+    /// A DC model has no use for this: it assumes lossless flow and takes
+    /// losses, if at all, as a linear fraction. The AC formulation needs the
+    /// real impedance, because resistance is where the losses actually come
+    /// from and reactance alone cannot express them.
+    pub resistance: f64,
+    /// Series reactance, per unit. AC only.
+    ///
+    /// Related to but not interchangeable with `susceptance`: the DC model uses
+    /// `1/x` directly as a flow coefficient, while the AC formulation needs `r`
+    /// and `x` separately to form the complex admittance.
+    pub reactance: f64,
+    /// Total line charging susceptance, per unit, split evenly between the ends.
+    pub shunt_susceptance: f64,
+    /// Transformer off-nominal turns ratio, applied at the `bus0` end.
+    ///
+    /// One for a plain line. Anything else scales the admittance seen from each
+    /// end differently, which is what makes a transformer a transformer.
+    /// Ignoring it does not merely lose accuracy: it describes a network that
+    /// does not exist, and a solver will usually report that as infeasible
+    /// rather than as a slightly wrong answer.
+    pub tap_ratio: f64,
     /// Losses as a fraction of the power flowing, applied to the magnitude.
     ///
     /// Real losses are quadratic in current, which is not linear and therefore
@@ -373,6 +416,10 @@ impl Default for Line {
             s_nom_extendable: false,
             s_nom_max: f64::INFINITY,
             capital_cost: 0.0,
+            resistance: 0.0,
+            reactance: 0.0,
+            shunt_susceptance: 0.0,
+            tap_ratio: 1.0,
             loss: 0.0,
         }
     }
@@ -396,6 +443,8 @@ pub struct Load {
     pub bus: usize,
     /// Constant demand, MW, used when no profile is supplied.
     pub p_set: f64,
+    /// Constant reactive demand, MVAr. AC only.
+    pub q_set: f64,
 }
 
 /// A store that can shift energy between snapshots.
@@ -553,6 +602,14 @@ pub struct Network {
     /// Applied per area rather than system wide, because capacity on the far
     /// side of an asynchronous boundary is not firm for the area that needs it.
     pub reserve_margin: Option<f64>,
+    /// Power base in MVA, for converting to and from per unit.
+    ///
+    /// The DC formulation never needs this: it works in MW throughout and the
+    /// susceptance is only ever a ratio. The AC formulation does, because
+    /// impedances are quoted per unit while demand is quoted in MW, and mixing
+    /// the two silently produces an infeasible problem rather than a wrong
+    /// number, which at least fails loudly.
+    pub base_mva: f64,
     /// System wide CO2 budget in tonnes over the modelled horizon.
     ///
     /// One constraint spanning every generator and every snapshot, which is a
@@ -578,6 +635,7 @@ impl Network {
             load_profile: TimeSeries::empty(),
             storage_inflow: TimeSeries::empty(),
             value_of_lost_load: 10_000.0,
+            base_mva: 100.0,
             contingencies: Vec::new(),
             reserve_margin: None,
             co2_limit: None,
@@ -1195,6 +1253,7 @@ mod tests {
             name: "de_load".into(),
             bus: de,
             p_set: 80.0,
+            ..Default::default()
         });
         n
     }

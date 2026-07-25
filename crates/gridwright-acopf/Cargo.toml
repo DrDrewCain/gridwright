@@ -1,0 +1,18 @@
+[package]
+name = "gridwright-acopf"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "AC optimal power flow via the Jabr second-order-cone relaxation"
+
+[dev-dependencies]
+gridwright-io.workspace = true
+gridwright-build.workspace = true
+gridwright-solve.workspace = true
+
+[dependencies]
+gridwright-net.workspace = true
+clarabel = "0.11"
+thiserror.workspace = true

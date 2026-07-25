@@ -49,6 +49,7 @@ fn commitment_system(demand: &[f64], start_cost: f64, min_up: usize) -> Network 
         name: "l".into(),
         bus: b,
         p_set: 0.0,
+        ..Default::default()
     });
     net.load_profile = TimeSeries::from_rows(&[demand.to_vec()], demand.len()).unwrap();
     net
@@ -179,6 +180,7 @@ fn an_electrolyser_converts_electricity_into_hydrogen_at_its_efficiency() {
         name: "h2_demand".into(),
         bus: h2,
         p_set: 100.0,
+        ..Default::default()
     });
     net.add_link(Link {
         name: "electrolyser".into(),
@@ -219,6 +221,7 @@ fn a_heat_pump_delivers_more_heat_than_the_electricity_it_consumes() {
         name: "heat_demand".into(),
         bus: heat,
         p_set: 30.0,
+        ..Default::default()
     });
     net.add_link(Link {
         name: "heat_pump".into(),
@@ -255,6 +258,7 @@ fn carriers_do_not_leak_into_one_another_without_a_link() {
         name: "h2_demand".into(),
         bus: h2,
         p_set: 50.0,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).unwrap();
@@ -285,6 +289,7 @@ fn natural_inflow_serves_demand_without_being_generated() {
         name: "l".into(),
         bus: b,
         p_set: 20.0,
+        ..Default::default()
     });
     net.add_storage(StorageUnit {
         name: "reservoir".into(),
@@ -320,6 +325,7 @@ fn surplus_inflow_is_spilled_rather_than_making_the_model_infeasible() {
         name: "l".into(),
         bus: b,
         p_set: 5.0,
+        ..Default::default()
     });
     net.add_storage(StorageUnit {
         name: "reservoir".into(),
@@ -357,6 +363,7 @@ fn without_spill_a_flooded_reservoir_cannot_absorb_its_inflow() {
         name: "l".into(),
         bus: b,
         p_set: 5.0,
+        ..Default::default()
     });
     net.add_storage(StorageUnit {
         name: "reservoir".into(),
@@ -411,6 +418,7 @@ fn discounting_pushes_investment_into_later_periods() {
         name: "l".into(),
         bus: b,
         p_set: 50.0,
+        ..Default::default()
     });
     net.investment_periods = vec![
         InvestmentPeriod {
@@ -460,6 +468,7 @@ fn capacity_built_early_is_available_in_later_periods() {
         name: "l".into(),
         bus: b,
         p_set: 0.0,
+        ..Default::default()
     });
     net.load_profile = TimeSeries::from_rows(&[vec![100.0, 100.0]], 2).unwrap();
     net.investment_periods = vec![
@@ -529,11 +538,13 @@ fn each_synchronous_area_gets_its_own_angle_reference() {
         name: "l".into(),
         bus: east2,
         p_set: 50.0,
+        ..Default::default()
     });
     net.add_load(Load {
         name: "l2".into(),
         bus: west2,
         p_set: 50.0,
+        ..Default::default()
     });
 
     assert_eq!(net.synchronous_areas().len(), 2);
@@ -603,6 +614,7 @@ fn a_long_hvdc_tie_loses_energy_in_transit() {
         name: "l".into(),
         bus: east,
         p_set: 94.0,
+        ..Default::default()
     });
     net.add_hvdc_tie("uhvdc", west, east, 1_000.0, eff);
 
@@ -641,6 +653,7 @@ fn an_isolated_island_cannot_borrow_capacity_from_the_mainland() {
         name: "flores_load".into(),
         bus: remote,
         p_set: 20.0,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).unwrap();
@@ -671,6 +684,7 @@ fn a_reserve_margin_forces_capacity_beyond_peak_demand() {
         name: "l".into(),
         bus: b,
         p_set: 0.0,
+        ..Default::default()
     });
     net.load_profile = TimeSeries::from_rows(&[vec![100.0, 80.0]], 2).unwrap();
     net.reserve_margin = Some(0.2);
@@ -705,11 +719,13 @@ fn reserve_is_required_separately_in_each_synchronous_area() {
         name: "la".into(),
         bus: a,
         p_set: 100.0,
+        ..Default::default()
     });
     net.add_load(Load {
         name: "lb".into(),
         bus: b,
         p_set: 40.0,
+        ..Default::default()
     });
     net.reserve_margin = Some(0.1);
 

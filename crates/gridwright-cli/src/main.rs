@@ -158,6 +158,7 @@ fn synthetic(n_buses: usize, n_hours: usize) -> Network {
             name: format!("load{b}"),
             bus: b,
             p_set: 700.0,
+            ..Default::default()
         });
         load_rows.push(
             (0..n_hours)
@@ -304,6 +305,7 @@ fn demo() {
         name: "de_load".into(),
         bus: de,
         p_set: 80.0,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).expect("demo network should build");
