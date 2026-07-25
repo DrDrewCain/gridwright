@@ -7,5 +7,12 @@ repository.workspace = true
 rust-version.workspace = true
 description = "Network domain model for transnational energy system optimisation"
 
+[features]
+default = []
+# Derives on the domain model, for the JSON reader and writer and for any
+# caller that wants to hand a network to a UI over a wire.
+serde = ["dep:serde"]
+
 [dependencies]
 thiserror.workspace = true
+serde = { workspace = true, optional = true }

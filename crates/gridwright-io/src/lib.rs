@@ -34,6 +34,9 @@ pub mod csv;
 pub mod matpower;
 pub mod psse;
 
+#[cfg(feature = "json")]
+pub mod json;
+
 /// A network read from a file, plus what had to be discarded to make it fit.
 ///
 /// Every format carries more than a linear optimisation model can hold, and
@@ -88,6 +91,9 @@ pub enum IoError {
     Matpower(#[from] matpower::MatpowerError),
     #[error("reading PSS/E RAW case: {0}")]
     Psse(#[from] psse::PsseError),
+    #[cfg(feature = "json")]
+    #[error("reading JSON case: {0}")]
+    Json(#[from] json::JsonError),
 }
 
 fn read(dir: &Path, name: &str) -> Result<Option<String>, IoError> {

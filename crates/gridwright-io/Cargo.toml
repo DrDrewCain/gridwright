@@ -7,6 +7,33 @@ repository.workspace = true
 rust-version.workspace = true
 description = "CSV network loading and result export for gridwright"
 
+[features]
+# Text formats need no dependencies at all and are always on: CSV, MATPOWER,
+# PSS/E RAW, IEEE CDF and UCTE-DEF are hand-written parsers.
+default = ["json"]
+# Everything the JSON formats need. Cheap, pure Rust, works on WebAssembly.
+json = ["dep:serde", "dep:serde_json", "gridwright-net/serde"]
+# Columnar time series. A year of hourly data for a national fleet is the case
+# CSV handles badly and this handles well.
+parquet = ["dep:parquet", "dep:arrow-array", "dep:arrow-schema"]
+# Spreadsheets, which is how a great deal of national statistics is published.
+excel = ["dep:calamine"]
+# ENTSO-E CGMES, the European grid exchange standard.
+cgmes = ["dep:quick-xml"]
+# PyPSA writes netCDF4, which is HDF5 underneath. The reader is pure Rust, so
+# this does not cost the WebAssembly target a C toolchain.
+netcdf = ["dep:hdf5-pure"]
+# Every format at once.
+all-formats = ["json", "parquet", "excel", "cgmes", "netcdf"]
+
 [dependencies]
 gridwright-net.workspace = true
 thiserror.workspace = true
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+parquet = { workspace = true, optional = true }
+arrow-array = { workspace = true, optional = true }
+arrow-schema = { workspace = true, optional = true }
+calamine = { workspace = true, optional = true }
+quick-xml = { workspace = true, optional = true }
+hdf5-pure = { workspace = true, optional = true }

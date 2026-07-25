@@ -30,6 +30,14 @@ gridwright-build = { path = "crates/gridwright-build" }
 gridwright-solve = { path = "crates/gridwright-solve" }
 rayon = "1.10"
 thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+parquet = { version = "59", default-features = false, features = ["arrow", "snap", "zstd", "brotli", "flate2", "lz4"] }
+arrow-array = "59"
+arrow-schema = "59"
+calamine = "0.36"
+quick-xml = "0.41"
+hdf5-pure = "0.24"
 
 [profile.release]
 opt-level = 3

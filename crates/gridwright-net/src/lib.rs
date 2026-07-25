@@ -23,6 +23,51 @@
 
 use std::collections::HashMap;
 
+/// Serialising floats that JSON cannot represent.
+///
+/// An unbounded capacity ceiling is naturally infinity, and JSON has no
+/// infinity: `serde_json` writes one as `null` and then refuses to read it
+/// back. A network would serialise cleanly and fail to load, which is the
+/// worst arrangement available.
+///
+/// Finite values stay numbers, so a file stays readable by anything else.
+/// Only the three values JSON lacks become the strings `"inf"`, `"-inf"` and
+/// `"nan"`, and both spellings are accepted on the way in.
+#[cfg(feature = "serde")]
+pub mod json_f64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &f64, s: S) -> Result<S::Ok, S::Error> {
+        if v.is_finite() {
+            s.serialize_f64(*v)
+        } else if v.is_nan() {
+            s.serialize_str("nan")
+        } else if *v > 0.0 {
+            s.serialize_str("inf")
+        } else {
+            s.serialize_str("-inf")
+        }
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<f64, D::Error> {
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Num(f64),
+            Text(String),
+        }
+        Ok(match Either::deserialize(d)? {
+            Either::Num(v) => v,
+            Either::Text(t) => match t.trim().to_ascii_lowercase().as_str() {
+                "inf" | "infinity" | "+inf" => f64::INFINITY,
+                "-inf" | "-infinity" => f64::NEG_INFINITY,
+                "nan" => f64::NAN,
+                other => other.parse().unwrap_or(f64::NAN),
+            },
+        })
+    }
+}
+
 /// Snapshot set: the time steps the model runs over.
 ///
 /// Weights carry the hours each snapshot represents, which is how models run
@@ -30,6 +75,7 @@ use std::collections::HashMap;
 /// sampling every third hour uses weight 3.0 and its costs stay comparable to
 /// an hourly run.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Snapshots {
     weights: Vec<f64>,
 }
@@ -82,6 +128,7 @@ impl Snapshots {
 /// than as zero. That distinction matters: a generator with no availability
 /// profile is available at full capacity, not unavailable.
 #[derive(Debug, Default, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TimeSeries {
     data: Vec<f64>,
     n_snapshots: usize,
@@ -159,6 +206,7 @@ impl TimeSeries {
 /// An electrical node. `country` is what makes the model transnational: it is
 /// the axis cross-border flows are reported on.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Bus {
     pub name: String,
     pub country: String,
@@ -210,6 +258,7 @@ impl Default for Bus {
 /// the other way. One component covers all of them, because they are the same
 /// equation.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Link {
     pub name: String,
     /// Where energy is withdrawn.
@@ -223,6 +272,7 @@ pub struct Link {
     /// Cost per unit of input.
     pub marginal_cost: f64,
     pub p_nom_extendable: bool,
+    #[cfg_attr(feature = "serde", serde(with = "crate::json_f64"))]
     pub p_nom_max: f64,
     pub capital_cost: f64,
 }
@@ -249,6 +299,7 @@ impl Default for Link {
 /// capacity expansion, and a model that only dispatches existing plant should
 /// not have to mention them.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Generator {
     pub name: String,
     pub bus: usize,
@@ -273,6 +324,7 @@ pub struct Generator {
     /// policy actually asks.
     pub p_nom_extendable: bool,
     /// Ceiling on installed capacity, MW. Land and grid connection are finite.
+    #[cfg_attr(feature = "serde", serde(with = "crate::json_f64"))]
     pub p_nom_max: f64,
     /// Annualised cost per MW of capacity built.
     ///
@@ -323,7 +375,9 @@ pub struct Generator {
     /// supply it is usually the binding constraint on how far power can be
     /// moved. A DC model has no concept of it at all, which is one of the main
     /// things a DC answer can be wrong about.
+    #[cfg_attr(feature = "serde", serde(with = "crate::json_f64"))]
     pub q_min: f64,
+    #[cfg_attr(feature = "serde", serde(with = "crate::json_f64"))]
     pub q_max: f64,
     /// Whether the unit was already running when the horizon began.
     ///
@@ -370,6 +424,7 @@ impl Default for Generator {
 /// constraint; HVDC interconnectors genuinely are controllable and are
 /// correctly modelled as transport.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Line {
     pub name: String,
     pub bus0: usize,
@@ -384,6 +439,7 @@ pub struct Line {
     /// it outside a linear program; see [`Network::validate`], which refuses
     /// the combination rather than silently solving the wrong problem.
     pub s_nom_extendable: bool,
+    #[cfg_attr(feature = "serde", serde(with = "crate::json_f64"))]
     pub s_nom_max: f64,
     /// Annualised cost per MW of transfer capacity built.
     pub capital_cost: f64,
@@ -454,6 +510,7 @@ impl Line {
 
 /// Inelastic demand at a bus.
 #[derive(Debug, Clone, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Load {
     pub name: String,
     pub bus: usize,
@@ -465,6 +522,7 @@ pub struct Load {
 
 /// A store that can shift energy between snapshots.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct StorageUnit {
     pub name: String,
     pub bus: usize,
@@ -481,6 +539,7 @@ pub struct StorageUnit {
     pub cyclic: bool,
     /// Whether the optimiser may build more of this.
     pub p_nom_extendable: bool,
+    #[cfg_attr(feature = "serde", serde(with = "crate::json_f64"))]
     pub p_nom_max: f64,
     /// Annualised cost per MW of power rating built. Energy capacity follows
     /// from `max_hours`, so a battery's duration is a design input rather than
@@ -556,6 +615,7 @@ impl Default for StorageUnit {
 /// earlier period is available in every later one, so the periods are coupled
 /// through a running total rather than being independent problems.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InvestmentPeriod {
     pub name: String,
     /// Index of the first snapshot belonging to this period.
@@ -577,6 +637,7 @@ pub struct InvestmentPeriod {
 /// will happen. Operating cost is weighted by probability; capital is not,
 /// because you build once and then find out which weather year you got.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Scenario {
     pub name: String,
     pub first_snapshot: usize,
@@ -587,6 +648,7 @@ pub struct Scenario {
 
 /// The whole system.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Network {
     pub snapshots: Snapshots,
     pub buses: Vec<Bus>,
