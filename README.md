@@ -3,10 +3,17 @@
 A fast engine for building and solving cross-border energy system optimisation
 models, written in Rust.
 
-A *wright* is a builder. That is the distinction this project is making: it is
-not another solver. HiGHS and Gurobi already solve these problems well. It is
-the thing that **builds** them, which turns out to be where the time actually
-goes.
+A *wright* is a builder, and that was the original distinction: HiGHS and Gurobi
+already solve linear programs well, and the bottleneck the literature complains
+about is **building** them, not solving them.
+
+That is still the main claim, and it is no longer the whole of it. There is now
+a bounded-variable revised simplex here too, because the interface this is
+heading towards runs in a browser and every mature LP solver is a C or C++
+library. And the AC formulation needed a spatial branch and bound of its own,
+because the tightening it does is specific to the relaxation rather than
+something a general solver could offer. So: mostly a builder, with the two
+pieces of solver that had to be written because nothing else would do.
 
 ## Why
 
@@ -411,14 +418,20 @@ Early, but the formulation now covers dispatch, capacity expansion, unit
 commitment, sector coupling, hydro with inflow and spill, multi-period
 investment, emissions budgets and planning reserve.
 
+Since that list was written: bus shunt admittances and transformer phase shifts
+are in, and so is the spatial branch and bound. The last of those closes the AC
+relaxation gap properly, which is what `TODO.md` said was needed. On IEEE 57 the
+relaxation is only a bound at the root and 33 nodes prove the optimum; on
+IEEE 118 the cone gap falls twenty-five fold.
+
 Absent: head's effect on energy *conversion*, as opposed to on available
 capacity which is implemented. A full reservoir yields more megawatt-hours from
-the same volume, and that part is bilinear in flow and volume rather than linear.
+the same volume, and that part is bilinear in flow and volume rather than
+linear.
 
-Also absent: bus shunt admittances and transformer phase shifts in the AC model,
-cycle constraints for fundamental cycles longer than three, and spatial branch
-and bound to tighten the McCormick boxes. The last is what would close the
-relaxation gap properly, and `TODO.md` says why.
+Also absent: cycle constraints for fundamental cycles longer than three,
+apparent-power line limits, and demand that can be shifted in time rather than
+only shed.
 
 Scaling benchmarks still use synthetic topologies, because no public dataset is
 conveniently available at 8760 snapshots and hundreds of buses in one file; they
