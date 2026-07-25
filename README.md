@@ -213,5 +213,12 @@ of realistic shape rather than real data, and say so where they appear.
 
 ## Licence
 
-MIT or Apache-2.0, at your option. See [LICENSE-MIT](LICENSE-MIT) and
-[LICENSE-APACHE](LICENSE-APACHE).
+**AGPL-3.0** ([LICENSE](LICENSE)). Open source: use it, modify it, run it in
+production, no permission needed. The AGPL asks that if you modify it and offer
+it over a network, you publish your modified source too.
+
+Research, laboratories, regulators, NGOs and anyone publishing their modelling
+are unaffected, because they were going to show their working anyway. Companies
+that need to keep a surrounding stack closed need a commercial licence instead;
+see [COMMERCIAL.md](COMMERCIAL.md). The code is identical either way and nothing
+is withheld from the open version.
