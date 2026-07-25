@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/gridwright-model",
+    "crates/gridwright-net",
+    "crates/gridwright-build",
+    "crates/gridwright-solve",
+    "crates/gridwright-cli",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/DrDrewCain/gridwright"
+rust-version = "1.90"
+
+[workspace.dependencies]
+gridwright-model = { path = "crates/gridwright-model" }
+gridwright-net = { path = "crates/gridwright-net" }
+gridwright-build = { path = "crates/gridwright-build" }
+gridwright-solve = { path = "crates/gridwright-solve" }
+rayon = "1.10"
+thiserror = "2"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+
+# The benchmark claim is about construction speed, so the profile used to make
+# that claim keeps symbols rather than optimising them away.
+[profile.bench-rel]
+inherits = "release"
+debug = true
+panic = "unwind"

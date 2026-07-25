@@ -1,0 +1,18 @@
+[package]
+name = "gridwright-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Command line interface for the transnational energy system engine"
+
+[[bin]]
+name = "gw"
+path = "src/main.rs"
+
+[dependencies]
+gridwright-model.workspace = true
+gridwright-net.workspace = true
+gridwright-build.workspace = true
+gridwright-solve.workspace = true

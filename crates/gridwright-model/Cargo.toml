@@ -1,0 +1,12 @@
+[package]
+name = "gridwright-model"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+description = "Sparse linear model core for large transnational energy system optimisation"
+
+[dependencies]
+rayon.workspace = true
+thiserror.workspace = true
