@@ -99,6 +99,19 @@ when it is scarce.
 investment decision, operating costs weighted by probability, capital not,
 because you build once and then find out which weather year you got.
 
+**N-1 security.** The dispatch must survive losing any single line. Formulated
+through line outage distribution factors, which is what makes it affordable: the
+obvious approach duplicates every flow variable once per contingency, while LODF
+turns each outage into constraints on the flow variables that already exist.
+Security costs rows, not columns. Lines whose loss would island the network are
+reported rather than quietly ignored — that is a real vulnerability, just not
+one flow limits can describe.
+
+**Rolling horizon.** A year of hourly commitment is a MIP with tens of thousands
+of binaries and nobody solves it whole. Overlapping windows carry reservoir
+levels and commitment states forward, because a window that assumes every unit
+starts cold invents start-up costs that were already paid.
+
 **Two solver backends.** HiGHS for scale, and a simplex written for this
 project for everywhere HiGHS cannot go. The second exists for one reason: the
 engine needs to run in a browser, HiGHS is C++, and the pure-Rust alternatives
@@ -274,7 +287,7 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace          # 178 tests
+cargo test --workspace          # 195 tests
 ./target/release/gw demo
 ./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw case examples/pglib/case118_ieee.m
@@ -311,16 +324,19 @@ Early, but the formulation now covers dispatch, capacity expansion, unit
 commitment, sector coupling, hydro with inflow and spill, multi-period
 investment, emissions budgets and planning reserve.
 
-Not implemented: **AC power flow**. That is not an omission to be fixed later.
-The AC optimal power flow problem is nonconvex, and no linear program can
-express it; solving it needs an interior point or conic method and a solver
-built for one. What is here instead is DC flow with linearised losses, which is
-what production planning models actually use, labelled as such everywhere it
-appears.
+Not implemented: **AC power flow**. The AC optimal power flow problem is
+nonconvex, so no linear program expresses it and neither backend here can
+solve it. An earlier version of this section said that made it permanently out
+of scope, which was too strong: the second-order-cone relaxation of AC-OPF is
+standard, and `clarabel` is a pure-Rust conic solver that would compile to WASM
+alongside everything else. It is a real piece of work behind a third backend,
+not an impossibility. What is here meanwhile is DC flow with linearised losses,
+which is what production planning models actually use, labelled as such
+wherever it appears.
 
-Also absent: unit commitment across a rolling horizon, hydro head effects,
-N-1 security constraints, and anything requiring integer variables beyond the
-on/off status.
+Also absent: hydro head effects, where output per unit of water depends on how
+full the reservoir is. That one is bilinear rather than merely nonlinear, so it
+needs a concave piecewise approximation rather than a straight line.
 
 Scaling benchmarks still use synthetic topologies, because no public dataset is
 conveniently available at 8760 snapshots and hundreds of buses in one file; they

@@ -22,6 +22,8 @@
 use gridwright_build::{Lopf, VarIndex};
 use gridwright_model::Sense;
 
+pub mod rolling;
+
 #[cfg(feature = "highs")]
 mod highs_backend;
 

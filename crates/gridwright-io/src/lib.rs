@@ -180,6 +180,10 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 min_down_time: f("min_down_time", 0.0)? as usize,
                 ramp_up: f("ramp_up", 0.0)?,
                 ramp_down: f("ramp_down", 0.0)?,
+                initially_on: t
+                    .boolean(r, "initially_on", false)
+                    .ok()
+                    .filter(|_| t.column("initially_on").is_some()),
             });
         }
     }
@@ -244,6 +248,10 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 // may be declared in any order.
                 downstream: None,
                 travel_time: f("travel_time", 0.0)? as usize,
+                soc_initial: t
+                    .column("soc_initial")
+                    .and(f("soc_initial", f64::NAN).ok())
+                    .filter(|v| v.is_finite()),
             });
         }
     }

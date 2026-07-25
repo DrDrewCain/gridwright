@@ -25,6 +25,8 @@
 //! relation between flow and voltage angle difference.
 
 use rayon::prelude::*;
+
+pub mod security;
 use gridwright_model::{Model, RowBatch, Sense, VarBlock};
 use gridwright_net::{Adjacency, NetError, Network, SignedAdjacency};
 
@@ -504,6 +506,16 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         all.push(batch);
     }
     all.extend(build_reserve(net, &vars));
+    if !net.contingencies.is_empty() {
+        let lodf = security::compute_lodf(net);
+        all.extend(security::build_security(
+            net,
+            &vars,
+            &lodf,
+            &net.contingencies,
+            t,
+        ));
+    }
     model.absorb_all(&all);
 
     Ok(Lopf {
@@ -657,6 +669,19 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                 let inflow = net.storage_inflow.at(s, step).unwrap_or(0.0) * w;
                 let mut terms: Vec<(u32, f64)> = Vec::with_capacity(5);
                 terms.push((soc.at(ti), 1.0));
+                if step == 0 && let Some(start_level) = unit.soc_initial {
+                    // A stated starting level is a constant, so it moves to the
+                    // right hand side rather than referring to another variable.
+                    // This overrides cyclicity: a window of a rolling horizon
+                    // inherits a level, it does not return to one.
+                    terms.push((ch.at(ti), store_coeff));
+                    terms.push((di.at(ti), dispatch_coeff));
+                    if let Some(sp) = spill {
+                        terms.push((sp.at(ti), w));
+                    }
+                    batch.push_eq(terms, inflow + start_level);
+                    continue;
+                }
                 if step > 0 || unit.cyclic {
                     let prev = if step == 0 {
                         soc.at(t as u32 - 1)
@@ -869,6 +894,20 @@ fn build_commitment(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                 // Solvers reject that outright, so the degenerate case emits
                 // the cancelled form instead: with nowhere to transition to,
                 // starts and stops must simply match.
+                if step == 0 && let Some(was_on) = unit.initially_on {
+                    // u[0] - was_on = su[0] - sd[0]. A unit already running does
+                    // not pay to start again, which is exactly what a rolling
+                    // window must not get wrong.
+                    batch.push_eq(
+                        [
+                            (status.at(ti), 1.0),
+                            (su.at(ti), -1.0),
+                            (sd.at(ti), 1.0),
+                        ],
+                        if was_on { 1.0 } else { 0.0 },
+                    );
+                    continue;
+                }
                 let prev = if step == 0 {
                     status.at(t as u32 - 1)
                 } else {

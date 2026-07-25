@@ -293,6 +293,13 @@ pub struct Generator {
     /// Maximum decrease in output between consecutive snapshots, as a fraction
     /// of capacity.
     pub ramp_down: f64,
+    /// Whether the unit was already running when the horizon began.
+    ///
+    /// Only meaningful for committable plant. A rolling horizon needs this: a
+    /// window that assumes every unit starts cold will invent start-up costs
+    /// that were already paid in the window before, and will let a unit ignore
+    /// a minimum up time it is halfway through.
+    pub initially_on: Option<bool>,
 }
 
 impl Default for Generator {
@@ -314,6 +321,7 @@ impl Default for Generator {
             min_down_time: 0,
             ramp_up: 0.0,
             ramp_down: 0.0,
+            initially_on: None,
         }
     }
 }
@@ -422,6 +430,14 @@ pub struct StorageUnit {
     pub downstream: Option<usize>,
     /// Snapshots water takes to travel to the downstream reservoir.
     pub travel_time: usize,
+    /// State of charge at the start of the horizon, in MWh.
+    ///
+    /// `None` means the unit is cyclic, or starts empty when it is not. Setting
+    /// it explicitly is what lets one solve continue from where another left
+    /// off, which is the whole basis of a rolling horizon: a year is solved as
+    /// overlapping windows rather than one intractable problem, and each window
+    /// inherits the reservoir level the last one ended at.
+    pub soc_initial: Option<f64>,
     /// Whether water may be released without generating.
     ///
     /// A reservoir taking more inflow than it can hold or turbine has to spill,
@@ -441,6 +457,7 @@ impl Default for StorageUnit {
             efficiency_store: 1.0,
             efficiency_dispatch: 1.0,
             cyclic: true,
+            soc_initial: None,
             downstream: None,
             travel_time: 0,
             p_nom_extendable: false,
@@ -516,6 +533,13 @@ pub struct Network {
     /// a solver status. An energy model that merely reports INFEASIBLE tells
     /// the user nothing about where or when the system failed.
     pub value_of_lost_load: f64,
+    /// Lines whose outage the dispatch must survive.
+    ///
+    /// Empty means no security constraints, which is the right default: N-1
+    /// adds two rows per monitored line per contingency per snapshot, so it is
+    /// the most expensive thing in the formulation and should be asked for
+    /// rather than assumed. `contingencies_all_lines` selects everything.
+    pub contingencies: Vec<usize>,
     /// Firm capacity required above peak demand, as a fraction, per
     /// synchronous area.
     ///
@@ -554,6 +578,7 @@ impl Network {
             load_profile: TimeSeries::empty(),
             storage_inflow: TimeSeries::empty(),
             value_of_lost_load: 10_000.0,
+            contingencies: Vec::new(),
             reserve_margin: None,
             co2_limit: None,
         }
@@ -760,6 +785,16 @@ impl Network {
             }
         }
         out
+    }
+
+    /// Consider the outage of every AC line.
+    ///
+    /// Convenient and expensive. On a real network this is usually narrowed to
+    /// the corridors an operator actually watches.
+    pub fn contingencies_all_lines(&mut self) {
+        self.contingencies = (0..self.lines.len())
+            .filter(|&l| !self.lines[l].is_transport())
+            .collect();
     }
 
     /// Number of investment periods, at least one.

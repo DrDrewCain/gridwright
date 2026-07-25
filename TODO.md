@@ -54,15 +54,28 @@ concrete in the way, named.
 
 ## Formulation
 
-- [ ] AC power flow via second-order cone relaxation. Genuinely reachable, but
-      needs a conic solver rather than a simplex; `clarabel` is pure Rust and
-      would compile to WASM.
-- [ ] N-1 security constraints: the system must survive losing any one element.
-      This is the constraint real operators actually plan to.
+- [ ] AC power flow via second-order cone relaxation. Needs a conic solver
+      behind a third backend; `clarabel` is pure Rust and would compile to WASM
+      alongside everything else. The README previously called this permanently
+      out of scope, which was wrong and has been corrected.
+- [x] ~~N-1 security constraints.~~ **Done.** Formulated through line outage
+      distribution factors, so security costs rows rather than columns: the
+      naive approach duplicates every flow variable per contingency, while LODF
+      turns each outage into constraints on the base-case flows that already
+      exist. Lines whose loss would island the network are reported rather than
+      silently skipped. Verified by replaying every outage against the solved
+      base case, and on IEEE 14 under full N-1.
 - [ ] Hydro head effects, where a reservoir's output per unit of water depends
-      on how full it is. Genuinely nonlinear; usually piecewise-linearised.
-- [ ] Rolling horizon unit commitment, so a year can be solved in overlapping
-      windows rather than as one intractable MIP.
+      on how full it is. Genuinely bilinear (power depends on flow *times*
+      head), so it needs a concave piecewise approximation with tangent planes
+      rather than a straight linearisation. The tangents are an upper bound, so
+      the result is a relaxation and slightly optimistic, which is standard and
+      should be labelled as such.
+- [x] ~~Rolling horizon unit commitment.~~ **Done.** Overlapping windows with
+      reservoir levels and commitment states carried across, since a window that
+      assumes every unit starts cold invents start-up costs already paid.
+      Checked against solving the same horizon whole, and that more lookahead
+      never costs more.
 
 ## Interface
 
