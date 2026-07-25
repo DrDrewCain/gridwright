@@ -76,6 +76,29 @@ with a free constant. Asynchronous grids join through HVDC ties, which carry
 losses: China's UHVDC loses about 3% per 1,000 km, so 2,000 km arrives 6%
 short, and that gap changes where it is worth building anything.
 
+**Ramp limits.** A nuclear station cannot go from quarter load to full in an
+hour. Without this every unit is infinitely flexible, which understates both
+what it costs to follow a renewable ramp and how much flexible plant a system
+needs. The interesting behaviour is that a down-ramp limit binds *before* the
+problem appears: rather than run high and be stranded above demand later, the
+optimiser produces less earlier.
+
+**Transmission losses.** Real losses go as the square of current, which is not
+linear and cannot appear in a linear program at all. What is available is a
+marginal rate on the magnitude of the flow, which is what production planning
+models use. Absolute value is not linear either, but it is the maximum of two
+linear functions, and since loss only ever removes energy the optimiser drives
+it down to exactly that bound.
+
+**Hydro cascades.** What an upper station releases becomes the lower station's
+inflow, after a travel time. Modelling reservoirs on one river independently
+counts the same water twice, which flatters the system's flexibility precisely
+when it is scarce.
+
+**Stochastic scenarios.** Two-stage planning: several futures share one
+investment decision, operating costs weighted by probability, capital not,
+because you build once and then find out which weather year you got.
+
 **Data.** Networks load from a directory of CSVs in the layout PyPSA writes,
 and from **MATPOWER `.m` files**, which is how the IEEE test cases, PGLib-OPF,
 RTE's French network and the PEGASE European models are all distributed.
@@ -157,10 +180,13 @@ per bus, storage on every fourth bus, DC power flow throughout.
 | Network | Columns | Rows | Nonzeros | Construction |
 | --- | --- | --- | --- | --- |
 | 256 bus × 168 h | 311,808 | 118,272 | 559,104 | **3.3 ms** |
-| 256 bus × 8760 h | 16,258,560 | 6,167,040 | 29,153,280 | **89 ms** |
+| 256 bus × 8760 h | 16,258,560 | 6,167,040 | 29,153,280 | **~100 ms** |
 | 512 bus × 8760 h | 32,517,120 | 12,334,080 | 58,306,560 | **174 ms** |
 
-Peak resident memory for the 256 × 8760 case is **1.93 GB**. Scaling is linear:
+Peak resident memory for the 256 × 8760 case is **1.93 GB**. That row was 89 ms
+before commitment, losses, cascades and multi-period capacity were added; the
+extra machinery costs about 12%, which seems a fair price and is reported rather
+than quietly rebaselined. Scaling is linear:
 20.9 → 44.8 → 84.3 → 173.7 ms across 64 → 128 → 256 → 512 buses, about 2.05×
 per doubling.
 
@@ -234,7 +260,7 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace          # 139 tests
+cargo test --workspace          # 151 tests
 ./target/release/gw demo
 ./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw case examples/pglib/case118_ieee.m
@@ -271,9 +297,16 @@ Early, but the formulation now covers dispatch, capacity expansion, unit
 commitment, sector coupling, hydro with inflow and spill, multi-period
 investment, emissions budgets and planning reserve.
 
-Not implemented: AC power flow (this is a DC model and says so), hydro cascades
-where one reservoir's release is another's inflow, ramp rate limits between
-snapshots, and stochastic or scenario-based formulations.
+Not implemented: **AC power flow**. That is not an omission to be fixed later.
+The AC optimal power flow problem is nonconvex, and no linear program can
+express it; solving it needs an interior point or conic method and a solver
+built for one. What is here instead is DC flow with linearised losses, which is
+what production planning models actually use, labelled as such everywhere it
+appears.
+
+Also absent: unit commitment across a rolling horizon, hydro head effects,
+N-1 security constraints, and anything requiring integer variables beyond the
+on/off status.
 
 Scaling benchmarks still use synthetic topologies, because no public dataset is
 conveniently available at 8760 snapshots and hundreds of buses in one file; they

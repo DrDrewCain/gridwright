@@ -178,6 +178,8 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 shut_down_cost: f("shut_down_cost", 0.0)?,
                 min_up_time: f("min_up_time", 0.0)? as usize,
                 min_down_time: f("min_down_time", 0.0)? as usize,
+                ramp_up: f("ramp_up", 0.0)?,
+                ramp_down: f("ramp_down", 0.0)?,
             });
         }
     }
@@ -197,6 +199,7 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                     .map_err(|e| field(e, "lines.csv"))?,
                 s_nom_max: f("s_nom_max", f64::INFINITY)?,
                 capital_cost: f("capital_cost", 0.0)?,
+                loss: f("loss", 0.0)?,
             });
         }
     }
@@ -237,7 +240,34 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 spillable: t
                     .boolean(r, "spillable", false)
                     .map_err(|e| field(e, "storage_units.csv"))?,
+                // Resolved by name after every unit exists, since a cascade
+                // may be declared in any order.
+                downstream: None,
+                travel_time: f("travel_time", 0.0)? as usize,
             });
+        }
+    }
+
+    // Cascade links, resolved once every reservoir exists so the file may list
+    // them in any order.
+    if let Some(t2) = table(dir, "storage_units.csv")? {
+        let index_of: std::collections::HashMap<String, usize> = net
+            .storage
+            .iter()
+            .enumerate()
+            .map(|(i, s)| (s.name.clone(), i))
+            .collect();
+        for r in 0..t2.rows.len() {
+            if let Ok(name) = t2.text(r, "downstream") {
+                let Some(&d) = index_of.get(&name) else {
+                    return Err(IoError::UnknownComponentColumn {
+                        file: "storage_units.csv".into(),
+                        column: name,
+                        kind: "storage unit",
+                    });
+                };
+                net.storage[r].downstream = Some(d);
+            }
         }
     }
 

@@ -210,6 +210,7 @@ fn transmission_expansion_relieves_a_binding_interconnector() {
         s_nom_extendable: true,
         s_nom_max: 500.0,
         capital_cost: 5.0,
+        ..Default::default()
     });
 
     let lopf = build_lopf(&net).unwrap();

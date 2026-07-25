@@ -71,6 +71,8 @@ pub struct VarIndex {
     pub shut_down: Vec<Option<VarBlock>>,
     /// Spilled energy, per spillable storage unit.
     pub spill: Vec<Option<VarBlock>>,
+    /// Loss on each lossy line, always non-negative.
+    pub line_loss: Vec<Option<VarBlock>>,
 }
 
 /// A built linear program plus the map back to what its variables mean.
@@ -341,6 +343,16 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         }));
     }
 
+    // Losses, for lines that declare a rate. Non-negative and driven up only by
+    // the constraints below, so the optimiser has every incentive to keep them
+    // at exactly the linearised value rather than above it.
+    vars.line_loss.reserve(net.lines.len());
+    for l in &net.lines {
+        vars.line_loss.push(
+            (l.loss > 0.0).then(|| model.add_block(t32, 0.0, f64::INFINITY, 0.0)),
+        );
+    }
+
     // Links, measured at the input bus.
     vars.link_flow.reserve(net.links.len());
     for l in &net.links {
@@ -424,12 +436,21 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     // Money spent in 2050 is worth less than money spent today. A model that
     // ignores that will defer every decision to the final period, which is a
     // artefact of the arithmetic rather than a finding.
+    // Operating cost carries three multipliers: the snapshot's own weight, the
+    // discount of the period it falls in, and the probability of the scenario
+    // it belongs to. Capital carries only the discount, because you build once
+    // and then find out which future you got.
+    let scenario_w = net.scenario_weight();
+    let deterministic = net.scenarios.is_empty();
     let single_period = n_periods == 1 && net.investment_periods.is_empty();
+    let flat = uniform_weights && single_period && deterministic;
     let mut obj_buf = Vec::with_capacity(t);
-    let cost_at = |base: f64, step: usize| base * weights[step] * net.discount(period_of[step]);
+    let cost_at = |base: f64, step: usize| {
+        base * weights[step] * net.discount(period_of[step]) * scenario_w[step]
+    };
 
     for (g, unit) in net.generators.iter().enumerate() {
-        if uniform_weights && single_period {
+        if flat {
             model.fill_obj(vars.dispatch[g], unit.marginal_cost * weights[0]);
         } else {
             obj_buf.clear();
@@ -445,7 +466,7 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         }
     }
     for b in 0..net.buses.len() {
-        if uniform_weights && single_period {
+        if flat {
             model.fill_obj(vars.shed[b], net.value_of_lost_load * weights[0]);
         } else {
             obj_buf.clear();
@@ -476,6 +497,9 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     all.extend(build_storage(net, &vars, t));
     all.extend(build_capacity_ties(net, &vars, t));
     all.extend(build_commitment(net, &vars, t));
+    all.extend(build_ramps(net, &vars, t));
+    all.extend(build_losses(net, &vars, t));
+    all.extend(build_cascades(net, &vars, t));
     if let Some(batch) = build_co2(net, &vars, t) {
         all.push(batch);
     }
@@ -547,6 +571,14 @@ fn build_balance(
                 // line: nothing else about the formulation changes.
                 for &(k, coeff) in links {
                     terms.push((vars.link_flow[k as usize].at(ti), coeff));
+                }
+                // Half of a line's loss is charged to each of its ends, which
+                // is the usual convention and avoids making the loss depend on
+                // which direction the power happened to be going.
+                for &(l, _) in lines {
+                    if let Some(loss) = vars.line_loss[l as usize] {
+                        terms.push((loss.at(ti), -0.5));
+                    }
                 }
                 terms.push((vars.shed[b].at(ti), 1.0));
 
@@ -965,6 +997,126 @@ fn build_reserve(net: &Network, vars: &VarIndex) -> Vec<RowBatch> {
                 batch.push_ge(terms, required);
             }
             batch
+        })
+        .collect()
+}
+
+/// Ramp limits between consecutive snapshots.
+///
+/// A nuclear station cannot go from quarter load to full in an hour. Without
+/// this the model treats every unit as infinitely flexible, which understates
+/// what it costs to follow a renewable ramp and how much flexible plant a
+/// system actually needs.
+fn build_ramps(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    net.generators
+        .par_iter()
+        .enumerate()
+        .filter(|(_, g)| {
+            (g.ramp_up > 0.0 && g.ramp_up < 1.0) || (g.ramp_down > 0.0 && g.ramp_down < 1.0)
+        })
+        .map(|(g, unit)| {
+            let p = vars.dispatch[g];
+            let mut batch = RowBatch::with_capacity(2 * t, 4 * t);
+            // Ramping is between neighbours, so a horizon shorter than two
+            // snapshots has nothing to constrain.
+            for step in 1..t {
+                let ti = step as u32;
+                if unit.ramp_up > 0.0 && unit.ramp_up < 1.0 {
+                    batch.push_le(
+                        [(p.at(ti), 1.0), (p.at(ti - 1), -1.0)],
+                        unit.ramp_up * unit.p_nom,
+                    );
+                }
+                if unit.ramp_down > 0.0 && unit.ramp_down < 1.0 {
+                    batch.push_le(
+                        [(p.at(ti - 1), 1.0), (p.at(ti), -1.0)],
+                        unit.ramp_down * unit.p_nom,
+                    );
+                }
+            }
+            batch
+        })
+        .collect()
+}
+
+/// Linearised transmission losses.
+///
+/// Real losses go as the square of current, which is not linear and so cannot
+/// appear in a linear program at all. What is available is a marginal rate
+/// applied to the magnitude of the flow, which is what production planning
+/// models use in practice.
+///
+/// Absolute value is not linear either, but it is the *maximum* of two linear
+/// functions, and a variable bounded below by both of them equals the larger.
+/// Since loss only ever removes energy, the optimiser pushes it down to exactly
+/// that bound, so the pair of inequalities behaves as an equality without
+/// needing to be one.
+///
+/// The approximation is calibrated at a chosen operating point rather than
+/// exact everywhere, and a network run far from it will see loss estimates
+/// drift. That is a real limitation of every linear loss model, this one
+/// included.
+fn build_losses(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    net.lines
+        .par_iter()
+        .enumerate()
+        .filter_map(|(l, line)| {
+            let loss = vars.line_loss[l]?;
+            let f = vars.flow[l];
+            let mut batch = RowBatch::with_capacity(2 * t, 4 * t);
+            for step in 0..t {
+                let ti = step as u32;
+                // loss >= k*f and loss >= -k*f, so loss >= k*|f|.
+                batch.push_ge([(loss.at(ti), 1.0), (f.at(ti), -line.loss)], 0.0);
+                batch.push_ge([(loss.at(ti), 1.0), (f.at(ti), line.loss)], 0.0);
+            }
+            Some(batch)
+        })
+        .collect()
+}
+
+/// Hydro cascades: an upstream release becomes a downstream inflow.
+///
+/// Modelling reservoirs on one river independently counts the same water twice,
+/// which flatters the system's flexibility exactly when it is scarce. The delay
+/// is in snapshots rather than hours because that is the resolution the model
+/// has; a travel time shorter than one snapshot is simply immediate.
+fn build_cascades(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    let weights = net.snapshots.weights();
+    net.storage
+        .par_iter()
+        .enumerate()
+        .filter_map(|(s, unit)| {
+            let down = unit.downstream?;
+            let soc_d = vars.soc[down];
+            let mut batch = RowBatch::with_capacity(t, 5 * t);
+            let mut terms: Vec<(u32, f64)> = Vec::with_capacity(5);
+
+            for step in 0..t {
+                // Water released now arrives downstream after the travel time.
+                // Releases that would arrive past the horizon simply leave the
+                // system, which is the same thing the last snapshot does with
+                // everything else.
+                let arrival = step + unit.travel_time;
+                if arrival >= t {
+                    continue;
+                }
+                let ai = arrival as u32;
+                let w = weights[arrival];
+                terms.clear();
+                // The downstream store gains what the upstream one let go, both
+                // through its turbines and over its spillway.
+                terms.push((soc_d.at(ai), 1.0));
+                terms.push((vars.discharge[s].at(step as u32), -w));
+                if let Some(sp) = vars.spill[s] {
+                    terms.push((sp.at(step as u32), -w));
+                }
+                // Expressed as an addition to the downstream balance rather
+                // than as a rewrite of it, so the two constraint families stay
+                // independent and either can change without the other.
+                batch.push_ge(terms.iter().copied(), 0.0);
+            }
+            (!batch.is_empty()).then_some(batch)
         })
         .collect()
 }

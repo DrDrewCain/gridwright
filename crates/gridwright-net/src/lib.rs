@@ -282,6 +282,17 @@ pub struct Generator {
     pub min_up_time: usize,
     /// Snapshots the unit must remain off once stopped.
     pub min_down_time: usize,
+    /// Maximum increase in output between consecutive snapshots, as a fraction
+    /// of capacity. Zero or more than one means unconstrained.
+    ///
+    /// A nuclear station cannot go from a quarter load to full in an hour, and
+    /// a model that lets it will understate both the cost of following a
+    /// renewable ramp and the amount of flexible plant a system needs. This is
+    /// the constraint that makes a duck curve expensive.
+    pub ramp_up: f64,
+    /// Maximum decrease in output between consecutive snapshots, as a fraction
+    /// of capacity.
+    pub ramp_down: f64,
 }
 
 impl Default for Generator {
@@ -301,6 +312,8 @@ impl Default for Generator {
             shut_down_cost: 0.0,
             min_up_time: 0,
             min_down_time: 0,
+            ramp_up: 0.0,
+            ramp_down: 0.0,
         }
     }
 }
@@ -330,6 +343,15 @@ pub struct Line {
     pub s_nom_max: f64,
     /// Annualised cost per MW of transfer capacity built.
     pub capital_cost: f64,
+    /// Losses as a fraction of the power flowing, applied to the magnitude.
+    ///
+    /// Real losses are quadratic in current, which is not linear and therefore
+    /// not expressible here. This is the linear approximation production
+    /// planning models actually use: a marginal loss rate applied to the
+    /// absolute flow, split evenly between the two ends. It is calibrated at
+    /// the operating point you care about rather than exact everywhere, and
+    /// that limitation is real and stated rather than hidden.
+    pub loss: f64,
 }
 
 impl Default for Line {
@@ -343,6 +365,7 @@ impl Default for Line {
             s_nom_extendable: false,
             s_nom_max: f64::INFINITY,
             capital_cost: 0.0,
+            loss: 0.0,
         }
     }
 }
@@ -390,6 +413,15 @@ pub struct StorageUnit {
     /// from `max_hours`, so a battery's duration is a design input rather than
     /// a second decision variable.
     pub capital_cost: f64,
+    /// The reservoir this one discharges into, if any.
+    ///
+    /// A cascade is a chain of reservoirs on one river: what the upper station
+    /// releases becomes the lower station's inflow, some hours later. Modelling
+    /// them independently double counts the water, which flatters the system's
+    /// flexibility precisely when it matters.
+    pub downstream: Option<usize>,
+    /// Snapshots water takes to travel to the downstream reservoir.
+    pub travel_time: usize,
     /// Whether water may be released without generating.
     ///
     /// A reservoir taking more inflow than it can hold or turbine has to spill,
@@ -409,6 +441,8 @@ impl Default for StorageUnit {
             efficiency_store: 1.0,
             efficiency_dispatch: 1.0,
             cyclic: true,
+            downstream: None,
+            travel_time: 0,
             p_nom_extendable: false,
             p_nom_max: f64::INFINITY,
             capital_cost: 0.0,
@@ -436,6 +470,22 @@ pub struct InvestmentPeriod {
     pub discount: f64,
 }
 
+/// One possible future, for two-stage stochastic planning.
+///
+/// Scenarios differ from investment periods in what they do with capacity.
+/// Periods accumulate: a plant built in 2030 exists in 2040. Scenarios are
+/// parallel worlds that share one investment decision, and only one of them
+/// will happen. Operating cost is weighted by probability; capital is not,
+/// because you build once and then find out which weather year you got.
+#[derive(Debug, Clone)]
+pub struct Scenario {
+    pub name: String,
+    pub first_snapshot: usize,
+    pub n_snapshots: usize,
+    /// Probability of this future. Across all scenarios these should sum to one.
+    pub probability: f64,
+}
+
 /// The whole system.
 #[derive(Debug, Clone)]
 pub struct Network {
@@ -449,6 +499,8 @@ pub struct Network {
     /// Investment periods, in order. Empty means a single-period model, which
     /// is the common case and costs nothing extra.
     pub investment_periods: Vec<InvestmentPeriod>,
+    /// Scenarios sharing one investment decision. Empty means deterministic.
+    pub scenarios: Vec<Scenario>,
     /// Per-unit availability per generator per snapshot. Absent means 1.0.
     pub gen_availability: TimeSeries,
     /// Demand per load per snapshot. Absent means `Load::p_set`.
@@ -497,6 +549,7 @@ impl Network {
             storage: Vec::new(),
             links: Vec::new(),
             investment_periods: Vec::new(),
+            scenarios: Vec::new(),
             gen_availability: TimeSeries::empty(),
             load_profile: TimeSeries::empty(),
             storage_inflow: TimeSeries::empty(),
@@ -690,6 +743,23 @@ impl Network {
     /// UHVDC is about 0.03 per 1000 km; conventional HVDC nearer 0.07.
     pub fn dc_efficiency(km: f64, loss_per_1000km: f64) -> f64 {
         (1.0 - loss_per_1000km * km / 1000.0).clamp(0.0, 1.0)
+    }
+
+    /// Probability weight for each snapshot, from whichever scenario contains
+    /// it. One everywhere in a deterministic model.
+    pub fn scenario_weight(&self) -> Vec<f64> {
+        let t = self.n_snapshots();
+        if self.scenarios.is_empty() {
+            return vec![1.0; t];
+        }
+        let mut out = vec![1.0; t];
+        for s in &self.scenarios {
+            let end = (s.first_snapshot + s.n_snapshots).min(t);
+            for slot in out.iter_mut().take(end).skip(s.first_snapshot) {
+                *slot = s.probability;
+            }
+        }
+        out
     }
 
     /// Number of investment periods, at least one.
