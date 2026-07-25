@@ -166,3 +166,72 @@ fn tightness_is_reported_rather_than_assumed() {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Cycle constraints
+// ---------------------------------------------------------------------------
+
+use gridwright_acopf::{AcOptions, solve_acopf_with};
+
+#[test]
+fn cycle_constraints_are_only_built_where_there_are_cycles() {
+    let radial = two_bus(0.01, 0.1, 1.0, 10.0);
+    let s = solve_acopf_with(&radial, 0, AcOptions {
+        cycle_constraints: true, max_triangles: 100,
+    }).unwrap();
+    assert_eq!(s.triangles_constrained, 0, "a two-bus line has no cycle");
+
+    let meshed = case("case14_ieee");
+    let m = solve_acopf_with(&meshed, 0, AcOptions {
+        cycle_constraints: true, max_triangles: 100,
+    }).unwrap();
+    assert!(m.triangles_constrained > 0, "IEEE 14 is meshed and should have triangles");
+}
+
+#[test]
+fn cycle_constraints_do_not_loosen_the_bound() {
+    // Adding valid constraints to a relaxation can only shrink its feasible
+    // set, so the bound must rise or stay put. A fall would mean the extra
+    // constraints are not valid, which is the failure worth catching: an
+    // invalid cut turns a rigorous bound into a wrong number.
+    for name in ["case14_ieee", "case30_ieee"] {
+        let net = case(name);
+        let plain = solve_acopf(&net, 0).unwrap();
+        let tight = solve_acopf_with(&net, 0, AcOptions {
+            cycle_constraints: true, max_triangles: 200,
+        }).unwrap();
+
+        assert!(matches!(tight.status, Status::Optimal | Status::OptimalRelaxed),
+                "{name} with cycles ended {:?}", tight.status);
+        assert!(tight.objective >= plain.objective - 1e-3,
+                "{name}: cycle constraints lowered the bound from {} to {}, \
+                 which means they are not valid",
+                plain.objective, tight.objective);
+    }
+}
+
+#[test]
+fn a_constrained_solve_still_respects_the_physical_limits() {
+    // The auxiliaries must not disturb anything the base formulation enforced.
+    let net = case("case14_ieee");
+    let s = solve_acopf_with(&net, 0, AcOptions {
+        cycle_constraints: true, max_triangles: 200,
+    }).unwrap();
+    for (b, &v) in s.voltage.iter().enumerate() {
+        let bus = &net.buses[b];
+        assert!(v >= bus.v_min - 1e-3 && v <= bus.v_max + 1e-3,
+                "bus {b} at {v} pu with cycle constraints on");
+    }
+    let demand: f64 = net.loads.iter().map(|l| l.p_set).sum();
+    let generated: f64 = s.p_gen.iter().sum();
+    assert!(generated > demand, "losses vanished under cycle constraints");
+}
+
+#[test]
+fn the_triangle_budget_is_respected() {
+    let net = case("case30_ieee");
+    let s = solve_acopf_with(&net, 0, AcOptions {
+        cycle_constraints: true, max_triangles: 2,
+    }).unwrap();
+    assert!(s.triangles_constrained <= 2, "budget ignored: {}", s.triangles_constrained);
+}

@@ -138,13 +138,28 @@ reported rather than assumed** — an inexact relaxation returns voltages that
 correspond to no physical operating point, and a model that does not say so is
 worse than one that cannot do AC at all.
 
-```
-$ cargo test -p gridwright-acopf
-```
-
 Real IEEE networks solve, with voltages inside their declared bands and
 generation exceeding demand by the resistive losses a DC model structurally
 cannot see.
+
+**Cycle constraints** tighten it further on meshed networks, following Riccardi,
+Bernardelli and Gualandi ([arXiv:2604.00664](https://arxiv.org/abs/2604.00664)).
+Jabr constrains each line independently, which is enough on a tree and not on a
+loop: around a cycle the relaxation can pick angle differences that do not add
+up. The exact fix is that those differences sum to zero around every cycle,
+which as written is a sum of arctangents and hopeless. Writing
+`W_ij = R + iI = V_i·conj(V_j)` turns it into `Im(W₁W₂W₃) = 0`, a trilinear
+equality, which McCormick envelopes relax convexly.
+
+The tests check the property that matters: adding the cuts must never *lower*
+the bound. A bound that falls means the cuts are invalid, which would turn a
+rigorous number into a wrong one.
+
+**Hydraulic head.** Power is proportional to the height water falls through, so
+a reservoir near empty cannot reach its rating whatever the gates do. Taken at
+the start of each period rather than the end — using the end level makes the
+constraint self-limiting, since discharging lowers the level that permits the
+discharge, and a brim-full reservoir could never reach its rating.
 
 **Data.** Networks load from a directory of CSVs in the layout PyPSA writes,
 and from **MATPOWER `.m` files**, which is how the IEEE test cases, PGLib-OPF,
@@ -309,7 +324,7 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace          # 204 tests
+cargo test --workspace          # 220 tests
 ./target/release/gw demo
 ./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw case examples/pglib/case118_ieee.m
@@ -346,13 +361,14 @@ Early, but the formulation now covers dispatch, capacity expansion, unit
 commitment, sector coupling, hydro with inflow and spill, multi-period
 investment, emissions budgets and planning reserve.
 
-Absent: hydro head effects, where output per unit of water depends on how full
-the reservoir is. That one is bilinear rather than merely nonlinear, so it needs
-a concave piecewise approximation rather than a straight line.
+Absent: head's effect on energy *conversion*, as opposed to on available
+capacity which is implemented. A full reservoir yields more megawatt-hours from
+the same volume, and that part is bilinear in flow and volume rather than linear.
 
 Also absent: bus shunt admittances and transformer phase shifts in the AC model,
-and cycle constraints to tighten the relaxation on meshed networks. The last of
-those is the interesting one and `TODO.md` says why it is hard.
+cycle constraints for fundamental cycles longer than three, and spatial branch
+and bound to tighten the McCormick boxes. The last is what would close the
+relaxation gap properly, and `TODO.md` says why.
 
 Scaling benchmarks still use synthetic topologies, because no public dataset is
 conveniently available at 8760 snapshots and hundreds of buses in one file; they

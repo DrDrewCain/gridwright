@@ -470,6 +470,22 @@ pub struct StorageUnit {
     /// from `max_hours`, so a battery's duration is a design input rather than
     /// a second decision variable.
     pub capital_cost: f64,
+    /// Available power at an empty reservoir, as a fraction of `p_nom`.
+    ///
+    /// Hydraulic head is the height water falls through, and power is
+    /// proportional to it. A reservoir near empty has less head and therefore
+    /// cannot reach its nameplate rating however wide the gates are opened.
+    /// One means no head effect, which is right for a battery and for a
+    /// run-of-river plant with negligible storage.
+    ///
+    /// What this models is head's effect on **available capacity**, which is
+    /// linear in the stored volume and so costs nothing but a row. Head also
+    /// affects the *energy conversion*, so that a given volume yields more
+    /// megawatt-hours when the reservoir is full, and that part is bilinear in
+    /// flow and volume rather than linear. It is not modelled here, and the
+    /// distinction is worth stating: this captures why a low reservoir cannot
+    /// deliver peak output, not why it yields less energy overall.
+    pub head_min_pu: f64,
     /// The reservoir this one discharges into, if any.
     ///
     /// A cascade is a chain of reservoirs on one river: what the upper station
@@ -507,6 +523,7 @@ impl Default for StorageUnit {
             efficiency_dispatch: 1.0,
             cyclic: true,
             soc_initial: None,
+            head_min_pu: 1.0,
             downstream: None,
             travel_time: 0,
             p_nom_extendable: false,

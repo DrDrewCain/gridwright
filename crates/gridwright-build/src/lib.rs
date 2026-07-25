@@ -500,6 +500,7 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     all.extend(build_capacity_ties(net, &vars, t));
     all.extend(build_commitment(net, &vars, t));
     all.extend(build_ramps(net, &vars, t));
+    all.extend(build_head(net, &vars, t));
     all.extend(build_losses(net, &vars, t));
     all.extend(build_cascades(net, &vars, t));
     if let Some(batch) = build_co2(net, &vars, t) {
@@ -1071,6 +1072,67 @@ fn build_ramps(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                         [(p.at(ti - 1), 1.0), (p.at(ti), -1.0)],
                         unit.ramp_down * unit.p_nom,
                     );
+                }
+            }
+            batch
+        })
+        .collect()
+}
+
+/// Hydraulic head: a low reservoir cannot reach its rated output.
+///
+/// Power is proportional to the height water falls through, so a reservoir at
+/// a quarter full delivers less than one at the brim even with the gates wide
+/// open. Available capacity therefore rises with stored volume:
+///
+/// ```text
+///   discharge[t] ≤ p_nom · ( h_min + (1 − h_min) · soc[t] / e_max )
+/// ```
+///
+/// Linear in the state of charge, so it costs one row per snapshot and no
+/// variables. Without it a model empties a reservoir at full power right to the
+/// bottom, which overstates exactly the flexibility a dry season removes.
+fn build_head(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    net.storage
+        .par_iter()
+        .enumerate()
+        .filter(|(_, s)| s.head_min_pu < 1.0 && s.max_hours > 0.0 && s.p_nom > 0.0)
+        .map(|(s, unit)| {
+            let e_max = unit.p_nom * unit.max_hours;
+            let slope = unit.p_nom * (1.0 - unit.head_min_pu) / e_max;
+            let floor = unit.p_nom * unit.head_min_pu;
+            let di = vars.discharge[s];
+            let soc = vars.soc[s];
+            let mut batch = RowBatch::with_capacity(t, 2 * t);
+            for step in 0..t {
+                let ti = step as u32;
+                // Head is taken at the *start* of the period, not the end.
+                // Using the end level makes the constraint self-limiting:
+                // discharging lowers the level that permits the discharge, so a
+                // brim-full reservoir could never reach its rating. Physically
+                // the water leaves at the head it had on the way out.
+                if step == 0 {
+                    match (unit.soc_initial, unit.cyclic) {
+                        // A known starting level is a constant.
+                        (Some(e0), _) => {
+                            batch.push_le([(di.at(ti), 1.0)], floor + slope * e0);
+                        }
+                        // Cyclic: the level before the first snapshot is the
+                        // level after the last.
+                        (None, true) => {
+                            batch.push_le(
+                                [(di.at(ti), 1.0), (soc.at(t as u32 - 1), -slope)],
+                                floor,
+                            );
+                        }
+                        // Non-cyclic and unspecified means it starts empty, so
+                        // only the floor is available.
+                        (None, false) => {
+                            batch.push_le([(di.at(ti), 1.0)], floor);
+                        }
+                    }
+                } else {
+                    batch.push_le([(di.at(ti), 1.0), (soc.at(ti - 1), -slope)], floor);
                 }
             }
             batch

@@ -258,6 +258,7 @@ pub fn load_network(dir: impl AsRef<Path>) -> Result<Network, IoError> {
                 // may be declared in any order.
                 downstream: None,
                 travel_time: f("travel_time", 0.0)? as usize,
+                head_min_pu: f("head_min_pu", 1.0)?,
                 soc_initial: t
                     .column("soc_initial")
                     .and(f("soc_initial", f64::NAN).ok())

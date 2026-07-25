@@ -62,16 +62,20 @@ concrete in the way, named.
       which is the merciful failure mode: power is quoted in MW while impedances
       are per unit, and MATPOWER cases carry transformer tap ratios that change
       what each end of a branch sees.
-- [ ] **Strengthen the relaxation with cycle constraints.** The Jabr relaxation
-      is exact on radial networks and can loosen on meshed ones, which is where
-      transmission planning actually lives. Riccardi, Bernardelli and Gualandi
-      (arXiv:2604.00664) give the unifying account: angle differences must sum
-      to zero around every fundamental cycle, and enforcing that removes the
-      degrees of freedom the relaxation otherwise exploits. The catch is that
-      the exact constraint is a sum of arctangents and therefore nonconvex, so
-      it needs convex envelopes or spatial branch and bound rather than being
-      dropped into the conic problem. Not a small piece of work, and the paper
-      is the map for it.
+- [x] ~~Strengthen the relaxation with cycle constraints.~~ **Done for
+      triangles**, following Riccardi, Bernardelli and Gualandi
+      (arXiv:2604.00664). The arctangent form is nonconvex, but writing
+      `W_ij = R + iI = V_i conj(V_j)` turns the cycle identity into
+      `Im(W₁W₂W₃) = 0`, a trilinear equality, which McCormick envelopes relax
+      convexly. Validity is what the tests check: adding the cuts must never
+      lower the bound, since a bound that falls means the cuts are wrong.
+- [ ] Cycle constraints for fundamental cycles longer than three. Same identity,
+      but the envelope tower grows with the number of factors, so it needs a
+      judgement about where the tightening stops repaying the variables.
+- [ ] Spatial branch and bound on the McCormick boxes. The envelopes are loose
+      in the interior of their box by construction, which is what stops the
+      triangle cuts from closing the gap entirely. Splitting boxes is the only
+      way past it.
 - [ ] Bus shunt admittances (`Gs`, `Bs`), currently read and ignored. Zero on
       the PGLib IEEE cases but not in general.
 - [ ] Transformer phase shift angles, the other half of the branch model.
@@ -84,12 +88,15 @@ concrete in the way, named.
       exist. Lines whose loss would island the network are reported rather than
       silently skipped. Verified by replaying every outage against the solved
       base case, and on IEEE 14 under full N-1.
-- [ ] Hydro head effects, where a reservoir's output per unit of water depends
-      on how full it is. Genuinely bilinear (power depends on flow *times*
-      head), so it needs a concave piecewise approximation with tangent planes
-      rather than a straight linearisation. The tangents are an upper bound, so
-      the result is a relaxation and slightly optimistic, which is standard and
-      should be labelled as such.
+- [x] ~~Hydro head effects.~~ **Done for available capacity**, which is the
+      part that is linear: power is proportional to the height water falls
+      through, so a reservoir near empty cannot reach its rating. Evaluated at
+      the *start* of each period, since using the end level makes the constraint
+      self-limiting and a brim-full reservoir could never reach its rating.
+- [ ] Head's effect on energy *conversion*, so that a given volume yields more
+      megawatt-hours when the reservoir is full. That part is genuinely bilinear
+      in flow and volume, unlike the capacity effect, and would need the same
+      envelope machinery the cycle constraints use.
 - [x] ~~Rolling horizon unit commitment.~~ **Done.** Overlapping windows with
       reservoir levels and commitment states carried across, since a window that
       assumes every unit starts cold invents start-up costs already paid.

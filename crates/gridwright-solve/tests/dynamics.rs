@@ -535,3 +535,82 @@ fn one_investment_decision_is_shared_across_every_scenario() {
     assert_close(built, 300.0, "capacity must cover the worst scenario");
     assert!(sol.total_shed(&lopf.vars) < 1e-4, "and therefore shed nothing");
 }
+
+// ---------------------------------------------------------------------------
+// Hydraulic head
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_low_reservoir_cannot_reach_its_rated_output() {
+    // 100 MW plant, 10 hours of storage, and no output at all below a quarter
+    // head. Starting a third full, available power is capped well under the
+    // nameplate, so the expensive backup has to cover the rest.
+    let mut net = Network::new(Snapshots::hourly(1));
+    let b = net.add_bus("B", "X");
+    net.add_generator(Generator {
+        name: "backup".into(), bus: b, p_nom: 500.0, marginal_cost: 200.0,
+        ..Default::default()
+    });
+    net.add_load(Load { name: "l".into(), bus: b, p_set: 100.0, ..Default::default() });
+    net.add_storage(StorageUnit {
+        name: "hydro".into(), bus: b, p_nom: 100.0, max_hours: 10.0,
+        cyclic: false, soc_initial: Some(333.0), head_min_pu: 0.25,
+        ..Default::default()
+    });
+
+    let lopf = build_lopf(&net).unwrap();
+    let sol = HighsSolver::default().solve(&lopf).unwrap();
+    assert_eq!(sol.status, Status::Optimal);
+
+    // Available = 100 * (0.25 + 0.75 * 333/1000) = 100 * 0.4998 ~ 50 MW.
+    let out = sol.trajectory(lopf.vars.discharge[0])[0];
+    assert!(out <= 50.0 + 1e-2, "head limit ignored: discharged {out} MW");
+    assert!(sol.dispatch(&lopf.vars, 0)[0] > 40.0,
+            "backup should have covered the shortfall, ran {}",
+            sol.dispatch(&lopf.vars, 0)[0]);
+}
+
+#[test]
+fn a_full_reservoir_reaches_its_rating() {
+    let mut net = Network::new(Snapshots::hourly(1));
+    let b = net.add_bus("B", "X");
+    net.add_generator(Generator {
+        name: "backup".into(), bus: b, p_nom: 500.0, marginal_cost: 200.0,
+        ..Default::default()
+    });
+    net.add_load(Load { name: "l".into(), bus: b, p_set: 100.0, ..Default::default() });
+    net.add_storage(StorageUnit {
+        name: "hydro".into(), bus: b, p_nom: 100.0, max_hours: 10.0,
+        cyclic: false, soc_initial: Some(1000.0), head_min_pu: 0.25,
+        ..Default::default()
+    });
+
+    let lopf = build_lopf(&net).unwrap();
+    let sol = HighsSolver::default().solve(&lopf).unwrap();
+    assert_eq!(sol.status, Status::Optimal);
+    assert!((sol.trajectory(lopf.vars.discharge[0])[0] - 100.0).abs() < 1e-2,
+            "a full reservoir should reach its rating");
+    assert!(sol.dispatch(&lopf.vars, 0)[0] < 1e-3, "backup should stay off");
+}
+
+#[test]
+fn without_a_head_effect_the_reservoir_is_unconstrained_by_its_level() {
+    // The companion: same low level, head effect off, full output available.
+    let mut net = Network::new(Snapshots::hourly(1));
+    let b = net.add_bus("B", "X");
+    net.add_generator(Generator {
+        name: "backup".into(), bus: b, p_nom: 500.0, marginal_cost: 200.0,
+        ..Default::default()
+    });
+    net.add_load(Load { name: "l".into(), bus: b, p_set: 100.0, ..Default::default() });
+    net.add_storage(StorageUnit {
+        name: "hydro".into(), bus: b, p_nom: 100.0, max_hours: 10.0,
+        cyclic: false, soc_initial: Some(333.0), head_min_pu: 1.0,
+        ..Default::default()
+    });
+
+    let lopf = build_lopf(&net).unwrap();
+    let sol = HighsSolver::default().solve(&lopf).unwrap();
+    assert!((sol.trajectory(lopf.vars.discharge[0])[0] - 100.0).abs() < 1e-2,
+            "with no head effect the level should not limit output");
+}

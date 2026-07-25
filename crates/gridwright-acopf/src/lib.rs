@@ -44,6 +44,8 @@
 //! balance in both real and reactive power, generator limits, voltage bands —
 //! is an ordinary linear constraint.
 
+pub mod cycles;
+
 use clarabel::algebra::CscMatrix;
 use clarabel::solver::{
     DefaultSettings, DefaultSolver, IPSolver, SolverStatus, SupportedConeT,
@@ -82,6 +84,9 @@ pub struct AcSolution {
     pub p_flow: Vec<f64>,
     /// Reactive power entering each line at its `bus0` end, MVAr.
     pub q_flow: Vec<f64>,
+    /// How many triangles had cycle constraints applied. Zero when they were
+    /// not requested, or when the network is radial and has none.
+    pub triangles_constrained: usize,
     /// Largest violation of `R² + I² = u_i u_j` across all lines.
     ///
     /// Zero means the relaxation is exact and the answer is a genuine AC
@@ -181,6 +186,38 @@ impl Rows {
 /// them is a sequence of independent problems unless storage couples them, and
 /// coupling storage to an AC relaxation is a different piece of work.
 pub fn solve_acopf(net: &Network, snapshot: usize) -> Result<AcSolution, AcError> {
+    solve_acopf_with(net, snapshot, AcOptions::default())
+}
+
+/// Knobs for the AC solve.
+#[derive(Debug, Clone, Copy)]
+pub struct AcOptions {
+    /// Add cycle constraints for triangles, relaxed through McCormick
+    /// envelopes. Tightens the relaxation on meshed networks at the cost of
+    /// auxiliary variables; see [`cycles`].
+    pub cycle_constraints: bool,
+    /// Cap on how many triangles to constrain. Each costs variables and rows,
+    /// and a dense subnetwork has a great many, so this is a budget rather than
+    /// a correctness setting: fewer triangles means a looser bound, never a
+    /// wrong one.
+    pub max_triangles: usize,
+}
+
+impl Default for AcOptions {
+    fn default() -> Self {
+        Self {
+            cycle_constraints: false,
+            max_triangles: 256,
+        }
+    }
+}
+
+/// Build and solve the AC relaxation with explicit options.
+pub fn solve_acopf_with(
+    net: &Network,
+    snapshot: usize,
+    opts: AcOptions,
+) -> Result<AcSolution, AcError> {
     net.validate()?;
     if net.buses.is_empty() {
         return Err(AcError::Empty);
@@ -196,7 +233,18 @@ pub fn solve_acopf(net: &Network, snapshot: usize) -> Result<AcSolution, AcError
         n_line: net.lines.len(),
         n_gen: net.generators.len(),
     };
-    let n = lay.total();
+    // Triangles are chosen before the column count is fixed, since each one
+    // brings auxiliary variables with it.
+    let triangles = if opts.cycle_constraints {
+        cycles::find_triangles(net, opts.max_triangles)
+    } else {
+        Vec::new()
+    };
+    // Per triangle: three pairwise products, then four trilinear terms, each of
+    // which is one more product of a pair variable with a third factor.
+    const AUX_PER_TRIANGLE: usize = 6 + 4;
+    let aux_base = lay.total();
+    let n = aux_base + triangles.len() * AUX_PER_TRIANGLE;
 
     // Objective: linear in generation. Clarabel minimises ½xᵀPx + qᵀx, and this
     // problem has no quadratic term.
@@ -300,6 +348,73 @@ pub fn solve_acopf(net: &Network, snapshot: usize) -> Result<AcSolution, AcError
             unit.p_nom * avail / base,
         );
         push_range(&mut ineq, lay.qg(g), unit.q_min / base, unit.q_max / base);
+    }
+
+    // --- Cycle constraints, if asked for. ---
+    //
+    // Im(W1 W2 W3) = 0 expands to R1R2I3 + R1I2R3 + I1R2R3 - I1I2I3 = 0, which
+    // is trilinear. Each product becomes an auxiliary variable held between
+    // McCormick bounds, so what enters the problem is a linear equality over
+    // auxiliaries plus the envelopes that tie them to the factors.
+    for (n_tri, tri) in triangles.iter().enumerate() {
+        let base_col = aux_base + n_tri * AUX_PER_TRIANGLE;
+        // Sign of the imaginary part flips when a line is traversed backwards,
+        // because W_ji is the conjugate of W_ij.
+        let sgn = |k: usize| if tri.forward[k] { 1.0 } else { -1.0 };
+        let rr = |k: usize| lay.r(tri.lines[k]);
+        let ii = |k: usize| lay.i(tri.lines[k]);
+
+        let bnd: Vec<(f64, f64)> = (0..3)
+            .map(|k| cycles::ri_bounds(net, tri.lines[k]))
+            .collect();
+
+        // Pairwise products of the first two factors, for each term.
+        // p0 = R1R2, p1 = R1I2, p2 = I1R2, p3 = I1I2, and two more for the
+        // third-factor stage.
+        let envelope = |rows: &mut Rows, x: usize, y: usize, w: usize,
+                            xb: (f64, f64), yb: (f64, f64)| {
+            for (a, b, c, rhs) in cycles::mccormick(xb.0, xb.1, yb.0, yb.1) {
+                rows.push(&[(x, a), (y, b), (w, c)], rhs);
+            }
+        };
+
+        let p_rr = base_col;
+        let p_ri = base_col + 1;
+        let p_ir = base_col + 2;
+        let p_ii = base_col + 3;
+        envelope(&mut ineq, rr(0), rr(1), p_rr, bnd[0], bnd[1]);
+        envelope(&mut ineq, rr(0), ii(1), p_ri, bnd[0], bnd[1]);
+        envelope(&mut ineq, ii(0), rr(1), p_ir, bnd[0], bnd[1]);
+        envelope(&mut ineq, ii(0), ii(1), p_ii, bnd[0], bnd[1]);
+
+        // Bounds on a pair product follow from the factors' bounds.
+        let pair_bnd = (
+            -(bnd[0].1 * bnd[1].1).abs(),
+            (bnd[0].1 * bnd[1].1).abs(),
+        );
+
+        // Trilinear terms: (R1R2)I3, (R1I2)R3, (I1R2)R3, (I1I2)I3.
+        let t_rri = base_col + 4;
+        let t_rir = base_col + 5;
+        let t_irr = base_col + 6;
+        let t_iii = base_col + 7;
+        envelope(&mut ineq, p_rr, ii(2), t_rri, pair_bnd, bnd[2]);
+        envelope(&mut ineq, p_ri, rr(2), t_rir, pair_bnd, bnd[2]);
+        envelope(&mut ineq, p_ir, rr(2), t_irr, pair_bnd, bnd[2]);
+        envelope(&mut ineq, p_ii, ii(2), t_iii, pair_bnd, bnd[2]);
+
+        // The cycle identity itself, now linear in the auxiliaries. Orientation
+        // signs multiply, since each backwards edge conjugates its factor.
+        let s = sgn(0) * sgn(1) * sgn(2);
+        eq.push(
+            &[
+                (t_rri, s),
+                (t_rir, s),
+                (t_irr, s),
+                (t_iii, -s),
+            ],
+            0.0,
+        );
     }
 
     // --- Cone rows: the relaxation itself. ---
@@ -406,6 +521,7 @@ pub fn solve_acopf(net: &Network, snapshot: usize) -> Result<AcSolution, AcError
 
     Ok(AcSolution {
         status,
+        triangles_constrained: triangles.len(),
         objective,
         voltage,
         p_gen,
