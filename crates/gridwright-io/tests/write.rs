@@ -259,3 +259,105 @@ fn a_network_can_cross_between_two_formats_it_did_not_start_in() {
     let demand = |n: &Network| n.loads.iter().map(|l| l.p_set).sum::<f64>();
     assert!((demand(&back) - demand(&start)).abs() < 1e-6);
 }
+
+#[test]
+fn a_pypsa_directory_is_written_in_pypsa_column_names() {
+    // The interop path that exists, since writing PyPSA's netCDF does not: a
+    // conformant `.nc` needs HDF5 dimension scales, which need object
+    // references, which the pure-Rust HDF5 library can describe and not emit.
+    // A file xarray refuses to open would be worse than none.
+    let net = case14();
+    let dir = tmp("pypsa");
+    let _ = std::fs::remove_dir_all(&dir);
+    gridwright_io::write_pypsa_csv(&net, &dir).unwrap();
+
+    for f in ["buses.csv", "generators.csv", "lines.csv", "loads.csv", "snapshots.csv"] {
+        assert!(dir.join(f).exists(), "{f} was not written");
+    }
+
+    // PyPSA's names, not this crate's. Writing `susceptance` where PyPSA reads
+    // `x` gives an empty column and a network of zero-impedance lines.
+    let lines = std::fs::read_to_string(dir.join("lines.csv")).unwrap();
+    let header = lines.lines().next().unwrap();
+    for column in ["name", "bus0", "bus1", "x", "r", "s_nom"] {
+        assert!(
+            header.split(',').any(|c| c == column),
+            "lines.csv has no `{column}` column: {header}"
+        );
+    }
+    let buses = std::fs::read_to_string(dir.join("buses.csv")).unwrap();
+    assert!(buses.lines().next().unwrap().contains("v_nom"));
+}
+
+/// The PSS/E fixture, which carries genuine base voltages.
+///
+/// PGLib normalises MATPOWER's `baseKV` to 1.0, so the IEEE cases are no use
+/// for testing a conversion that depends on it. The RAW fixture states 132 kV
+/// on the transmission core and 33 or 11 on the rest, which is what the network
+/// is actually drawn at.
+fn case14_with_voltages() -> Network {
+    gridwright_io::psse::load_raw(path("examples/psse/case14_v33.raw"))
+        .unwrap()
+        .network
+}
+
+#[test]
+fn impedance_is_written_back_in_ohms() {
+    // The trap in reverse. PyPSA states impedance in ohms and everything here
+    // is per unit, so a value written straight through describes a line that
+    // is very nearly a short circuit — which will not fail, it will produce
+    // answers.
+    //
+    // Hand-derived: at 132 kV on a 100 MVA base the impedance base is
+    // 132² / 100 = 174.24 Ω, so the first branch's 0.05917 per unit is
+    // 10.3098 Ω.
+    let net = case14_with_voltages();
+    assert!(net.buses[0].v_nom > 100.0, "the fixture should carry real voltages");
+    let dir = tmp("pypsa-ohms");
+    let _ = std::fs::remove_dir_all(&dir);
+    gridwright_io::write_pypsa_csv(&net, &dir).unwrap();
+
+    let text = std::fs::read_to_string(dir.join("lines.csv")).unwrap();
+    let header: Vec<&str> = text.lines().next().unwrap().split(',').collect();
+    let xi = header.iter().position(|c| *c == "x").unwrap();
+    let first = text.lines().nth(1).unwrap();
+    let x: f64 = first.split(',').nth(xi).unwrap().parse().unwrap();
+
+    let z_base = 132.0 * 132.0 / 100.0;
+    let want = net.lines[0].reactance * z_base;
+    assert!(
+        (x - want).abs() < 1e-6,
+        "wrote {x} Ω where {want} was expected; per unit it is {}",
+        net.lines[0].reactance
+    );
+    // And it is emphatically not the per-unit number.
+    assert!(x > 1.0, "{x} looks like a per-unit value written into an ohms field");
+}
+
+#[test]
+fn a_pypsa_directory_round_trips_through_this_crate_too() {
+    // Not the point of the writer, but a cheap check that the values are
+    // internally consistent: reading the ohms back with the netCDF reader's
+    // conversion should recover the per-unit ones.
+    let net = case14_with_voltages();
+    let dir = tmp("pypsa-rt");
+    let _ = std::fs::remove_dir_all(&dir);
+    gridwright_io::write_pypsa_csv(&net, &dir).unwrap();
+
+    let text = std::fs::read_to_string(dir.join("lines.csv")).unwrap();
+    let header: Vec<&str> = text.lines().next().unwrap().split(',').collect();
+    let xi = header.iter().position(|c| *c == "x").unwrap();
+    let vi = header.iter().position(|c| *c == "v_nom").unwrap();
+
+    for (row, line) in text.lines().skip(1).zip(&net.lines) {
+        let cells: Vec<&str> = row.split(',').collect();
+        let x_ohm: f64 = cells[xi].parse().unwrap();
+        let kv: f64 = cells[vi].parse().unwrap();
+        let back = x_ohm / (kv * kv / 100.0);
+        assert!(
+            (back - line.reactance).abs() < 1e-9,
+            "{} came back as {back} from {x_ohm} Ω at {kv} kV",
+            line.name
+        );
+    }
+}

@@ -281,9 +281,25 @@ Still missing:
       resistance begins with one. PSS/E's own writer emits `0.00000` and so
       never hits it, which is exactly the kind of thing that stays hidden until
       a file arrives from somewhere else.
-- [ ] **Writers for netCDF and CIM.** Harder than the two above and worth less:
-      PyPSA can read the CSV directory this already writes, and a CGMES file
-      that is not conformant is worse than none. Wanted eventually, not next.
+- [x] ~~**A writer PyPSA can read.**~~ **Done**, as PyPSA's own CSV dialect
+      rather than its netCDF, and the reason is worth recording rather than
+      leaving as "harder".
+
+      A conformant netCDF4 file needs HDF5 dimension scales, which means
+      `DIMENSION_LIST` and `REFERENCE_LIST` attributes carrying object
+      references — file offsets not known until the file has been laid out. The
+      pure-Rust HDF5 library exposes the reference datatype and no way to emit
+      one, and a `.nc` xarray refuses to open is worse than no `.nc`.
+      `import_from_csv_folder` reaches the same destination by a road that
+      exists.
+
+      The conversion that matters runs the opposite way from the reader's: PyPSA
+      states impedance in ohms, so per unit has to be undone against the base
+      voltage. Writing per-unit values into a field PyPSA reads as ohms gives
+      lines that are very nearly short circuits, which does not fail — it
+      produces answers.
+- [ ] **A CIM writer.** Still wanted and still last: a CGMES file that is not
+      conformant is worse than none, and conformance is a large surface.
 - [x] ~~Reading with no filesystem.~~ **Done.** `load_bytes` takes a name and a
       buffer; `load_files` takes a set, which is what a picker or a dropped
       folder gives and the only way to express a CSV directory or a CGMES model

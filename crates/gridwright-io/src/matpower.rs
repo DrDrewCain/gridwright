@@ -146,6 +146,10 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
             net.buses[idx].v_min = vmin;
         }
         index_of.insert(id, idx);
+        // Column 9 is the base voltage in kV, which nothing needed until the
+        // ohms conversions did. Note that PGLib normalises it to 1.0, so a
+        // value being present does not make it meaningful.
+        net.buses[idx].v_nom = num(row, 9, "bus", r, 13).unwrap_or(0.0);
         // Gs and Bs are stated as the MW and MVAr a shunt would draw or inject
         // at one per unit voltage, so dividing by the system base puts them in
         // per unit, which is where the formulation wants them.

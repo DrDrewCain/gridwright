@@ -39,7 +39,7 @@ pub mod memory;
 
 pub use detect::{DetectError, Format, load_any, sniff};
 pub use memory::{Files, load_bytes, load_files, sniff_bytes};
-pub use write::{Written, to_matpower, to_psse, write_matpower, write_psse};
+pub use write::{Written, to_matpower, to_psse, write_matpower, write_psse, write_pypsa_csv};
 
 #[cfg(feature = "json")]
 pub mod json;
