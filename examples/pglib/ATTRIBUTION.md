@@ -10,6 +10,11 @@ The `.m` files in this directory are IEEE test cases as distributed by the
   systems test case archive, Copyright (c) 1999 Richard D. Christie,
   University of Washington, also under CC BY 4.0.
 
+`case1354_pegase.m` is the PEGASE model of part of the European transmission
+system, from the same library and under the same licence. It is four times the
+size of the largest IEEE case and is there because the IEEE networks are small
+enough that a formulation can be wrong in ways they do not exercise.
+
 They are included unmodified, so that the tests in
 `crates/gridwright-solve/tests/real_networks.rs` validate against networks
 nobody here designed. A synthetic topology cannot tell you the physics is

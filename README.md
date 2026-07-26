@@ -382,7 +382,7 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace --all-features   # 429 tests
+cargo test --workspace --all-features   # 474 tests
 ./target/release/gw demo
 ./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw case examples/pglib/case118_ieee.m

@@ -31,13 +31,20 @@ fn case_path(name: &str) -> PathBuf {
         .join(format!("{name}.m"))
 }
 
-const CASES: [(&str, usize, usize, usize); 5] = [
+const CASES: [(&str, usize, usize, usize); 6] = [
     // name, buses, branches, generators
     ("case14_ieee", 14, 20, 5),
     ("case30_ieee", 30, 41, 6),
     ("case57_ieee", 57, 80, 7),
     ("case118_ieee", 118, 186, 54),
     ("case300_ieee", 300, 411, 69),
+    // PEGASE 1354: a model of part of the European transmission system, and
+    // four times the size of the largest IEEE case. Worth having because the
+    // IEEE networks are small enough that a formulation can be wrong in ways
+    // they do not exercise — islanded areas, parallel circuits, and enough
+    // meshing that the angle references have to be got right rather than
+    // guessed.
+    ("case1354_pegase", 1354, 1991, 260),
 ];
 
 #[test]

@@ -36,7 +36,17 @@ fn agree(a: f64, b: f64, tol: f64, what: &str) {
 
 #[test]
 fn both_solvers_agree_on_the_ieee_networks() {
-    for name in ["case14_ieee", "case30_ieee", "case57_ieee", "case118_ieee", "case300_ieee"] {
+    for name in [
+        "case14_ieee",
+        "case30_ieee",
+        "case57_ieee",
+        "case118_ieee",
+        "case300_ieee",
+        // Four times the largest IEEE case, and a real European network. A
+        // solver can agree on small cases through luck and on this one only by
+        // being right.
+        "case1354_pegase",
+    ] {
         let case = load_case(case_path(name)).unwrap();
         let lopf = build_lopf(&case.network).unwrap();
 

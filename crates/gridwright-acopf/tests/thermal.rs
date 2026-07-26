@@ -181,3 +181,34 @@ fn a_real_network_still_solves_with_its_ratings_applied() {
         );
     }
 }
+
+#[test]
+fn a_thousand_bus_network_solves_ac() {
+    // PEGASE 1354, four times the largest IEEE case and a real European
+    // network. The AC relaxation on the IEEE cases is small enough that a
+    // formulation can be wrong in ways they do not exercise.
+    let net = gridwright_io::matpower::load_case(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../examples/pglib/case1354_pegase.m"),
+    )
+    .unwrap()
+    .network;
+    assert_eq!(net.buses.len(), 1354);
+
+    let s = solve_acopf(&net, 0).unwrap();
+    assert!(
+        matches!(s.status, Status::Optimal | Status::OptimalRelaxed),
+        "{:?}",
+        s.status
+    );
+    // Voltages inside their bands, which is the cheapest check that the answer
+    // describes something rather than nothing.
+    for (b, v) in s.voltage.iter().enumerate() {
+        assert!(
+            *v >= net.buses[b].v_min - 1e-4 && *v <= net.buses[b].v_max + 1e-4,
+            "bus {b} at {v}, outside [{}, {}]",
+            net.buses[b].v_min,
+            net.buses[b].v_max
+        );
+    }
+}

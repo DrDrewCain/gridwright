@@ -463,5 +463,11 @@ narrower claim than "construction is the bottleneck".
 - [ ] Extend the differential harness to every constraint family. It caught the
       phase-one bug immediately and is the highest-value test infrastructure in
       the repository.
-- [ ] Larger real networks: PGLib has cases up to 13,659 buses, and RTE and
+- [x] ~~Larger real networks.~~ **Partly done.** PEGASE 1354 is now in the
+      validation suite: a real European network, four times the largest IEEE
+      case. Every property test holds on it, the from-scratch simplex agrees
+      with HiGHS on its objective, and the AC relaxation solves it with every
+      voltage inside its band. The remaining size question is the same one as
+      before, and it is about time series rather than topology.
+- [ ] Larger still: PGLib has cases up to 13,659 buses, and RTE and
       PEGASE are in the same format we already read.
