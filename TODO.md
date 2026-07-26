@@ -235,10 +235,20 @@ Still missing:
       are how a lot of *historical* European and American data is archived. Less
       pressing than the live formats, and the reason to want them is that
       studies reaching back decades cannot use anything else.
-- [ ] **Writers for the formats that only read.** CSV, Parquet and JSON write;
-      MATPOWER, PSS/E, netCDF and CIM do not. Converting *into* a format the
-      rest of someone's toolchain speaks is half of what an import layer is for,
-      and right now the arrows only point one way.
+- [x] ~~**Writers for MATPOWER and PSS/E.**~~ **Done.** Each returns the notes
+      describing what the format could not hold, in the same way every reader
+      does, because a writer that silently dropped storage would produce a file
+      someone trusted. Verified by reading back with the readers that are
+      themselves cross-validated against other encodings of the same network.
+
+      Writing them turned up a reader bug worth having found: a lone `0` at the
+      head of a record ends a section in RAW, and a transformer with no
+      resistance begins with one. PSS/E's own writer emits `0.00000` and so
+      never hits it, which is exactly the kind of thing that stays hidden until
+      a file arrives from somewhere else.
+- [ ] **Writers for netCDF and CIM.** Harder than the two above and worth less:
+      PyPSA can read the CSV directory this already writes, and a CGMES file
+      that is not conformant is worse than none. Wanted eventually, not next.
 - [x] ~~Reading with no filesystem.~~ **Done.** `load_bytes` takes a name and a
       buffer; `load_files` takes a set, which is what a picker or a dropped
       folder gives and the only way to express a CSV directory or a CGMES model

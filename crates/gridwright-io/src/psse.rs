@@ -162,14 +162,22 @@ fn split(line: &str) -> Vec<String> {
 /// Whether a line ends a section.
 ///
 /// PSS/E writes `0 / END OF BUS DATA, BEGIN LOAD DATA`. Hand-edited files
-/// sometimes carry a bare `0`. Both must terminate, and neither may be mistaken
-/// for a data record, which is why this checks the whole first field rather
-/// than the first character: bus zero is not legal but `0.0` appearing as a
-/// leading impedance in a malformed file should not silently end a section.
+/// sometimes carry a bare `0`.
+///
+/// A terminator is a lone zero and nothing else, which is why the field count
+/// matters as much as the value. A transformer's impedance line begins with its
+/// resistance, and a transformer with no resistance begins with a zero:
+/// `0,0.20912,100` is data, not the end of the section. PSS/E's own writer
+/// happens to emit `0.00000` and so never runs into this, which is exactly the
+/// kind of thing that stays hidden until a file arrives from somewhere else.
 fn is_terminator(line: &str) -> bool {
-    let head = line.split(',').next().unwrap_or("");
-    let head = head.split('/').next().unwrap_or("").trim();
-    head == "0" || head == "-999" || head.is_empty() && line.trim_start().starts_with('/')
+    let body = line.split('/').next().unwrap_or("");
+    let fields: Vec<&str> = body.split(',').map(str::trim).filter(|f| !f.is_empty()).collect();
+    match fields.len() {
+        0 => line.trim_start().starts_with('/'),
+        1 => fields[0] == "0" || fields[0] == "-999",
+        _ => false,
+    }
 }
 
 /// Section identity, taken from the terminator comment where present and from
@@ -888,9 +896,12 @@ mod tests {
         assert!(is_terminator("0"));
         assert!(is_terminator(" 0 "));
         assert!(!is_terminator("1,'BUS1',138.0,3"));
-        // A bus number of 0 is not legal, but an impedance of 0.0 leading a
-        // record must not be read as the end of a section.
+        // An impedance of zero leading a record must not be read as the end of
+        // a section. Both spellings occur: PSS/E writes `0.00000` and other
+        // tools write a bare `0`.
         assert!(!is_terminator("0.001,0.01,0.0"));
+        assert!(!is_terminator("0.00000,0.20912,100.00"));
+        assert!(!is_terminator("0,0.20912,100"));
     }
 
     #[test]
