@@ -344,7 +344,7 @@ per bus, storage on every fourth bus, DC power flow throughout.
 | --- | --- | --- | --- | --- |
 | 256 bus × 168 h | 311,808 | 118,272 | 559,104 | **3.3 ms** |
 | 256 bus × 8760 h | 16,258,560 | 6,167,040 | 29,153,280 | **~100 ms** |
-| 512 bus × 8760 h | 32,517,120 | 12,334,080 | 58,306,560 | **174 ms** |
+| 512 bus × 8760 h | 32,517,120 | 12,334,080 | 58,306,560 | **190 ms** |
 
 Peak resident memory for the 256 × 8760 case is **1.50 GB**, and construction
 includes the transpose: the model is assembled straight into the column major
@@ -352,11 +352,17 @@ form the solvers take, so there is no second pass to charge for. It used to be
 1.95 GB and a further 150 ms, before the merged row major matrix was removed —
 nothing downstream had ever read it.
 
-That row was 89 ms before commitment, losses, cascades and multi-period capacity
-were added; the extra machinery costs about 12%, which seems a fair price and is
-reported rather than quietly rebaselined. Scaling is linear:
-20.9 → 44.8 → 84.3 → 173.7 ms across 64 → 128 → 256 → 512 buses, about 2.05×
-per doubling.
+That row has been rebaselined twice, and both are reported rather than quietly
+absorbed. It was 89 ms before commitment, losses, cascades and multi-period
+capacity were added, which cost about 12% and seems a fair price. Folding the
+transpose in adds a further 8 ms here and removes a separate 150 ms pass, so the
+comparable figure is now what it takes to reach a matrix a solver can read.
+
+Scaling is close to linear: 28.8 → 53.6 → 100.0 → 189.6 ms across
+64 → 128 → 256 → 512 buses, about 1.88× per doubling, best of three runs. Take
+best-of-N rather than a single reading: the assembly is several full-width
+parallel regions and each ends when its slowest thread does, so one busy core
+elsewhere on the machine moves the number more than any of these changes did.
 
 **What has not been measured yet:** a head-to-head against `linopy` on an
 identical problem. Until that exists the claim here is "builds a 16 million
