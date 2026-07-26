@@ -42,10 +42,13 @@ and that is what this engine is not. The numbers are in
 
 ## What that actually buys, and what it does not
 
-On the same model, this builds in 0.104 s on 1.50 GB where linopy takes 200.8 s
-on 22.4 GB. Stated on its own, that ratio implies more than actually follows
-from it, so the qualification belongs here rather than five hundred lines
-further down.
+On the same model, this builds in 0.104 s on 1.50 GB where linopy takes 1.55 s
+on 3.45 GB and JuMP takes 10.34 s on 5.08 GB. That is fifteen times faster than
+linopy and a hundred times faster than JuMP, which is worth having and is less
+than this section used to claim: the earlier figure of two thousand times came
+from a benchmark script of ours that used linopy badly, and
+[the comparison](#the-comparison-this-project-was-founded-on) sets out what
+went wrong.
 
 **It does not make a hard solve tractable.** On a full year at hourly
 resolution the solve dominates completely: construction is 0.0–0.1% of runtime.
@@ -53,23 +56,26 @@ A model that takes HiGHS four minutes still takes four minutes. If your model
 already solves and you build it once, this buys you nothing you could measure,
 and you should use PyPSA, which has a decade of features this does not.
 
-**Nor is 22.4 GB alarming on its own.** On a workstation it is unremarkable,
-and 200 seconds is an annoyance rather than an obstacle. Anyone sceptical that
-those two numbers amount to a crisis is right to be.
+**Nor are the comparison figures alarming on their own.** Ten seconds and five
+gigabytes, which is what JuMP costs, are unremarkable on a workstation. Anyone
+sceptical that they amount to a crisis is right to be. The case for this engine
+does not rest on any single build being painful.
 
 What the difference buys is narrower, and it is about *where* and *how often*
 rather than how fast:
 
 - **Whether the model fits at all.** 1.50 GB runs on a laptop, a CI runner or
-  a browser tab; 22.4 GB needs a machine you have to book. PyPSA-Eur's advice
-  to cluster Europe down to a couple of hundred nodes is a memory decision
-  before it is a time decision.
+  a browser tab. The comparable Python path through PyPSA takes 12.13 GB on the
+  same model, which is the difference between a machine you have and a machine
+  you request. PyPSA-Eur's advice to cluster Europe down to a couple of hundred
+  nodes is a memory decision before it is a time decision.
 - **Building stops being a per-iteration tax.** One build is not the case that
   matters. A rolling horizon over a year takes 122 builds, a scenario sweep
-  takes hundreds, and an interactive edit takes one per change. At 200.8 s
-  each, 122 windows come to **6.8 hours of pure assembly** before any solving
-  happens; at 0.104 s each they come to 13 seconds. That is where the ratio
-  stops being a curiosity.
+  takes hundreds, and an interactive edit takes one per change. At 1.55 s each,
+  122 windows come to **just over three minutes of pure assembly** before any
+  solving happens; at 0.104 s each they come to 13 seconds. Three minutes is
+  not a crisis, which is the honest way to put it. It is the difference between
+  an edit that redraws and an edit you wait for.
 - **It runs where a Python stack cannot.** The whole engine, the format layer
   and a solver compile to `wasm32-unknown-unknown`, so the model can be built
   and solved in a browser tab with no server at all.
@@ -630,68 +636,71 @@ cost behaves as a *fraction of a real study* rather than of a single solve.
 
 ## The comparison this project was founded on
 
-The premise was a quotable claim from the energy modelling literature: that
-Python is "non-competitive" at *building* optimisation problems. Quoting it is
-not measuring it, and it went unmeasured here for a long time.
+The premise was a claim from the energy modelling literature: that Python is
+"non-competitive" at *building* optimisation problems. This section used to
+report a two-thousand-fold speed-up over `linopy` and support that claim.
 
-Same model, same machine, same session. A synthetic 256-bus ring over a year at
-hourly resolution, built in `linopy` 0.9.0 and in gridwright. Only construction
-is timed; both hand the result to the same solver afterwards and that part is
-not in dispute.
+**Both the ratio and the claim turned out to be wrong, and the fault was ours.**
+What follows is the corrected version. The history is kept because a published
+number that moved by two orders of magnitude should not quietly become a
+different number.
 
-This table was published with the claim that the linopy side used it "the way
-linopy is meant to be used". That claim was wrong, and what follows the table
-is the correction rather than a caveat.
+### What was wrong
 
-| | gridwright | linopy 0.9.0 |
-| --- | --- | --- |
-| Variables | 16,258,560 | 16,258,560 |
-| Constraints | 6,167,040 | 6,167,040 |
-| Nonzeros | 29,153,280 | 29,153,216 |
-| Construction, to a matrix | **0.104 s** | **200.8 s** |
-| Peak memory | **1.50 GB** | **22.4 GB** |
+`benchmarks/linopy_build.py` wrote the nodal balance as `(p * g_at).sum("gen")`
+against a dense generators-by-buses array. That multiplies a `(gen, snapshot)`
+variable by a `(gen, bus)` array and builds a `(gen, bus, snapshot)`
+intermediate: 768 x 256 x 8760 entries, to express a sum in which all but three
+terms per bus are zero. The DC flow constraint had the same shape.
 
-**That linopy column is unfair, and the unfairness is ours.** It has since been
-measured against JuMP and against PyPSA, and the second of those showed that
-`benchmarks/linopy_build.py` drives linopy down a path no linopy user would
-take: it writes `(p * g_at).sum("gen")` against a dense incidence array, which
-materialises a generator by bus by snapshot intermediate. PyPSA drives the
-*same linopy 0.9.0* to a larger matrix in **16.7 s on 12.1 GB**.
+It looks like ordinary xarray, and it is not what the library is for. Writing
+the same model with `groupby` for the per-bus sums and indexed `sel` for a
+line's two ends, which is what PyPSA does, produces **the identical matrix** and
+is 130 times faster. The script now does that by default, asserts both paths
+build the same matrix, and keeps the slow one behind `--dense` so the figure
+stays reproducible and the trap stays visible.
 
-So the honest comparison against a Python path that is actually in production
-use is about **100× on time and under 4× on memory per nonzero**, not two
-thousand and fifteen. The 200.8 s figure is reproducible and is a real
-measurement of the script; it is not a fair measurement of linopy, and the
-script is being fixed.
+### The corrected numbers
 
-| | gridwright | JuMP `Model()` | PyPSA | linopy, via our script |
+Same model, same machine: a synthetic 256-bus ring over a year at hourly
+resolution. Only construction is timed, to a matrix a solver could read.
+
+| | gridwright | linopy 0.9.0 | JuMP 1.31 | PyPSA 1.2.4 |
 | --- | --- | --- | --- | --- |
-| Construction | **0.102 s** | 10.34 s | 10.39 s | 98.39 s |
-| Peak memory | **1.58 GB** | 5.08 GB | 12.13 GB | 23.02 GB |
-| M nonzeros/s | **285** | 2.82 | 5.59 | 0.30 |
+| Variables | 16,258,560 | 16,258,560 | 16,258,560 | matched |
+| Nonzeros | 29,153,280 | 29,153,216 | 29,153,280 | matched |
+| Construction | **0.104 s** | **1.55 s** | 10.34 s | 10.39 s |
+| Peak memory | **1.50 GB** | **3.45 GB** | 5.08 GB | 12.13 GB |
 
-Two things follow, and the second is uncomfortable enough that it belongs
-directly under the table rather than in a footnote.
+Against linopy used properly that is **about 15 times faster on roughly half
+the memory**, not two thousand times on a fifteenth. Against JuMP it is about a
+hundred times, on counts that match exactly.
 
-**gridwright is about a hundred times faster than JuMP**, on three counts that
-match exactly, with the nonzero count read out of HiGHS rather than predicted,
-and with three different JuMP construction styles agreeing within 3% so that it
-is not a strawman. That is the comparison this project should always have led
-with, because JuMP is the tool the founding quote recommends.
+### What the corrected numbers still support, and what they do not
 
-**And the founding quote did not survive the test.** It says Python is
-non-competitive at building optimisation problems "compared to tools based on
-Julia or C++". On this model Python built a *larger* matrix at 5.59 M nonzeros
-per second against Julia's 2.82 M: about twice as fast. The real distinction is
-not the language. It is a purpose-built assembler against a general-purpose
-modelling layer, and JuMP and linopy are both the latter. The quote is left in
-the [Why](#why) section because it is what prompted the project, with this
-result noted there.
+**They still support the engineering.** Fifteen times is worth having when a
+study builds the model repeatedly, and the memory figure is what decides
+whether a model fits at all. Both reasons are set out in
+[What that actually buys](#what-that-actually-buys-and-what-it-does-not) and
+neither depended on the ratio being large.
 
-Full method, counts and caveats in
-[`benchmarks/head_to_head.md`](benchmarks/head_to_head.md). The machine was not
-idle for that run, which is recorded there; the bias runs against gridwright,
-since it is the only parallel builder of the four.
+**They do not support the founding quote.** It says Python is non-competitive
+against Julia. Here Python built a larger matrix per second than Julia did:
+5.59 M nonzeros per second through PyPSA against 2.82 M through JuMP. The
+language is not the variable. A general-purpose modelling layer is slower at
+this than a purpose-built assembler, and JuMP and linopy are both the former.
+
+**And they do not fully clear JuMP.** The linopy figure was wrong because this
+project wrote the linopy benchmark, and the same could be true of the JuMP one.
+Three JuMP construction styles were tried and agreed within 3%, which is some
+protection, but linopy was only caught because PyPSA gave an independent
+implementation to check against and JuMP has no equivalent here. Treat the 100x
+as unconfirmed in the way the 2000x turned out to be.
+
+Method, counts and caveats: [`benchmarks/head_to_head.md`](benchmarks/head_to_head.md).
+The linopy timings above were taken while the machine was busy and are being
+re-run under `benchmarks/measure.sh`, which refuses to measure on a loaded
+machine.
 
 **The memory number matters more than the speed one.** Two hundred seconds is an
 annoyance; 22 GB is where a laptop stops and the model does not get run at all.
