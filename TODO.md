@@ -567,9 +567,18 @@ path, and a network round-trips losslessly through JSON. What remains is the
 binding layer, the interface itself, and one piece of solver work that decides
 what the interface can honestly offer.
 
-- [ ] **Sparse LU first.** See the solver section. At 864 rows the in-page
-      solver takes a second, and that is the whole constraint on what a browser
-      build can do unaided.
+- [x] ~~**Sparse LU first.**~~ **Done**, and it moved the ceiling this section
+      was written around. 864 rows took a second when this item was written; it
+      takes 57 ms now, 3,456 rows take 0.27 s and 20,736 take 11.2 s. The
+      structural crash basis is most of the second factor and the sparse
+      factorisation the first.
+
+      So the honest statement of the browser constraint has changed. It is no
+      longer "a page can barely solve twenty buses over a day": a few thousand
+      rows is interactive in-page, which is a small national model at daily
+      resolution or a regional one at hourly. What it still is not is a
+      continental year, and no amount of solver work in this crate makes it one
+      — that is the decomposition question, not the factorisation question.
 - [ ] **`wasm-bindgen` wrapper**: load a file, edit a network, solve, read
       results, all across the JavaScript boundary. Small, and blocked on
       nothing.

@@ -403,48 +403,90 @@ fn a_cascade_without_a_downstream_link_does_not_share_water() {
 
 #[test]
 fn travel_time_delays_when_water_arrives_downstream() {
-    // Water released in the first snapshot with a travel time of two arrives in
-    // the third. The constraint should exist for the snapshots where arrival
-    // still falls inside the horizon, and simply not for those where it does
-    // not, rather than wrapping around or erroring.
-    let mut net = Network::new(Snapshots::hourly(4));
-    let b = net.add_bus("B", "XX");
-    net.add_generator(Generator {
-        name: "g".into(),
-        bus: b,
-        p_nom: 500.0,
-        marginal_cost: 1.0,
-        ..Default::default()
-    });
-    net.add_load(Load {
-        name: "l".into(),
-        bus: b,
-        p_set: 5.0,
-        ..Default::default()
-    });
-    let lower = net.add_storage(StorageUnit {
-        name: "lower".into(),
-        bus: b,
-        p_nom: 50.0,
-        max_hours: 10.0,
-        cyclic: false,
-        ..Default::default()
-    });
-    net.add_storage(StorageUnit {
-        name: "upper".into(),
-        bus: b,
-        p_nom: 50.0,
-        max_hours: 10.0,
-        cyclic: false,
-        downstream: Some(lower),
-        travel_time: 2,
-        ..Default::default()
-    });
-    net.storage_inflow = TimeSeries::from_rows(&[vec![0.0; 4], vec![10.0; 4]], 4).unwrap();
+    // Water released now arrives downstream `travel_time` snapshots later, and
+    // releases whose arrival falls past the horizon leave the system.
+    //
+    // This test used to assert only that the model solved, while its comment
+    // claimed the arrival timing — so the travel time could have been ignored
+    // outright and it would have passed. The claim is now the assertion: the
+    // first snapshot in which the lower reservoir can release anything is
+    // exactly the travel time, because until then nothing has reached it.
+    //
+    // The fixture has to force the issue rather than hope for it. The upper
+    // reservoir holds far less than its inflow and cannot spill, so it must
+    // release every snapshot; demand exceeds what that release covers, so the
+    // lower reservoir discharges the moment it has anything to discharge; and
+    // the generator costs something, so an optimal solution never moves water
+    // for no reason.
+    let build = |travel: usize| {
+        let mut net = Network::new(Snapshots::hourly(4));
+        let b = net.add_bus("B", "XX");
+        net.add_generator(Generator {
+            name: "g".into(),
+            bus: b,
+            p_nom: 500.0,
+            marginal_cost: 1.0,
+            ..Default::default()
+        });
+        net.add_load(Load {
+            name: "l".into(),
+            bus: b,
+            p_set: 30.0,
+            ..Default::default()
+        });
+        let lower = net.add_storage(StorageUnit {
+            name: "lower".into(),
+            bus: b,
+            p_nom: 50.0,
+            max_hours: 10.0,
+            cyclic: false,
+            ..Default::default()
+        });
+        net.add_storage(StorageUnit {
+            name: "upper".into(),
+            bus: b,
+            p_nom: 50.0,
+            // Half an hour of storage against twenty megawatts of inflow: it
+            // has nowhere to put the water but through its turbines.
+            max_hours: 0.5,
+            cyclic: false,
+            spillable: false,
+            downstream: Some(lower),
+            travel_time: travel,
+            ..Default::default()
+        });
+        net.storage_inflow = TimeSeries::from_rows(&[vec![0.0; 4], vec![20.0; 4]], 4).unwrap();
 
-    let lopf = build_lopf(&net).unwrap();
-    let sol = HighsSolver::default().solve(&lopf).unwrap();
-    assert_eq!(sol.status, Status::Optimal, "a delayed cascade should still solve");
+        let lopf = build_lopf(&net).unwrap();
+        let sol = HighsSolver::default().solve(&lopf).unwrap();
+        assert_eq!(sol.status, Status::Optimal, "travel {travel}");
+        sol.trajectory(lopf.vars.discharge[lower]).to_vec()
+    };
+
+    for travel in 0..3 {
+        let out = build(travel);
+        for (t, &d) in out.iter().enumerate().take(travel) {
+            assert!(
+                d < 1e-6,
+                "travel {travel}: the lower reservoir released {d} at snapshot {t}, \
+                 before anything upstream could have reached it"
+            );
+        }
+        assert!(
+            out[travel] > 1e-6,
+            "travel {travel}: nothing arrived at snapshot {travel}, so the delay is \
+             not a delay but a blockage: {out:?}"
+        );
+    }
+
+    // A travel time that carries every release past the horizon delivers
+    // nothing at all, which is the edge the constraint has to simply not exist
+    // for rather than wrap around or refuse.
+    let beyond = build(4);
+    assert!(
+        beyond.iter().all(|&d| d < 1e-6),
+        "water arrived downstream after the horizon ended: {beyond:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
