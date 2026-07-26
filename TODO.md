@@ -106,9 +106,12 @@ concrete in the way, named.
       them, since a wind farm's footprint is what limits how much of it a region
       will accept. Charged on capacity added, not on the existing fleet, whose
       land is already taken.
-- [ ] Emissions of the *network* itself: line losses are already modelled, and
-      the carbon attributable to them currently lands on whoever consumed the
-      power rather than being reported as a loss.
+- [x] ~~Emissions of the *network* itself.~~ **Done.** Consumption accounting
+      spreads loss carbon silently over whoever drew power through the lines
+      that lost it, which is defensible and hides one of the few numbers a
+      transmission planner can act on. Now reported separately, per line and in
+      total, as a slice of what was emitted rather than an addition to it. Zero
+      means losses were not modelled, which is not the same as their being zero.
 
 ## Formulation
 

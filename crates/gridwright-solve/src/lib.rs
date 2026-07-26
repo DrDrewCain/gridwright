@@ -164,6 +164,13 @@ impl Solution {
                 .iter()
                 .map(|block| block.map_or(0.0, |b| self.capacity_built(b)))
                 .collect(),
+            losses: vars
+                .line_loss
+                .iter()
+                .map(|block| {
+                    block.map_or_else(Vec::new, |b| self.trajectory(b).to_vec())
+                })
+                .collect(),
         }
     }
 

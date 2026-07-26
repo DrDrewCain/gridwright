@@ -71,6 +71,20 @@ pub struct Emissions {
     pub average_intensity: f64,
     /// Emissions embodied in capacity built, as opposed to emitted running it.
     pub embodied: f64,
+    /// Tonnes emitted to cover what the network lost in transmission.
+    ///
+    /// Not an addition to [`Emissions::total`] but a slice of it: this carbon
+    /// was emitted and is already counted, and the question is what it was for.
+    /// Consumption accounting spreads it silently over whoever drew power
+    /// through the lines that lost it, which is defensible and hides one of the
+    /// few numbers a transmission planner can actually act on. Reported
+    /// separately so it can be seen.
+    ///
+    /// Zero when losses were not modelled, which is not the same as their being
+    /// zero: a DC model without loss terms simply does not know.
+    pub losses: f64,
+    /// The same, per line, for finding which corridors are expensive.
+    pub losses_by_line: Vec<f64>,
     /// Buses whose intensity could not be traced, because nothing reached them.
     ///
     /// Reported rather than filled with zero: an untraceable bus is one nothing
@@ -93,6 +107,9 @@ pub struct SolvedFlows<'a> {
     pub shed: &'a [Vec<f64>],
     /// Capacity built per generator, MW. Empty when nothing was expandable.
     pub built: &'a [f64],
+    /// `[line][snapshot]`, MW lost in transmission. Empty when losses were not
+    /// modelled, which is not the same as their being zero.
+    pub losses: &'a [Vec<f64>],
 }
 
 /// What one fuel emitted and how much it generated.
@@ -128,6 +145,7 @@ pub struct Flows {
     pub flows: Vec<Vec<f64>>,
     pub shed: Vec<Vec<f64>>,
     pub built: Vec<f64>,
+    pub losses: Vec<Vec<f64>>,
 }
 
 impl Flows {
@@ -137,6 +155,7 @@ impl Flows {
             flows: &self.flows,
             shed: &self.shed,
             built: &self.built,
+            losses: &self.losses,
         }
     }
 }
@@ -368,6 +387,29 @@ pub fn account(net: &Network, sol: SolvedFlows<'_>) -> Result<Emissions, Emissio
         }
     }
 
+    // --- Carbon spent on losses. ---
+    //
+    // Losses are charged half to each end of a line, so the carbon behind them
+    // is the energy lost against the mixture at those two buses. This is a
+    // reading of `total` rather than an addition to it: the emissions happened
+    // and are already counted, and the point is to say what they bought.
+    let mut losses_by_line = vec![0.0; net.lines.len()];
+    for (l, line) in net.lines.iter().enumerate() {
+        let Some(series) = sol.losses.get(l) else {
+            continue;
+        };
+        let mut tonnes = 0.0;
+        for (s, &lost) in series.iter().enumerate().take(t) {
+            if lost <= 0.0 {
+                continue;
+            }
+            let mix = 0.5 * (intensity[line.bus0][s] + intensity[line.bus1][s]);
+            tonnes += lost * weights[s] * mix;
+        }
+        losses_by_line[l] = tonnes;
+    }
+    let losses: f64 = losses_by_line.iter().sum();
+
     // --- Embodied emissions. ---
     let embodied = net
         .generators
@@ -397,6 +439,8 @@ pub fn account(net: &Network, sol: SolvedFlows<'_>) -> Result<Emissions, Emissio
         intensity,
         marginal_intensity,
         total,
+        losses,
+        losses_by_line,
         average_intensity,
         embodied,
         untraced,

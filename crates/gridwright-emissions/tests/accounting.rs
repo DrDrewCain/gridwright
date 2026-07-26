@@ -34,6 +34,7 @@ fn production_and_consumption_differ_and_that_is_the_point() {
         flows: &[vec![60.0]],
         shed: &[vec![0.0], vec![0.0]],
         built: &[],
+        losses: &[],
     }).unwrap();
 
     assert!(close(e.total, 100.0), "total {}", e.total);
@@ -55,6 +56,7 @@ fn imported_power_carries_the_exporters_intensity() {
         flows: &[vec![60.0]],
         shed: &[vec![0.0], vec![0.0]],
         built: &[],
+        losses: &[],
     }).unwrap();
     // B generates nothing, so its intensity is entirely inherited.
     assert!(close(e.intensity[1][0], 1.0), "B intensity {}", e.intensity[1][0]);
@@ -87,6 +89,7 @@ fn power_from_two_sources_mixes_in_proportion() {
         flows: &[vec![100.0], vec![100.0]],
         shed: &[vec![0.0], vec![0.0], vec![0.0]],
         built: &[],
+        losses: &[],
     }).unwrap();
     assert!(close(e.intensity[1][0], 0.5), "mixed intensity {}", e.intensity[1][0]);
 }
@@ -113,6 +116,7 @@ fn average_and_marginal_intensity_are_different_numbers() {
         flows: &[],
         shed: &[vec![0.0]],
         built: &[],
+        losses: &[],
     }).unwrap();
 
     assert!(close(e.average_intensity, 0.2), "average {}", e.average_intensity);
@@ -140,6 +144,7 @@ fn embodied_emissions_are_counted_against_what_was_built() {
         flows: &[],
         shed: &[vec![0.0]],
         built: &[50.0],
+        losses: &[],
     }).unwrap();
     // Nothing emitted running it, 150 t emitted making it.
     assert!(close(e.total, 0.0), "operational {}", e.total);
@@ -165,6 +170,7 @@ fn a_bus_nothing_reached_is_reported_rather_than_called_clean() {
         flows: &[],
         shed: &[vec![0.0], vec![0.0]],
         built: &[],
+        losses: &[],
     }).unwrap();
     assert!(e.untraced.contains(&1), "the isolated bus should be flagged, got {:?}", e.untraced);
 }
@@ -174,6 +180,7 @@ fn mismatched_input_shapes_are_refused() {
     let net = exporter();
     assert!(account(&net, SolvedFlows {
         dispatch: &[], flows: &[vec![0.0]], shed: &[vec![0.0], vec![0.0]], built: &[],
+        losses: &[],
     }).is_err());
 }
 
@@ -201,6 +208,7 @@ fn emissions_group_by_fuel_and_carry_their_generation_with_them() {
         flows: &[],
         shed: &[vec![0.0]],
         built: &[],
+        losses: &[],
     }).unwrap();
 
     let coal = e.by_carrier.iter().find(|c| c.carrier == "coal").expect("coal missing");
@@ -231,6 +239,76 @@ fn a_fuel_that_did_not_run_reports_no_intensity_rather_than_zero() {
 
     let e = account(&net, SolvedFlows {
         dispatch: &[vec![0.0]], flows: &[], shed: &[vec![0.0]], built: &[],
+        losses: &[],
     }).unwrap();
     assert!(e.by_carrier[0].intensity().is_none());
+}
+
+#[test]
+fn carbon_spent_on_network_losses_is_reported_separately() {
+    // A slice of the total rather than an addition to it. Consumption
+    // accounting spreads loss carbon silently over whoever drew power through
+    // the lines that lost it, which is defensible and hides one of the few
+    // numbers a transmission planner can act on.
+    //
+    // Hand-derived. A generates 100 at 1.0 t/MWh with 10 MW lost on the line;
+    // both ends sit at an intensity of 1.0, so the loss carries 10 t.
+    let net = exporter();
+    let e = account(&net, SolvedFlows {
+        dispatch: &[vec![110.0]],
+        flows: &[vec![60.0]],
+        shed: &[vec![0.0], vec![0.0]],
+        built: &[],
+        losses: &[vec![10.0]],
+    }).unwrap();
+
+    assert!(close(e.losses, 10.0), "losses carried {} t", e.losses);
+    assert!(close(e.losses_by_line[0], 10.0));
+    // And it is part of the total, not on top of it.
+    assert!(close(e.total, 110.0), "total {}", e.total);
+    assert!(e.losses < e.total, "losses cannot exceed what was emitted");
+}
+
+#[test]
+fn a_model_without_losses_reports_zero_rather_than_guessing() {
+    // Zero here means "not modelled", which is not the same as "none". A DC
+    // model with no loss terms simply does not know, and inventing a figure
+    // would be worse than reporting nothing.
+    let net = exporter();
+    let e = account(&net, SolvedFlows {
+        dispatch: &[vec![100.0]],
+        flows: &[vec![60.0]],
+        shed: &[vec![0.0], vec![0.0]],
+        built: &[],
+        losses: &[],
+    }).unwrap();
+    assert!(close(e.losses, 0.0));
+    assert_eq!(e.losses_by_line.len(), net.lines.len());
+}
+
+#[test]
+fn losses_on_a_clean_corridor_carry_no_carbon() {
+    // The attribution follows the mixture, not the megawatt-hours. A line
+    // carrying wind loses wind.
+    let mut net = Network::new(Snapshots::hourly(1));
+    let a = net.add_bus("A", "AA");
+    let b = net.add_bus("B", "BB");
+    net.add_generator(Generator {
+        name: "wind".into(), bus: a, p_nom: 200.0, marginal_cost: 0.0,
+        co2_emissions: 0.0, ..Default::default()
+    });
+    net.add_load(Load { name: "l".into(), bus: b, p_set: 90.0, ..Default::default() });
+    net.add_line(Line {
+        name: "AB".into(), bus0: a, bus1: b, s_nom: 500.0, susceptance: 1.0,
+        ..Default::default()
+    });
+
+    let e = account(&net, SolvedFlows {
+        dispatch: &[vec![100.0]],
+        flows: &[vec![100.0]],
+        shed: &[vec![0.0], vec![0.0]],
+        built: &[],
+        losses: &[vec![10.0]],
+    }).unwrap();
+    assert!(close(e.losses, 0.0), "clean losses carried {} t", e.losses);
 }
