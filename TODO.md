@@ -735,5 +735,54 @@ narrower claim than "construction is the bottleneck".
       with HiGHS on its objective, and the AC relaxation solves it with every
       voltage inside its band. The remaining size question is the same one as
       before, and it is about time series rather than topology.
-- [ ] Larger still: PGLib has cases up to 13,659 buses, and RTE and
-      PEGASE are in the same format we already read.
+- [x] ~~Larger still: PGLib has cases up to 13,659 buses.~~ **Done.** PEGASE
+      2869, RTE 6470, PEGASE 9241, PEGASE 13659 and GOC 2000 are in the suite,
+      2.45 MB compressed. Every physical property is checked per bus rather than
+      in aggregate: nodal balance at every bus, flows within ratings, dispatch
+      within limits, the DC flow equation on every branch, one pinned angle per
+      synchronous area, and an identical matrix from building twice.
+
+      Construction is essentially linear and never above 7 ms. The 13,659-bus
+      network builds faster than the 1,354-bus one solves.
+
+      | case | buses | rows | cols | nonzeros | build | solve |
+      | --- | --- | --- | --- | --- | --- | --- |
+      | case1354_pegase | 1,354 | 3,345 | 4,959 | 11,569 | 1.6 ms | 51 ms |
+      | case2869_pegase | 2,869 | 7,451 | 10,830 | 26,289 | 2.2 ms | 0.26 s |
+      | case6470_rte | 6,470 | 15,395 | 22,706 | 52,016 | 3.4 ms | 0.97 s |
+      | case9241_pegase | 9,241 | 25,274 | 35,976 | 90,883 | 4.2 ms | see below |
+      | case13659_pegase | 13,659 | 34,110 | 51,877 | 120,038 | 5.1 ms | 6.9 s |
+
+      **HiGHS 1.15.0 cannot solve case9241_pegase, and the from-scratch simplex
+      can.** `Highs_run` returns an error after three to nine seconds with model
+      status "Not Set", deterministically, unaffected by thread count. It is not
+      the model: no infinite or NaN coefficient, no NaN row bound, presolve
+      reduces it cleanly, and PEGASE 13659, a larger model of the same system
+      from the same publisher with the same susceptance range, solves fine. Ours
+      solves it to optimality and the answer passes every physical check.
+
+      That is the strongest argument this project has for having written its own
+      solver, and it was found by accident rather than looked for. The reason
+      the solver exists was that HiGHS cannot go in a browser; that it also
+      solves a case HiGHS declines is a better reason and nobody predicted it.
+      Three tests pin it, including one asserting HiGHS still fails, to be
+      deleted when an upgrade fixes it.
+
+      **The synthetic ring has been flattering the numbers**, which the item
+      below suspected and this settles. The simplex runs at about `rows^2.5` on
+      real topologies against the `rows^1.9` the ring gives. HiGHS runs the same
+      ladder at about `rows^2.1`, so it is partly the problem and partly us.
+- [ ] **Re-run the large-case simplex ladder on an idle machine.** The
+      exponents above are sound but the absolute seconds are upper bounds: the
+      measurement ran while other agents were benchmarking, and the long rungs
+      drifted between passes (23.5 s to 42 s, 197 s to 230 s) while the short
+      one repeated exactly. That is the same fault that has now corrupted four
+      measurements in this project, so the numbers are marked rather than
+      quoted.
+- [ ] **The `area` column blocked more than the GOC cases, and may still be
+      blocking something.** Reading MATPOWER's control areas as synchronous
+      areas is fixed, but the same question applies to every other reader that
+      carries an area concept: PSS/E has one, CIM has control areas, and UCTE
+      puts a country letter in the node code. Each should be checked against the
+      same standard, that a synchronous area is a connected component of the AC
+      network and not a label.
