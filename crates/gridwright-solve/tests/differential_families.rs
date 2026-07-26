@@ -452,13 +452,10 @@ fn both_solvers_agree_across_stochastic_scenarios() {
     }
     // Two futures over the same horizon: an easy one and a hard one. The
     // investment is shared, the operating cost is weighted.
-    let mut demand = vec![vec![0.0; hours]; 3];
-    for t in 0..hours {
-        let hard = t >= 4;
-        demand[0][t] = if hard { 200.0 } else { 120.0 };
-        demand[1][t] = if hard { 230.0 } else { 140.0 };
-        demand[2][t] = if hard { 310.0 } else { 190.0 };
-    }
+    let severe = |mild: f64, harsh: f64| -> Vec<f64> {
+        (0..hours).map(|t| if t >= 4 { harsh } else { mild }).collect()
+    };
+    let demand = vec![severe(120.0, 200.0), severe(140.0, 230.0), severe(190.0, 310.0)];
     net.load_profile = TimeSeries::from_rows(&demand, hours).unwrap();
     let deterministic = both_agree(&net, "deterministic");
 
