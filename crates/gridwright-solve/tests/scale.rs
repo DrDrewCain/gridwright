@@ -85,7 +85,12 @@ fn ring(buses: usize, hours: usize) -> Network {
 #[ignore = "minutes; run explicitly for numbers"]
 fn where_the_whole_horizon_stops_being_solvable() {
     println!("\n  buses  cols        build      solve");
-    for buses in [8, 16, 32, 64] {
+    // Runs to completion at every rung. An earlier version of this table
+    // reported the largest as "did not finish in seven minutes", which was not
+    // a property of the problem but the point at which the person running it
+    // stopped waiting. Minutes are not a long time for an optimisation of this
+    // size, and the whole ladder takes a few of them.
+    for buses in [8, 16, 32, 64, 128] {
         let net = ring(buses, 8760);
         let t0 = Instant::now();
         let lopf = build_lopf(&net).unwrap();

@@ -631,37 +631,54 @@ Measured, on synthetic topologies, and labelled as such wherever it appears.
 Correctness is validated against real networks; these say only how the problem
 grows.
 
-A full year at hourly resolution, solved whole:
+A full year at hourly resolution, solved whole, every rung run to completion:
 
-| Buses | Variables | Build | Solve |
+| Buses | Columns | Build | Solve |
 | --- | --- | --- | --- |
-| 16 | 1.0M | 11 ms | 20 s |
-| 32 | 2.0M | 14 ms | 194 s |
-| 64 | 4.1M | — | being measured; see below |
+| 8 | 402,960 | 14.7 ms | 3.8 s |
+| 16 | 805,920 | 4.7 ms | 10.3 s |
+| 32 | 1,611,840 | 8.5 ms | 31.0 s |
+| 64 | 3,223,680 | 19.1 ms | **110.7 s** |
 
-The seven-minute cutoff this row used to carry was not a property of the
-problem; it was the point at which I stopped waiting. Reporting it as though
-it were a result was wrong, because minutes are not a long time for an
-optimisation of this size. It is being run to completion, and this row will
-carry the number rather than an abandonment.
+**This table replaces an earlier one that was wrong, and the correction is
+larger than the row that prompted it.** The 64-bus case was published as "did
+not finish in seven minutes". It solves in under two minutes. The whole ladder
+above takes 156 seconds; the claim that one row of it was intractable came from
+stopping the clock rather than from the problem.
 
-The solve grows about 9.5× for a doubling and construction is 0.0–0.1% of
-runtime. **At full resolution the fast build buys almost nothing.** The same
-year through a rolling horizon of 96-hour windows keeping 72:
+Re-running it moved every other number too: 16 buses was published as 20 s and
+is 10.3 s, 32 as 194 s and is 31.0 s, and the variable counts were overstated by
+about a quarter. The growth rate was published as 9.5× per doubling and is
+about 3×. The rolling-horizon table below re-measured to within 6% of its
+published values, so the fault was specific to this table rather than general —
+most likely machine load, which has now corrupted a measurement in this project
+three separate times and is the reason every timing here is best-of-N on an
+idle machine.
 
-| Buses | Windows | Total |
-| --- | --- | --- |
-| 32 | 122 | 8.5 s |
-| 64 | 122 | 23 s |
-| 128 | 122 | 72 s |
+Construction is 0.017% of runtime at 64 buses. **At full resolution the fast
+build still buys almost nothing**, and that conclusion is unchanged by the
+correction — it was never resting on the solve being intractable.
 
-Twenty-three times faster at 32 buses, and it finishes where the monolithic
-solve does not. Note that this performs **122 builds instead of one** and
+The same year through a rolling horizon of 96-hour windows keeping 72:
+
+| Buses | Windows | Rolling | Solved whole | |
+| --- | --- | --- | --- | --- |
+| 16 | 122 | 4.0 s | 10.3 s | 2.6× |
+| 32 | 122 | 8.7 s | 31.0 s | 3.6× |
+| 64 | 122 | 23.6 s | 110.7 s | 4.7× |
+| 128 | 122 | 76.3 s | — | |
+
+The previous version of this claimed **23× at 32 buses, and that the rolling
+horizon "finishes where the monolithic solve does not"**. Neither is true. It is
+3.6× at 32 buses, and the monolithic solve finishes comfortably at 64. The
+advantage is real, grows with size, and is a factor of a few rather than an
+order of magnitude.
+
+Note that the rolling horizon performs **122 builds instead of one**, and
 construction still does not register: decomposition is what makes a year
-tractable, not the builder. What the fast build actually buys is interactive
-rebuild, scenario sweeps that assemble the same network hundreds of times, and
-the memory ceiling. That is a narrower claim than "construction is the
-bottleneck", and it is the true one.
+tractable, not the builder. What the fast build actually buys is set out in
+[What that actually buys](#what-that-actually-buys-and-what-it-does-not), and
+none of it is "the solve gets faster".
 
 The pure-Rust solver, which is what a browser has:
 
