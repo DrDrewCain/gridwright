@@ -334,6 +334,11 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
                 shiftable_pu: t.number(r, "shiftable_pu", 0.0).map_err(|e| field(e, &src.label("loads")))?,
                 shift_window: t.number(r, "shift_window", 0.0).map_err(|e| field(e, &src.label("loads")))? as usize,
                 shift_cost: t.number(r, "shift_cost", 0.0).map_err(|e| field(e, &src.label("loads")))?,
+                // A willingness-to-pay curve is a list, and a CSV cell is not,
+                // so it is written as `mw@value` pairs separated by semicolons:
+                // `30@200;20@500`. Ugly and unambiguous, which is the right
+                // way round for a column that is usually absent.
+                value_tranches: parse_tranches(&t.text_or(r, "value_tranches", "")),
             });
         }
     }
@@ -508,6 +513,22 @@ fn wide_series_with(
     TimeSeries::from_flat(data, names.len(), n_snap).map_err(IoError::Invalid)
 }
 
+/// Parse a willingness-to-pay curve from one cell.
+///
+/// `30@200;20@500` is thirty megawatts valued at two hundred and the next
+/// twenty at five hundred. A malformed entry is skipped rather than fatal: a
+/// curve is an optional refinement, and refusing to load a whole network over a
+/// stray character in one would be out of proportion.
+fn parse_tranches(text: &str) -> Vec<(f64, f64)> {
+    text.split(';')
+        .filter_map(|part| {
+            let (mw, value) = part.trim().split_once('@')?;
+            Some((mw.trim().parse().ok()?, value.trim().parse().ok()?))
+        })
+        .filter(|&(mw, _): &(f64, f64)| mw > 0.0)
+        .collect()
+}
+
 /// Write one CSV, creating the directory if needed.
 fn write_csv(dir: &Path, name: &str, contents: &str) -> Result<(), IoError> {
     std::fs::create_dir_all(dir).map_err(|source| IoError::Read {
@@ -598,12 +619,17 @@ tap_ratio,phase_shift,loss,s_nom_extendable,s_nom_max,capital_cost\n",
     }
     write_csv(dir, "lines.csv", &out)?;
 
-    let mut out = String::from("name,bus,p_set,q_set,shiftable_pu,shift_window,shift_cost\n");
+    let mut out = String::from("name,bus,p_set,q_set,shiftable_pu,shift_window,shift_cost,value_tranches\n");
     for l in &net.loads {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{}\n",
             q(&l.name), bus(l.bus), f(l.p_set), f(l.q_set), f(l.shiftable_pu),
-            l.shift_window, f(l.shift_cost)
+            l.shift_window, f(l.shift_cost),
+            q(&l.value_tranches
+                .iter()
+                .map(|(mw, v)| format!("{}@{}", f(*mw), f(*v)))
+                .collect::<Vec<_>>()
+                .join(";"))
         ));
     }
     write_csv(dir, "loads.csv", &out)?;

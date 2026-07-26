@@ -591,6 +591,22 @@ pub struct Load {
     /// within a shift. Zero, or a value at least as long as the horizon, lets
     /// energy move anywhere inside it.
     pub shift_window: usize,
+    /// A willingness-to-pay curve, as tranches of `(MW, value per MWh)`.
+    ///
+    /// Demand is otherwise all-or-nothing: served, or shed at the value of lost
+    /// load, which is a number in the thousands chosen to mean "never do this".
+    /// Real demand is not like that. Some of it would rather not be served at a
+    /// high enough price, and says so through a bid curve: this much at that
+    /// value, the next slice at a lower one.
+    ///
+    /// Tranches are dropped cheapest first, so order does not matter and the
+    /// curve does not have to be sorted. Anything beyond what the tranches
+    /// cover still falls back on the value of lost load, which is the right
+    /// behaviour: a curve says what a consumer will pay, not that they are
+    /// indifferent past its end.
+    ///
+    /// Empty means inelastic, which is what every load was before.
+    pub value_tranches: Vec<(f64, f64)>,
     /// Cost per MWh moved, in either direction.
     ///
     /// Shifting is rarely free even when it is possible, and without some cost

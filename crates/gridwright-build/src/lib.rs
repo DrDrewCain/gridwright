@@ -75,6 +75,11 @@ pub struct VarIndex {
     pub spill: Vec<Option<VarBlock>>,
     /// Loss on each lossy line, always non-negative.
     pub line_loss: Vec<Option<VarBlock>>,
+    /// Demand given up at each tranche of a load's willingness-to-pay curve.
+    ///
+    /// Empty for an inelastic load, which is every load that has not been given
+    /// a curve.
+    pub demand_tranche: Vec<Vec<VarBlock>>,
     /// Signed deviation from the demand profile, per shiftable load.
     ///
     /// Positive means more consumed in that snapshot than the profile asked
@@ -389,6 +394,22 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         }));
     }
 
+    // Price-elastic demand: one variable per tranche of the willingness-to-pay
+    // curve, bounded by that tranche's size and priced at its value. Dropping
+    // demand is then a choice with a price rather than a catastrophe with a
+    // penalty, and the optimiser takes the cheapest tranche first without being
+    // told to.
+    vars.demand_tranche.reserve(net.loads.len());
+    for load in &net.loads {
+        let mut blocks = Vec::with_capacity(load.value_tranches.len());
+        for &(mw, _) in &load.value_tranches {
+            if mw > 0.0 {
+                blocks.push(model.add_block(t32, 0.0, mw, 0.0));
+            }
+        }
+        vars.demand_tranche.push(blocks);
+    }
+
     // Shiftable demand: a signed deviation from the profile, per snapshot.
     // One variable rather than two, since a load that both defers and advances
     // in the same snapshot is not a thing, and splitting it would only give the
@@ -540,6 +561,23 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
             model.set_obj(vars.link_flow[k], &obj_buf)?;
         }
     }
+    for (l, load) in net.loads.iter().enumerate() {
+        let mut at = 0usize;
+        for &(mw, value) in &load.value_tranches {
+            if mw <= 0.0 {
+                continue;
+            }
+            let block = vars.demand_tranche[l][at];
+            at += 1;
+            if flat {
+                model.fill_obj(block, value * weights[0]);
+            } else {
+                obj_buf.clear();
+                obj_buf.extend((0..t).map(|s| cost_at(value, s)));
+                model.set_obj(block, &obj_buf)?;
+            }
+        }
+    }
     for b in 0..net.buses.len() {
         if flat {
             model.fill_obj(vars.shed[b], net.value_of_lost_load * weights[0]);
@@ -677,6 +715,14 @@ fn build_balance(
                     }
                 }
                 terms.push((vars.shed[b].at(ti), 1.0));
+                // Demand given up at a stated value. Same sign as shedding,
+                // since both reduce what has to be generated; the difference is
+                // the price and the bound.
+                for &ld in loads {
+                    for block in &vars.demand_tranche[ld as usize] {
+                        terms.push((block.at(ti), 1.0));
+                    }
+                }
                 // A shifted load consumes more or less than its profile said,
                 // so the deviation is a withdrawal alongside the demand on the
                 // right hand side rather than part of it.

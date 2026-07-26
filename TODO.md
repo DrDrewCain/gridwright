@@ -191,10 +191,14 @@ concrete in the way, named.
       Movement is charged in both directions, since a signed variable cannot
       carry a cost on its own and without one the optimiser slides demand
       between equally priced snapshots for no reason.
-- [ ] **Price-elastic demand**, as a step beyond shifting: a load that declines
-      rather than moves when the price is high. A piecewise-linear willingness
-      to pay, which is a set of demand blocks at descending values, and the
-      shedding machinery already carries the shape of it.
+- [x] ~~**Price-elastic demand**, a load that declines rather than moves.~~
+      **Done**, as tranches of a willingness-to-pay curve. Shedding prices
+      unserved energy at the value of lost load, a number in the thousands
+      chosen to mean "never do this"; a curve turns dropping demand into a
+      choice with a price. Tranches are taken cheapest first, so a caller does
+      not have to sort the curve, and demand beyond what the curve covers still
+      falls back on the value of lost load — a curve says what a consumer will
+      pay, not that they are indifferent past its end.
 - [ ] **Interruptible contracts**, which are neither shedding nor shifting: a
       load that may be curtailed a bounded number of times for a bounded
       duration, at a stated compensation. Discrete, so it belongs with
