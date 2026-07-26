@@ -266,23 +266,141 @@ fn options(cuts: Cuts, max_nodes: usize) -> MipOptions {
 }
 
 /// Sizes going from the largest rung `cuts.rs` measures up towards something a
-/// user would recognise. Fifty units over a week is the realistic end of this;
-/// whether it is reachable at all is the question.
-const SCALE: [(usize, usize); 6] = [
+/// user would recognise.
+///
+/// A 40 x 96 rung, 3,840 binaries, was here and has been removed on arithmetic
+/// rather than on taste. [`MipOptions`] carries measured node costs for this
+/// exact model family, 0.33 ms at 114 rows rising to 3.92 ms at 444, which fit
+/// `rows^1.8`. A rung of `u` units over `t` periods has `3*u*t + t` rows, so
+/// 40 x 96 is 11,616 rows and one node there costs about 1.5 s. Against any
+/// budget worth setting that rung alone is hours: it was left running for three
+/// of them, never finished, and projected to well over a day.
+///
+/// It also had nothing to add. The question is where the search stops being
+/// usable, and 30 x 48 already answers it by exhausting its budget.
+const SCALE: [(usize, usize); 5] = [
     (12, 12),  // where cuts.rs stops: 144 binaries
     (16, 24),  // 384
     (24, 24),  // 576
     (20, 48),  // 960
     (30, 48),  // 1,440
-    (40, 96),  // 3,840
 ];
 
 #[test]
-#[ignore = "minutes; run explicitly for numbers"]
+#[ignore = "about an hour; run explicitly for numbers"]
 fn where_the_search_stops_being_usable_and_whether_cuts_move_it() {
-    // A budget large enough that reaching it means something, rather than the
-    // default 5,000 which the twelve-by-twelve rung already brushes.
-    const BUDGET: usize = 200_000;
+    // Every cell of this ladder is an independent search, so they are run
+    // concurrently: one branch and bound tree cannot use a second core, but ten
+    // of them can use ten.
+    //
+    // It changes what the timing column means and not what the node column
+    // means. Node counts and whether a rung proved are deterministic and do not
+    // care what else is running; the times are taken under contention and are
+    // upper bounds. The findings this test exists for are in the columns that
+    // are safe.
+    //
+    // Concurrency buys much less here than the cell count suggests, which is
+    // worth stating so nobody budgets on it. The cells differ in cost by orders
+    // of magnitude, so the cheap ones retire in the first seconds and from then
+    // on the wall clock is simply whatever the single slowest cell takes. Ten
+    // cores do not make that cell faster; they only stop it waiting behind the
+    // others. Expect the machine to sit mostly idle for the second half of a
+    // run.
+    //
+    // On the budget, which is the number that decides whether this finishes at
+    // all. A node is one LP solve, and this solver has no warm start, so a node
+    // costs a *whole cold solve*: build the tableau, crash a basis, run phase
+    // one, run phase two. `MipOptions` carries measured costs on this model
+    // family, 0.33 ms at 114 rows rising to 3.92 ms at 444, which fit
+    // `rows^1.8`. A rung of `u` units over `t` periods has `3*u*t + t` rows:
+    //
+    //   | rung    | rows  | predicted ms/node | measured | ratio |
+    //   | ---     | ---   | ---               | ---      | ---   |
+    //   | 12 x 12 | 444   | 3.9               | 4.97     | 1.27x |
+    //   | 16 x 24 | 1,176 | 23                | 32.4     | 1.41x |
+    //   | 20 x 48 | 2,928 | 120               | 178      | 1.48x |
+    //   | 30 x 48 | 4,368 | 248               | 412      | 1.66x |
+    //
+    // The measured column is from the run this comment was written against, and
+    // the prediction held: same shape, and a ratio that is not noise but the
+    // cost of running ten cells at once, rising with model size because larger
+    // cells contend harder for memory bandwidth. Budget on the measured column.
+    // The whole ladder took 55 minutes, of which the last cell alone was 21
+    // with the machine otherwise idle.
+    //
+    // An earlier version set this to 20,000 on the estimate that a node at
+    // 1,440 binaries "costs tens of milliseconds". It costs about 250, so the
+    // estimate was low by an order of magnitude, and the ladder was stopped
+    // after three hours with cells still running and a projected finish of well
+    // over a day. The solver was behaving exactly as designed; the cost model
+    // in the comment was the fault. That is why the arithmetic is written out
+    // above rather than asserted.
+    //
+    // 5,000 answers the same question, because the question is answered by
+    // *whether a rung reaches the budget* rather than by how long it took, and
+    // it still leaves headroom over the largest proving search `cuts.rs`
+    // records, which is 1,644 nodes.
+    const BUDGET: usize = 5_000;
+
+    let cells: Vec<(usize, usize, Cuts)> = SCALE
+        .iter()
+        .flat_map(|&(u, t)| [Cuts::Off, Cuts::Gomory].map(move |c| (u, t, c)))
+        .collect();
+
+    // Each cell reports as it lands, and the assembled table comes afterwards.
+    //
+    // The previous version collected every cell and printed once at the end,
+    // so a run interrupted at any point returned nothing whatsoever: three
+    // hours of solving produced not a single number. `real_scale.rs` already
+    // states the rule this restores, that a ladder which runs for a long time
+    // should publish the rungs it has reached. Going concurrent is what lost
+    // it, because a thread that returns its result on join cannot report
+    // before every other thread has also finished.
+    println!("\n  {} cells, each reported as it finishes:", cells.len());
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut results = Vec::with_capacity(cells.len());
+    std::thread::scope(|scope| {
+        for &(units, periods, cuts) in &cells {
+            let tx = tx.clone();
+            scope.spawn(move || {
+                let c = commitment(units, periods, 0);
+                let cols = c.n_cols;
+                let rows = c.n_rows;
+                let t = Instant::now();
+                let r = solve_mip(c.problem(), &c.integer, options(cuts, BUDGET));
+                let _ = tx.send((units, periods, cuts, cols, rows, r, t.elapsed()));
+            });
+        }
+        // The original sender has to go, or the loop below waits on a sender
+        // that will never send and the test hangs after the last cell.
+        drop(tx);
+
+        for cell in rx {
+            let tag = match cell.2 {
+                Cuts::Off => "off",
+                Cuts::Gomory => "gomory",
+                _ => "other",
+            };
+            match &cell.5 {
+                Ok(s) if s.status == Status::Optimal => println!(
+                    "    {:3} x {:3}  {:>6}  {:>7} nodes  {:>9.1?}  {}",
+                    cell.0,
+                    cell.1,
+                    tag,
+                    s.nodes,
+                    cell.6,
+                    if s.proved { "proved" } else { "OPEN" }
+                ),
+                Ok(s) => println!(
+                    "    {:3} x {:3}  {:>6}  {:>13?}  {:>9.1?}",
+                    cell.0, cell.1, tag, s.status, cell.6
+                ),
+                Err(e) => println!("    {:3} x {:3}  {:>6}  {e}", cell.0, cell.1, tag),
+            }
+            results.push(cell);
+        }
+    });
 
     println!(
         "\n  units x periods   binaries    cols    rows  |  {:>22}  |  {:>22}",
@@ -293,36 +411,34 @@ fn where_the_search_stops_being_usable_and_whether_cuts_move_it() {
         "", "", "", "", "", ""
     );
 
-    for (units, periods) in SCALE {
-        let c = commitment(units, periods, 0);
+    for &(units, periods) in &SCALE {
         let binaries = units * periods;
-        print!(
-            "  {units:3} x {periods:-3}        {binaries:8}  {:6}  {:6}  |",
-            c.n_cols, c.n_rows
-        );
-
+        let mine: Vec<_> = results
+            .iter()
+            .filter(|r| r.0 == units && r.1 == periods)
+            .collect();
+        let (_, _, _, cols, rows, _, _) = mine[0];
+        print!("  {units:3} x {periods:-3}        {binaries:8}  {cols:6}  {rows:6}  |");
         for cuts in [Cuts::Off, Cuts::Gomory] {
-            let t = Instant::now();
-            let r = solve_mip(c.problem(), &c.integer, options(cuts, BUDGET));
-            let dt = t.elapsed();
-            match r {
-                Ok(s) if s.status == Status::Optimal => {
-                    print!(
-                        "  {:>7} nodes {:>7.1?} {:>5}  |",
-                        s.nodes,
-                        dt,
-                        if s.proved { "" } else { "OPEN" }
-                    );
-                }
-                Ok(s) => print!("  {:>13?} {:>7.1?}  |", s.status, dt),
+            let cell = mine.iter().find(|r| r.2 == cuts).unwrap();
+            match &cell.5 {
+                Ok(s) if s.status == Status::Optimal => print!(
+                    "  {:>7} nodes {:>7.1?} {:>5}  |",
+                    s.nodes,
+                    cell.6,
+                    if s.proved { "" } else { "OPEN" }
+                ),
+                Ok(s) => print!("  {:>13?} {:>7.1?}  |", s.status, cell.6),
                 Err(e) => print!("  {e:>22}  |"),
             }
         }
         println!();
     }
+
     println!(
         "\n  OPEN means the node budget of {BUDGET} ran out and the answer is an \
-         incumbent rather than a proved optimum."
+         incumbent rather than a proved optimum. Times are taken with every \
+         cell running at once and are upper bounds; node counts are not affected."
     );
 }
 
