@@ -33,6 +33,8 @@ use gridwright_net::{
 pub mod csv;
 pub mod matpower;
 pub mod psse;
+pub mod ieee_cdf;
+pub mod ucte;
 pub mod detect;
 pub mod write;
 pub mod memory;
@@ -110,6 +112,10 @@ pub enum IoError {
     Matpower(#[from] matpower::MatpowerError),
     #[error("reading PSS/E RAW case: {0}")]
     Psse(#[from] psse::PsseError),
+    #[error("reading IEEE Common Data Format case: {0}")]
+    Cdf(#[from] ieee_cdf::CdfError),
+    #[error("reading UCTE-DEF case: {0}")]
+    Ucte(#[from] ucte::UcteError),
     #[cfg(feature = "json")]
     #[error("reading JSON case: {0}")]
     Json(#[from] json::JsonError),

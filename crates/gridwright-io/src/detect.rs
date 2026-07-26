@@ -33,6 +33,11 @@ pub enum Format {
     ParquetDirectory,
     Matpower,
     Psse,
+    /// The 1973 IEEE Common Data Format, fixed-column text.
+    IeeeCdf,
+    /// UCTE-DEF, the European exchange format, block-structured fixed-column
+    /// text.
+    Ucte,
     /// PowerModels.jl, per-unit and keyed by component number.
     PowerModels,
     /// PSS/E RAWX, the JSON reformulation version 35 introduced.
@@ -55,6 +60,8 @@ impl Format {
             Format::ParquetDirectory => "Parquet directory",
             Format::Matpower => "MATPOWER case",
             Format::Psse => "PSS/E RAW",
+            Format::IeeeCdf => "IEEE Common Data Format",
+            Format::Ucte => "UCTE-DEF",
             Format::PowerModels => "PowerModels JSON",
             Format::Rawx => "PSS/E RAWX",
             Format::NativeJson => "gridwright JSON",
@@ -72,7 +79,13 @@ impl Format {
     /// someone looking for a problem with their data.
     pub fn available(self) -> bool {
         match self {
-            Format::CsvDirectory | Format::Matpower | Format::Psse => true,
+            // The fixed-width text formats need no dependency at all, so they
+            // are in every build the way MATPOWER and RAW are.
+            Format::CsvDirectory
+            | Format::Matpower
+            | Format::Psse
+            | Format::IeeeCdf
+            | Format::Ucte => true,
             Format::PowerModels | Format::NativeJson | Format::Rawx => cfg!(feature = "json"),
             Format::ParquetDirectory => cfg!(feature = "parquet"),
             Format::Excel => cfg!(feature = "excel"),
@@ -276,6 +289,15 @@ pub(crate) fn sniff_text(text: &str, ext: &str) -> Option<Format> {
     if looks_like_matpower(text) {
         return Some(Format::Matpower);
     }
+    // Both fixed-width formats declare themselves unmistakably, which matters
+    // more for them than for most: the IEEE archive publishes its cases as
+    // `ieee14cdf.txt`, so the extension settles nothing at all.
+    if crate::ieee_cdf::looks_like_cdf(text) {
+        return Some(Format::IeeeCdf);
+    }
+    if crate::ucte::looks_like_ucte(text) {
+        return Some(Format::Ucte);
+    }
     if looks_like_psse(trimmed) {
         return Some(Format::Psse);
     }
@@ -285,7 +307,13 @@ pub(crate) fn sniff_text(text: &str, ext: &str) -> Option<Format> {
         "raw" => Some(Format::Psse),
         "rawx" => Some(Format::Rawx),
         "json" => Some(Format::NativeJson),
-        "nc" | "h5" | "hdf5" | "cdf" => Some(Format::Netcdf),
+        // `.cdf` belongs to the IEEE Common Data Format rather than to netCDF.
+        // netCDF4 files are HDF5 and are caught by their magic bytes long
+        // before any extension is consulted, and the netCDF that reaches this
+        // table at all is named `.nc`.
+        "cdf" => Some(Format::IeeeCdf),
+        "uct" | "ucte" => Some(Format::Ucte),
+        "nc" | "h5" | "hdf5" => Some(Format::Netcdf),
         "xlsx" => Some(Format::Excel),
         "xml" | "rdf" => Some(Format::Cgmes),
         // A lone CSV is only meaningful next to its siblings.
@@ -334,6 +362,8 @@ pub fn load_any(path: impl AsRef<Path>) -> Result<Case, IoError> {
         }
         Format::Matpower => crate::matpower::load_case(path)?,
         Format::Psse => crate::psse::load_raw(path)?,
+        Format::IeeeCdf => crate::ieee_cdf::load_cdf(path)?,
+        Format::Ucte => crate::ucte::load_ucte(path)?,
         Format::ParquetDirectory => {
             #[cfg(feature = "parquet")]
             {

@@ -20,6 +20,9 @@ fn corpus() -> Vec<(&'static str, Format)> {
         ("examples/psse/case14_v33.raw", Format::Psse),
         ("examples/psse/case14_v29.raw", Format::Psse),
         ("examples/psse/conventions.raw", Format::Psse),
+        ("examples/ieee_cdf/ieee14cdf.txt", Format::IeeeCdf),
+        ("examples/ieee_cdf/conventions.cdf", Format::IeeeCdf),
+        ("examples/ucte/mini.uct", Format::Ucte),
     ];
     if cfg!(feature = "json") {
         v.push((
@@ -80,6 +83,50 @@ fn a_renamed_file_is_still_read_correctly() {
     std::fs::copy(path("examples/psse/case14_v33.raw"), &r).unwrap();
     assert_eq!(sniff(&r).unwrap(), Format::Psse);
     assert_eq!(load_any(&r).unwrap().network.buses.len(), 14);
+
+    // The two fixed-width formats are the sharpest case of this: the IEEE
+    // archive publishes its cases as `.txt` and nothing else, so the extension
+    // never identified them in the first place.
+    let c = dir.join("archive.dat");
+    std::fs::copy(path("examples/ieee_cdf/ieee14cdf.txt"), &c).unwrap();
+    assert_eq!(sniff(&c).unwrap(), Format::IeeeCdf);
+    assert_eq!(load_any(&c).unwrap().network.buses.len(), 14);
+
+    let u = dir.join("study");
+    std::fs::copy(path("examples/ucte/mini.uct"), &u).unwrap();
+    assert_eq!(sniff(&u).unwrap(), Format::Ucte);
+    assert_eq!(load_any(&u).unwrap().network.buses.len(), 5);
+}
+
+#[test]
+fn the_fixed_width_formats_read_from_a_buffer_as_well_as_from_a_path() {
+    // The interface this is headed for runs in a browser, where a file picker
+    // hands over a name and a buffer and there is no filesystem to open.
+    for (rel, want) in [
+        ("examples/ieee_cdf/ieee14cdf.txt", 14usize),
+        ("examples/ucte/mini.uct", 5),
+    ] {
+        let bytes = std::fs::read(path(rel)).unwrap();
+        let case = gridwright_io::load_bytes(None, &bytes).unwrap_or_else(|e| panic!("{rel}: {e}"));
+        assert_eq!(case.network.buses.len(), want, "{rel}");
+    }
+}
+
+#[test]
+fn a_cdf_extension_belongs_to_the_common_data_format_rather_than_to_netcdf() {
+    // `.cdf` is claimed by both, and a real netCDF4 file is HDF5 underneath
+    // and is caught by its magic bytes long before any extension is read. A
+    // text file called `.cdf` is the 1973 IEEE format.
+    assert_eq!(
+        sniff(path("examples/ieee_cdf/conventions.cdf")).unwrap(),
+        Format::IeeeCdf
+    );
+    if cfg!(feature = "netcdf") {
+        assert_eq!(
+            sniff(path("examples/pypsa/case14_ieee.nc")).unwrap(),
+            Format::Netcdf
+        );
+    }
 }
 
 #[test]
@@ -139,6 +186,7 @@ fn every_format_reads_the_same_network_to_the_same_answer() {
     check("examples/pglib/case14_ieee.m");
     check("examples/psse/case14_v33.raw");
     check("examples/psse/case14_v29.raw");
+    check("examples/ieee_cdf/ieee14cdf.txt");
     if cfg!(feature = "json") {
         check("examples/powermodels/case14_ieee.json");
         check("examples/rawx/case14_ieee.rawx");

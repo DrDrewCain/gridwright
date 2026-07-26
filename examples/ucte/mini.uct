@@ -1,0 +1,25 @@
+##C 2026.07.25
+A four-substation slice, hand written to exercise every block.
+Impedances are ohms, susceptance microsiemens, ratings amps.
+##N
+##ZDE
+DGEN__11 Gen north    0 3 400.00     0.0     0.0  -700.0  -150.0  -900.0  -200.0  -300.0   300.0
+DLOAD_11 Town busbar1 0 0 400.00   500.0   120.0
+DLOAD_12 Town busbar2 0 0 400.00
+DLOAD_51 Town 110kV   0 0 115.00   220.0    60.0
+##ZFR
+FIMP__11 Border west  0 2 400.00                  -250.0   -40.0  -400.0     0.0  -150.0   150.0
+##L
+DGEN__11 DLOAD_11 1 0   2.00  20.00   300.00   1500 GEN-LOAD 380
+DGEN__11 FIMP__11 1 0   3.00  30.00            2000 INTERCONNECT
+DLOAD_11 FIMP__11 1 8   4.00  40.00     0.00   1000 OUT OF SERV
+DLOAD_11 DLOAD_12 1 2   0.00   0.00     0.00        BUSBAR TIE
+##T
+DLOAD_12 DLOAD_51 1 0 400.0 110.0 500.0   0.50  15.00     0.00   0.00   2500 TRAFO 400110
+DLOAD_11 FIMP__11 1 0 400.0 400.0 1200.   0.30  12.00     0.00   0.00        PST BORDER
+##R
+DLOAD_12 DLOAD_51 1 1.250  10   4 115.0
+DLOAD_11 FIMP__11 1                     1.000 90.00   8   3   0.0 ASYM
+##TT
+DLOAD_12 DLOAD_51 1   4   0.60  16.50
+DLOAD_12 DLOAD_51 1   0   0.50  15.00

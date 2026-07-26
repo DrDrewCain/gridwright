@@ -213,6 +213,8 @@ pub fn load_bytes(name: Option<&str>, bytes: &[u8]) -> Result<Case, IoError> {
     let mut case = match format {
         Format::Matpower => crate::matpower::parse_case(&text(), stem)?,
         Format::Psse => crate::psse::parse_raw(&text(), stem)?,
+        Format::IeeeCdf => crate::ieee_cdf::parse_cdf(&text(), stem)?,
+        Format::Ucte => crate::ucte::parse_ucte(&text(), stem)?,
         Format::Cgmes => {
             #[cfg(feature = "cgmes")]
             {
