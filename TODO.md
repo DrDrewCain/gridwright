@@ -129,10 +129,60 @@ concrete in the way, named.
       relaxation is provably fractional — many commitment relaxations come out
       integral on their own, and a test built on one of those exercises the
       branching not at all.
-- [ ] Better branching than most-fractional. Pseudo-cost branching uses the
-      history of how much each variable's bound actually moved the objective,
-      which most-fractional ignores entirely. The difference shows on problems
-      larger than a page will run, which is why it was not done first.
+- [x] ~~Better branching than most-fractional.~~ **Done**, as pseudo-cost
+      branching behind `MipOptions::branching`, and defaulted on.
+
+      The score is the *product* of the two directional estimates rather than
+      their sum, because a variable worth splitting is one that hurts both ways:
+      a sum happily picks one that is ruinous upwards and free downwards, which
+      buys a child that prunes and a child indistinguishable from its parent.
+      The cold start takes a prior from the objective coefficient rather than
+      strong branching, and the reason is specific to this solver rather than a
+      general preference — there is no warm start here, so a probe costs exactly
+      what exploring the node costs, and shortlisting ten candidates would spend
+      twenty node-solves to save one branch.
+
+      Measured on a unit-commitment ladder, best of five, release build, with
+      relaxations provably fractional by construction rather than by assertion:
+
+      | Units × periods | Most-fractional | Pseudo-cost | |
+      | --- | --- | --- | --- |
+      | 8 × 8 | 468 nodes, 0.43 s | 320, 0.29 s | 1.49× |
+      | 10 × 10 | 1,038, 2.09 s | 439, 0.88 s | 2.37× |
+      | 12 × 12 | 7,044, 27.2 s | 1,644, 6.3 s | 4.31× |
+
+      The win grows with size and the time column tracks the node column, so the
+      scoring is free against a from-scratch simplex solve: there is no size at
+      which it is a liability, only sizes at which it is not yet an advantage.
+      It loses by 0.91× on one profile, which is what "better on average" looks
+      like. At the default `max_nodes` of 5,000, most-fractional runs out of
+      budget at 12 × 12 and returns an unproved incumbent, while pseudo-cost
+      proves the same answer in 1,644 nodes.
+- [x] ~~**A search could report an open gap as proved.**~~ **Fixed**, and it was
+      worse than it first looked.
+
+      `proved` was granted whenever the node stack emptied, whatever the bound
+      said. The bound itself was recomputed on only one of the five ways a node
+      can leave the search — pruned before solving, contradictory bounds, an
+      infeasible relaxation, a relaxation no better than the incumbent, or
+      ordinary exploration — and the four early exits skipped it. When the last
+      open nodes all left by one of those four, the search finished holding a
+      bound it had already outgrown.
+
+      On the commitment generator that is not a rounding wrinkle. Every rung
+      from 2 × 2 to 6 × 6, under both branching rules, reported `proved` while
+      still carrying a gap, the worst of them **7.2%**. Nothing computed was
+      wrong — the incumbent was the optimum and the bound was valid — but a
+      caller reading `proved` as "this is the optimum" was being told so by a
+      search that could not yet know it.
+
+      The per-node work now sits in a labelled block with a single bound update
+      after it, so every exit goes through the same code and a sixth cannot
+      reintroduce this, and `proved` follows from the gap alone. Knapsacks do
+      not reproduce it at all, because commitment problems prune late: the
+      incumbent arrives early and the tail of the tree dies to the bound test
+      rather than to exploration. The regression test therefore lives beside the
+      generator that reproduces it, and it fails on the old code.
 - [ ] Cuts. Nothing is added at a node beyond the branching bounds, so the
       search explores territory that a Gomory or cover cut would have removed
       outright.
@@ -416,18 +466,59 @@ Still missing:
       it, which solves and means nothing. Set points and in-service flags are
       both honoured, and a model built as designed rather than as operated is a
       different and usually more capable network.
-- [ ] **The SV profile**, which carries a solved state: voltages, angles and
-      flows. Not needed to build a model and extremely useful to validate one
-      against, since it is the answer the operator's own tools produced.
+- [x] ~~**The SV profile**, which carries a solved state.~~ **Done.** Voltages,
+      angles, branch and machine flows, tap positions and shunt sections, read
+      through `load_model_with_state`.
+
+      Returned beside the `Case` rather than folded into the `Network`, because
+      the value of it is having a second answer to compare against rather than a
+      first one to trust — it is what the operator's own tools produced. Every
+      entry is an `Option`, since a published state is routinely partial and a
+      zero would be a claim the model never made.
+
+      CIM's into-the-equipment sign is kept rather than flipped to this
+      project's generator convention, which leaves every node summing to zero
+      available as a free check on the reader. Angles arrive in degrees and are
+      stored in radians, as the MATPOWER reader already does for phase shifts.
 - [x] ~~**PSS/E `.rawx`**, the JSON reformulation v35 introduced.~~ **Done**,
       and it is a fraction of the length of the RAW reader for a reason: RAWX
       names every field where RAW is positional, so the whole class of
       version-dependent column offsets simply does not arise. Three JSON
       dialects now share the extension and are told apart by content.
-- [ ] **UCTE-DEF and IEEE Common Data Format.** Both are fixed-width text, both
-      are how a lot of *historical* European and American data is archived. Less
-      pressing than the live formats, and the reason to want them is that
-      studies reaching back decades cannot use anything else.
+- [x] ~~**UCTE-DEF and IEEE Common Data Format.**~~ **Done**, both unconditional
+      since neither needs a dependency.
+
+      Fixed width means columns rather than whitespace, because a blank field
+      that shifts every later field produces a network that parses cleanly and
+      is wrong. Both readers cut by position and there is a test in each for
+      exactly that.
+
+      What made them worth the effort is the conventions, each derived in a
+      comment and re-derived in a test. **IEEE CDF** quotes impedances, line
+      charging and bus shunts *already per unit* on the title card's base —
+      the opposite of MATPOWER, where the shunts are MW/MVAr and must be divided
+      by it, so a reader that treated them alike is out by the base. A blank
+      rating means unlimited rather than unusable, and a blank turns ratio means
+      one rather than zero. **UCTE-DEF** quotes ohms and microsiemens, and the
+      admittance base is the *reciprocal* of the impedance base, so susceptance
+      multiplies where impedance divides — dividing gives 2.1e-10 instead of
+      0.4332. Current limits are amps and become MVA through √3·V·I, the same
+      conversion CIM needed, but a transformer's rating is already MVA and must
+      not go through it. Transformer impedance is referred to the regulated
+      winding, so a 380/110 read against the wrong end is out by twelve. Nominal
+      voltage is the seventh character of the node code rather than a field, and
+      the table is not monotonic. Generation is negative in the file, and the
+      sign flip swaps the ends of the band.
+
+      The IEEE 14-bus in CDF form joins the corpus that reads the same network
+      to the same answer in every encoding: 14 buses, 20 lines, 259 MW, matching
+      MATPOWER, PSS/E, RAWX, netCDF and Excel.
+
+      Two things left open. The UCTE angle-regulation *sign* could not be
+      verified against a reference and is stated as an assumption in the code
+      rather than as a fact. And UCTE country letters are not expanded to ISO
+      names, because the table could not be verified and a wrong one mislabels a
+      whole country.
 - [x] ~~**Writers for MATPOWER and PSS/E.**~~ **Done.** Each returns the notes
       describing what the format could not hold, in the same way every reader
       does, because a writer that silently dropped storage would produce a file
