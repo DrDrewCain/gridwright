@@ -28,6 +28,10 @@
 use gridwright_simplex::{Branching, Cuts, MipOptions, Problem, Status, solve_mip};
 use std::time::Instant;
 
+/// Stable minimum as a share of rating, shared by the generator and by the
+/// reserve clamp that has to respect it.
+const P_MIN_SHARE: f64 = 0.35;
+
 /// A unit commitment problem in compressed sparse column form.
 ///
 /// Deliberately the same generator as `cuts.rs` and `branching.rs`, so that the
@@ -78,7 +82,16 @@ fn commitment(units: usize, periods: usize, variant: usize) -> Commitment {
 }
 
 /// The same model with an optional reserve requirement: in every period the
-/// committed capacity must cover demand by a stated margin.
+/// committed capacity must reach a stated fraction of everything installed.
+///
+/// Stated against installed capacity rather than as a margin over demand, and
+/// that is not cosmetic. A margin over demand is only feasible while
+/// `(1 + margin) * peak <= total`, and peak demand here is 0.85 of total, so
+/// margins above about 0.10 ask for more capacity than exists and the model is
+/// infeasible. An earlier sweep did exactly that and reported that cover cuts
+/// fired in 4 of 15 settings; 11 of those 15 were infeasible, and the true
+/// figure was 4 of 4. A fraction of installed capacity cannot be infeasible,
+/// so the sweep measures what it says it measures.
 ///
 /// This row is the reason the option exists. It sums `Pmax * status` over the
 /// units against a right hand side, which is a 0-1 knapsack over the binaries,
@@ -91,15 +104,15 @@ fn commitment_with_reserve(
     units: usize,
     periods: usize,
     variant: usize,
-    reserve_margin: Option<f64>,
+    reserve_fraction: Option<f64>,
 ) -> Commitment {
     let u_t = units * periods;
     let n_cols = 3 * u_t + periods;
-    let reserve_rows = if reserve_margin.is_some() { periods } else { 0 };
+    let reserve_rows = if reserve_fraction.is_some() { periods } else { 0 };
     let n_rows = 2 * u_t + periods + u_t + reserve_rows;
 
     let p_max = |u: usize| 40.0 + 12.0 * ((u % 5) as f64);
-    let p_min = |u: usize| 0.35 * p_max(u);
+    let p_min = |u: usize| P_MIN_SHARE * p_max(u);
     let run_cost = |u: usize| 8.0 + 3.0 * ((u % 7) as f64);
     let start_cost = |u: usize| 220.0 + 40.0 * ((u % 4) as f64);
 
@@ -112,6 +125,10 @@ fn commitment_with_reserve(
         };
         total * shape + 13.0
     };
+
+    // The lightest period, which is what limits how much plant may be committed
+    // at once: everything committed must run at its stable minimum.
+    let trough = (0..periods).map(demand).fold(f64::INFINITY, f64::min);
 
     // Built by column, since that is the form the solver takes.
     let mut starts = vec![0u32];
@@ -157,7 +174,7 @@ fn commitment_with_reserve(
                 rows.push(start_row(u, t + 1));
                 vals.push(1.0);
             }
-            if reserve_margin.is_some() {
+            if reserve_fraction.is_some() {
                 rows.push(reserve_row(t));
                 vals.push(p_max(u));
             }
@@ -206,8 +223,21 @@ fn commitment_with_reserve(
     for t in 0..periods {
         row_lower[bal_row(t) as usize] = demand(t);
         row_upper[bal_row(t) as usize] = demand(t);
-        if let Some(margin) = reserve_margin {
-            row_lower[reserve_row(t) as usize] = demand(t) * (1.0 + margin);
+        if let Some(fraction) = reserve_fraction {
+            // At least this share of installed capacity committed, clamped to
+            // what can actually be committed.
+            //
+            // Two ceilings, and the second is the one that is easy to miss.
+            // Committed capacity obviously cannot exceed what is installed. But
+            // every committed unit must also generate at least its stable
+            // minimum, so committing capacity C forces at least 0.35*C onto the
+            // system, and in the trough period there may be nowhere for it to
+            // go. Ask for 85% of capacity committed and the model is infeasible
+            // at the trough, which looks exactly like a hard instance and is
+            // not one.
+            let headroom = trough / P_MIN_SHARE;
+            row_lower[reserve_row(t) as usize] =
+                (total * fraction.clamp(0.0, 1.0)).min(headroom).min(total);
         }
     }
 
@@ -364,8 +394,13 @@ fn cover_cuts_fire_on_commitment_once_it_carries_a_reserve_requirement() {
     // instance applied fifty-five cover cuts against ten Gomory.
     //
     // Add the reserve row and they fire, at every margin and size tried.
+    // A modest budget. Cuts are separated at the root, so what has to be true
+    // for a cut count to mean anything is that the root solved, not that the
+    // whole search finished. A tight reserve makes these genuinely hard and
+    // several rungs below stop on the node limit with a good incumbent, which
+    // is a fact about the models rather than a fault.
     let cover = |c: &Commitment| {
-        solve_mip(c.problem(), &c.integer, options(Cuts::Cover, 20_000)).unwrap()
+        solve_mip(c.problem(), &c.integer, options(Cuts::Cover, 1_500)).unwrap()
     };
 
     let plain = commitment(8, 8, 0);
@@ -376,33 +411,52 @@ fn cover_cuts_fire_on_commitment_once_it_carries_a_reserve_requirement() {
          cover cuts found nothing on it"
     );
 
-    // Whether a cover is actually *violated* depends on the answer the
-    // relaxation happens to give, so this is a sweep rather than a single case
-    // and the assertion is the honest weak one: on a family that carries the
-    // row, some of it separates. Printing the pattern matters more than the
-    // assertion does.
+    // Every cell here is feasible by construction, and asserted to have solved,
+    // because the first version of this sweep was mostly measuring
+    // infeasibility. Eleven of its fifteen settings asked for more committed
+    // capacity than the system had installed, the root relaxation never solved,
+    // and zero cuts on an infeasible model was read as a fact about cuts.
     let mut fired = 0;
     let mut cells = 0;
-    for margin in [0.05, 0.15, 0.30, 0.50, 0.80] {
-        for &(u, t) in &[(6usize, 6usize), (8, 8), (10, 10)] {
-            let c = commitment_with_reserve(u, t, 0, Some(margin));
+    // A small sweep, because this runs on every `cargo test`. The full one,
+    // five fractions by three sizes, separates cuts in 12 of its 15 settings
+    // and takes half a minute; the three it misses are the tightest reserves,
+    // where the clamp above has pinned the requirement and left nothing
+    // fractional to cut.
+    for fraction in [0.55, 0.75] {
+        for &(u, t) in &[(6usize, 6usize), (7, 6)] {
+            let c = commitment_with_reserve(u, t, 0, Some(fraction));
             let r = cover(&c);
+            // The root having solved is what makes a cut count meaningful, and
+            // a finite bound is how that shows. Requiring the *search* to
+            // finish would throw away the hardest and most interesting rungs;
+            // requiring nothing at all is how the first version of this sweep
+            // came to report cut counts for infeasible models.
+            assert!(
+                r.lower_bound.is_finite(),
+                "fraction {fraction} at {u}x{t} came back {:?} with no root bound, \
+                 so its cut count says nothing",
+                r.status
+            );
             cells += 1;
             if r.cuts_generated > 0 {
                 fired += 1;
             }
             println!(
-                "  reserve margin {margin:>4}  {u:2}x{t:-2}  generated {:3}  kept {:3}",
-                r.cuts_generated, r.cuts_kept
+                "  committed at least {fraction:>4} of installed  {u:2}x{t:-2}  \
+                 generated {:3}  kept {:3}  {}",
+                r.cuts_generated,
+                r.cuts_kept,
+                if r.proved { "proved" } else { "node limit" }
             );
         }
     }
+    println!("  cover cuts separated something in {fired} of {cells} feasible settings");
     assert!(
         fired > 0,
         "a reserve requirement is a knapsack over the binaries and nothing \
-         separated one at any of the {cells} settings tried"
+         separated one at any of the {cells} feasible settings tried"
     );
-    println!("  cover cuts separated something in {fired} of {cells} settings");
 
     // The control, and it earned its place. An earlier version of this test
     // gave the solver a node budget of one, on the reasoning that whether a cut
@@ -425,9 +479,9 @@ fn cover_cuts_fire_on_commitment_once_it_carries_a_reserve_requirement() {
     // this needs a far larger budget than the same size without one, which is
     // itself worth knowing: the row that gives cover cuts something to separate
     // is also the row that makes the search need them.
-    let small = commitment_with_reserve(4, 4, 0, Some(0.05));
-    let exact = solve_mip(small.problem(), &small.integer, options(Cuts::Off, 500_000)).unwrap();
-    let cut = solve_mip(small.problem(), &small.integer, options(Cuts::Cover, 500_000)).unwrap();
+    let small = commitment_with_reserve(4, 4, 0, Some(0.65));
+    let exact = solve_mip(small.problem(), &small.integer, options(Cuts::Off, 100_000)).unwrap();
+    let cut = solve_mip(small.problem(), &small.integer, options(Cuts::Cover, 100_000)).unwrap();
     assert!(
         exact.proved && cut.proved,
         "neither finished within the budget: off proved {}, cover proved {}",
@@ -478,3 +532,4 @@ fn pure_knapsack() -> Commitment {
         integer,
     }
 }
+
