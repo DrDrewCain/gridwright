@@ -114,6 +114,10 @@ impl Solver for SimplexSolver {
                 col_value: r.col_value,
                 row_dual: r.row_dual,
                 iterations: r.nodes,
+                // Branch and bound counts nodes, not simplex phases; the
+                // per-node split is not aggregated because the sum over nodes
+                // would not mean what the field says.
+                phase_one_iterations: 0,
             }
         } else {
             solve(problem, self.options).map_err(reject)?

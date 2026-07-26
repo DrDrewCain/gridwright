@@ -210,3 +210,48 @@ fn the_cost_crash_starts_variables_where_the_objective_wants_them() {
         plain.iterations
     );
 }
+
+#[test]
+fn the_split_between_the_two_phases_is_reported() {
+    // The number that says where the time goes. Phase one starts from a basis
+    // of every artificial variable, which is feasible for a problem nobody
+    // asked about, and getting from there to a feasible point for the real one
+    // is most of the work: about three quarters of all iterations on the models
+    // this is for.
+    //
+    // Reported rather than hidden, because a crash basis is the only remaining
+    // way to make a solve substantially faster and this is how anyone would
+    // know whether it had worked.
+    let starts = [0u32, 1, 2];
+    let rows = [0u32, 0];
+    let vals = [1.0f64, 1.0];
+    let lower = [0.0f64, 0.0];
+    let upper = [10.0f64, 10.0];
+    let cost = [1.0f64, 2.0];
+    let row_lower = [5.0f64];
+    let row_upper = [5.0f64];
+    let p = Problem {
+        n_cols: 2,
+        n_rows: 1,
+        col_starts: &starts,
+        row_indices: &rows,
+        values: &vals,
+        col_lower: &lower,
+        col_upper: &upper,
+        col_cost: &cost,
+        row_lower: &row_lower,
+        row_upper: &row_upper,
+    };
+    let s = solve(p, Options::default()).unwrap();
+    assert_eq!(s.status, Status::Optimal);
+    assert!((s.objective - 5.0).abs() < 1e-9);
+    assert!(
+        s.phase_one_iterations <= s.iterations,
+        "phase one cannot exceed the total: {} of {}",
+        s.phase_one_iterations,
+        s.iterations
+    );
+    // An equality row starts infeasible from an all-artificial basis, so there
+    // is genuinely something for phase one to do.
+    assert!(s.phase_one_iterations > 0);
+}

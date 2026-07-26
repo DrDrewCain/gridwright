@@ -77,11 +77,29 @@ concrete in the way, named.
       shedding penalties and capital costs are all non-negative and no variable
       has a bound the objective prefers. It bites on a maximisation, which is
       the same problem with every sign flipped, and there is a test for that.
-- [ ] **A structural crash**, which is the version that would help. Rather than
-      choosing bounds, choose a starting *basis*: a triangular selection of
-      structural columns instead of the all-artificial one, so phase one starts
-      much nearer feasible. Harder, because a badly chosen basis is singular and
-      the selection has to guarantee it is not.
+- [ ] **A structural crash**, which is now the one remaining change with a large
+      share to address, and the first in a while: **phase one is about three
+      quarters of every solve.** Measured across the size ladder it is 724 of
+      958 iterations at 432 rows and 33,670 of 45,205 at 20,736 — consistently
+      74 to 75%.
+
+      The reason is the starting basis. It is every artificial variable, which
+      is feasible for a problem nobody asked about and a long way from one for
+      the problem in hand. A triangular selection of structural columns would
+      start much nearer: a generator column is a singleton in its bus's balance
+      row, so choosing one per bus satisfies every balance row outright.
+
+      Two things make it harder than it sounds, and both are why it has not been
+      done rather than excuses for not doing it. A badly chosen basis is
+      singular, so the selection has to guarantee triangularity. And phase one
+      here penalises artificials only, on the assumption that every other basic
+      variable is within bounds — a crashed structural that lands outside its
+      bounds would be invisible to it, so either the crash has to guarantee
+      feasibility of what it puts in the basis or phase one has to change to a
+      composite objective that sees any infeasible basic.
+
+      `Solution::phase_one_iterations` reports the split, so whether an attempt
+      worked is a number rather than an impression.
 - [ ] **The triangular solves** are what is left after that. Every iteration
       performs one forward and one transposed solve against the factors, and
       nothing about choosing differently avoids them.
