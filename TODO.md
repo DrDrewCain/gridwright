@@ -183,9 +183,53 @@ concrete in the way, named.
       incumbent arrives early and the tail of the tree dies to the bound test
       rather than to exploration. The regression test therefore lives beside the
       generator that reproduces it, and it fails on the old code.
-- [ ] Cuts. Nothing is added at a node beyond the branching bounds, so the
-      search explores territory that a Gomory or cover cut would have removed
-      outright.
+- [x] ~~Cuts.~~ **Done**, at the root only, as `MipOptions::cuts`, defaulted to
+      Gomory.
+
+      Root-only is what keeps the validity argument short enough to be sure of.
+      A tableau row is a linear combination of the constraints and so holds at
+      every feasible point, and each nonbasic variable is rewritten as its
+      distance from a bound it actually has, so the shifted variables are
+      non-negative everywhere rather than only at the current vertex. Nothing in
+      the derivation refers to the objective, the incumbent or a branching
+      bound, so a root cut is valid over the whole tree with nothing to scope,
+      carry or drop. Checked by enumerating all 2^12 binary points of 24 models
+      and asserting every point the original problem allows satisfies every cut,
+      rather than by argument alone.
+
+      On unit commitment, which is what this engine actually builds:
+
+      | Rung | Off | Gomory | |
+      | --- | --- | --- | --- |
+      | 8 × 8 | 286 nodes, 263 ms | 15, 22 ms | 11.8× |
+      | 10 × 10 | 439, 0.88 s | 26, 75 ms | 11.8× |
+      | 12 × 12 | 1,644, 6.45 s | 52, 0.34 s | 19.0× |
+
+      Sixty to ninety-five percent of the root gap closed, and the win grows
+      with size. That is larger than the 2 to 4× the branching rule bought on
+      the same generator.
+
+      **And they lose on knapsacks**, by up to 3×, with no Gomory cut surviving
+      the stability guards at all past 36 items. Two reasons, both worth
+      keeping: a knapsack has five rows, so even four cuts nearly double the
+      model and every node pays the row count where there is no warm start; and
+      the cuts are genuinely weaker there, closing 0.1 to 18% of the root gap
+      against 60 to 95. Cover cuts meanwhile find nothing on commitment at all,
+      because a row pairing a continuous dispatch variable with a binary status
+      is not a knapsack. Both facts are asserted in tests rather than left as
+      observations, and the option is an enum of four rather than a boolean so
+      that a caller with knapsack-shaped models can say so.
+
+      One measurement error worth recording because it looked like a result: the
+      first pass used a per-round floor of four cuts, which put sixteen rows on
+      a five-row knapsack and made it three to four times slower at *unchanged
+      node count*. Unchanged nodes with worse time is the signature of paying
+      for rows rather than of bad cuts, which is what the diagnosis turned on.
+- [ ] Cuts at nodes rather than only at the root, and the families neither
+      Gomory nor cover touches. Commitment models are dominated by rows pairing
+      a continuous dispatch variable with a binary status, which is exactly
+      where a flow cover separator applies and where neither family here does
+      anything. Lifted cover cuts are the other obvious gap.
 - [ ] Consider upstreaming a `row_duals()` accessor to microlp regardless. They
       already compute `y = B⁻ᵀc_B` in `recalc_obj_coeffs` and discard it, and the
       whole ecosystem would benefit.
