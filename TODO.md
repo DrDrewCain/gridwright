@@ -570,9 +570,43 @@ narrower claim than "construction is the bottleneck".
       the fast build does not make the solve tractable, and what it buys is that
       the model fits, rebuilds interactively, and can be swept over.
 
-- [ ] Extend the differential harness to every constraint family. It caught the
-      phase-one bug immediately and is the highest-value test infrastructure in
-      the repository.
+- [x] ~~Extend the differential harness to every constraint family.~~ **Done**,
+      and it paid for itself on the first run by finding a formulation bug that
+      every existing test passed over.
+
+      `differential.rs` compares the two solvers on whole models, which is the
+      right shape for asking whether the solver is correct and the wrong shape
+      for asking *which* family a disagreement came from. `differential_families.rs`
+      turns one family on at a time against the same base network: ramps,
+      losses, carbon, water and land budgets, reserve margin, N-1, shiftable
+      demand, elastic demand, hydro cascades, sector coupling, investment
+      periods, scenarios, taps and phase shifts, and capacity expansion.
+
+      Each test asserts two things, and the second is the one that earns its
+      keep: the solvers agree, **and the family changed the answer**. A test
+      that enables a constraint which does not bind proves only that both
+      solvers can ignore it consistently. Four of the sixteen failed on the
+      first run for exactly that reason — my fixtures, not the code — and
+      fixing them is what surfaced the real bug below.
+
+      **The bug.** Hydro cascades were a separate row family,
+      `soc_downstream[arrival] >= released`, sitting beside the downstream
+      reservoir's own state-of-charge *equality*. An equality already pins
+      `soc`, so that row could not hand over any water; it could only demand
+      the downstream reservoir be fuller than its own dynamics made it, and the
+      only way to comply is to charge from the grid. An upstream release
+      therefore made the system **buy energy** rather than receive water: on a
+      two-reservoir probe, coupling the cascade cost 6,000 against 0 uncoupled,
+      with the lower reservoir charging 40 MWh off a diesel unit.
+
+      Arriving water now enters the downstream balance as a term in it, exactly
+      as natural inflow does but as a decision rather than a constant, and the
+      separate family is gone. The same probe now shows the upper reservoir
+      spilling and the lower one discharging what came down, at no cost.
+
+      It survived because the existing test asserted only that both cases solve.
+      Its comment claimed "the diesel has to run and the cost is far higher" —
+      an assertion that was described and never written.
 - [x] ~~Larger real networks.~~ **Partly done.** PEGASE 1354 is now in the
       validation suite: a real European network, four times the largest IEEE
       case. Every property test holds on it, the from-scratch simplex agrees
