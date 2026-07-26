@@ -178,6 +178,7 @@ network:
 | Parquet directory | Same layout, columnar. Reads and writes. |
 | MATPOWER `.m` | IEEE test cases, PGLib-OPF, RTE's French network, PEGASE. |
 | PSS/E RAW, v29–v35 | What North American and most Asian utilities actually run. |
+| PSS/E RAWX | The JSON reformulation v35 introduced. |
 | PowerModels JSON | The Julia optimisation ecosystem. |
 | Native JSON | Lossless both ways, for handing a network to a browser. |
 | Spreadsheets | `.xlsx`, `.xls`, `.xlsb`, `.ods`. How much of the world publishes. |
@@ -381,7 +382,7 @@ Needs a Rust toolchain and `cmake`, since HiGHS is built from source.
 
 ```bash
 cargo build --release
-cargo test --workspace --all-features   # 347 tests
+cargo test --workspace --all-features   # 429 tests
 ./target/release/gw demo
 ./target/release/gw run examples/eu-mini --out results/
 ./target/release/gw case examples/pglib/case118_ieee.m

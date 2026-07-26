@@ -238,8 +238,11 @@ Still missing:
 - [ ] **The SV profile**, which carries a solved state: voltages, angles and
       flows. Not needed to build a model and extremely useful to validate one
       against, since it is the answer the operator's own tools produced.
-- [ ] **PSS/E `.rawx`**, the JSON reformulation of RAW that v35 introduced. The
-      content is the same and the encoding is not.
+- [x] ~~**PSS/E `.rawx`**, the JSON reformulation v35 introduced.~~ **Done**,
+      and it is a fraction of the length of the RAW reader for a reason: RAWX
+      names every field where RAW is positional, so the whole class of
+      version-dependent column offsets simply does not arise. Three JSON
+      dialects now share the extension and are told apart by content.
 - [ ] **UCTE-DEF and IEEE Common Data Format.** Both are fixed-width text, both
       are how a lot of *historical* European and American data is archived. Less
       pressing than the live formats, and the reason to want them is that

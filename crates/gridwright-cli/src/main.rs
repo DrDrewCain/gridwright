@@ -471,6 +471,7 @@ fn list_formats() {
         Matpower,
         Psse,
         PowerModels,
+        Rawx,
         NativeJson,
         Netcdf,
         Excel,

@@ -26,6 +26,7 @@ fn corpus() -> Vec<(&'static str, Format)> {
             "examples/powermodels/case14_ieee.json",
             Format::PowerModels,
         ));
+        v.push(("examples/rawx/case14_ieee.rawx", Format::Rawx));
     }
     if cfg!(feature = "netcdf") {
         v.push(("examples/pypsa/case14_ieee.nc", Format::Netcdf));
@@ -126,8 +127,8 @@ fn a_directory_is_identified_by_what_is_in_it() {
 #[test]
 fn every_format_reads_the_same_network_to_the_same_answer() {
     // The strongest statement the format layer can make: the IEEE 14-bus
-    // system arrives in five different encodings, written by five different
-    // tools, and comes out the same network each time.
+    // system arrives in six different encodings and comes out the same network
+    // every time.
     let mut seen: Vec<(&str, usize, usize, f64)> = Vec::new();
     let mut check = |rel: &'static str| {
         let Ok(case) = load_any(path(rel)) else { return };
@@ -140,6 +141,7 @@ fn every_format_reads_the_same_network_to_the_same_answer() {
     check("examples/psse/case14_v29.raw");
     if cfg!(feature = "json") {
         check("examples/powermodels/case14_ieee.json");
+        check("examples/rawx/case14_ieee.rawx");
     }
     if cfg!(feature = "netcdf") {
         check("examples/pypsa/case14_ieee.nc");

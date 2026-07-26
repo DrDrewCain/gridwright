@@ -43,6 +43,8 @@ pub use write::{Written, to_matpower, to_psse, write_matpower, write_psse};
 
 #[cfg(feature = "json")]
 pub mod json;
+#[cfg(feature = "json")]
+pub mod rawx;
 #[cfg(feature = "parquet")]
 pub mod parquet;
 #[cfg(feature = "excel")]
@@ -111,6 +113,9 @@ pub enum IoError {
     #[cfg(feature = "json")]
     #[error("reading JSON case: {0}")]
     Json(#[from] json::JsonError),
+    #[cfg(feature = "json")]
+    #[error("reading PSS/E RAWX case: {0}")]
+    Rawx(#[from] rawx::RawxError),
     #[cfg(feature = "parquet")]
     #[error("reading Parquet: {0}")]
     Parquet(#[from] parquet::ParquetError),

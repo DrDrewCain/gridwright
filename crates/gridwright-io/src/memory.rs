@@ -224,6 +224,14 @@ pub fn load_bytes(name: Option<&str>, bytes: &[u8]) -> Result<Case, IoError> {
             #[cfg(not(feature = "json"))]
             return Err(missing(label, format, "json"));
         }
+        Format::Rawx => {
+            #[cfg(feature = "json")]
+            {
+                crate::rawx::parse_rawx(&text(), stem)?
+            }
+            #[cfg(not(feature = "json"))]
+            return Err(missing(label, format, "json"));
+        }
         Format::NativeJson => {
             #[cfg(feature = "json")]
             {

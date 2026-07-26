@@ -35,6 +35,8 @@ pub enum Format {
     Psse,
     /// PowerModels.jl, per-unit and keyed by component number.
     PowerModels,
+    /// PSS/E RAWX, the JSON reformulation version 35 introduced.
+    Rawx,
     /// This crate's own lossless JSON.
     NativeJson,
     /// PyPSA netCDF, or any HDF5 laid out the same way.
@@ -54,6 +56,7 @@ impl Format {
             Format::Matpower => "MATPOWER case",
             Format::Psse => "PSS/E RAW",
             Format::PowerModels => "PowerModels JSON",
+            Format::Rawx => "PSS/E RAWX",
             Format::NativeJson => "gridwright JSON",
             Format::Netcdf => "PyPSA netCDF",
             Format::Excel => "spreadsheet",
@@ -70,7 +73,7 @@ impl Format {
     pub fn available(self) -> bool {
         match self {
             Format::CsvDirectory | Format::Matpower | Format::Psse => true,
-            Format::PowerModels | Format::NativeJson => cfg!(feature = "json"),
+            Format::PowerModels | Format::NativeJson | Format::Rawx => cfg!(feature = "json"),
             Format::ParquetDirectory => cfg!(feature = "parquet"),
             Format::Excel => cfg!(feature = "excel"),
             Format::Netcdf => cfg!(feature = "netcdf"),
@@ -251,9 +254,14 @@ pub(crate) fn sniff_text(text: &str, ext: &str) -> Option<Format> {
     // Content first, and only then the extension, so a renamed file still
     // reads.
     if trimmed.starts_with('{') {
+        // Three dialects share this extension, and reading one as another gives
+        // either a load failure or, worse, a network whose demand is off by a
+        // factor of a hundred.
         #[cfg(feature = "json")]
         {
-            return Some(if crate::json::looks_like_powermodels(text) {
+            return Some(if crate::rawx::looks_like_rawx(text) {
+                Format::Rawx
+            } else if crate::json::looks_like_powermodels(text) {
                 Format::PowerModels
             } else {
                 Format::NativeJson
@@ -274,7 +282,8 @@ pub(crate) fn sniff_text(text: &str, ext: &str) -> Option<Format> {
 
     match ext {
         "m" => Some(Format::Matpower),
-        "raw" | "rawx" => Some(Format::Psse),
+        "raw" => Some(Format::Psse),
+        "rawx" => Some(Format::Rawx),
         "json" => Some(Format::NativeJson),
         "nc" | "h5" | "hdf5" | "cdf" => Some(Format::Netcdf),
         "xlsx" => Some(Format::Excel),
@@ -346,6 +355,14 @@ pub fn load_any(path: impl AsRef<Path>) -> Result<Case, IoError> {
             #[cfg(feature = "json")]
             {
                 crate::json::load_powermodels(path)?
+            }
+            #[cfg(not(feature = "json"))]
+            return Err(not_built(path, format, "json"));
+        }
+        Format::Rawx => {
+            #[cfg(feature = "json")]
+            {
+                crate::rawx::load_rawx(path)?
             }
             #[cfg(not(feature = "json"))]
             return Err(not_built(path, format, "json"));
