@@ -346,10 +346,15 @@ per bus, storage on every fourth bus, DC power flow throughout.
 | 256 bus × 8760 h | 16,258,560 | 6,167,040 | 29,153,280 | **~100 ms** |
 | 512 bus × 8760 h | 32,517,120 | 12,334,080 | 58,306,560 | **174 ms** |
 
-Peak resident memory for the 256 × 8760 case is **1.93 GB**. That row was 89 ms
-before commitment, losses, cascades and multi-period capacity were added; the
-extra machinery costs about 12%, which seems a fair price and is reported rather
-than quietly rebaselined. Scaling is linear:
+Peak resident memory for the 256 × 8760 case is **1.50 GB**, and construction
+includes the transpose: the model is assembled straight into the column major
+form the solvers take, so there is no second pass to charge for. It used to be
+1.95 GB and a further 150 ms, before the merged row major matrix was removed —
+nothing downstream had ever read it.
+
+That row was 89 ms before commitment, losses, cascades and multi-period capacity
+were added; the extra machinery costs about 12%, which seems a fair price and is
+reported rather than quietly rebaselined. Scaling is linear:
 20.9 → 44.8 → 84.3 → 173.7 ms across 64 → 128 → 256 → 512 buses, about 2.05×
 per doubling.
 
@@ -370,8 +375,8 @@ the models that are currently *not being run*: the ones clustered down from
 thousands of nodes to hundreds because the full problem cannot be built in
 available memory, or cannot be built at all. There, construction is not 0.1%
 of the runtime; it is the reason the run does not happen. Fast is a means to
-that end rather than the point, and a build that finishes in 89 ms is really a
-claim about the 1.93 GB it did not need.
+that end rather than the point, and a build that finishes in 100 ms is really a
+claim about the 1.50 GB it did not need.
 
 ## How
 
@@ -382,10 +387,11 @@ contiguous block per component spanning all snapshots, so a component's whole
 trajectory is a slice rather than a gather, both going in and coming out.
 
 **Assemble.** Every constraint family is generated in parallel into per-thread
-row batches, then merged once. This works because after allocation every
-variable index is a pure function of its block and offset: a thread building
-balance rows for bus 400 needs no coordination to know where generator 12's
-dispatch at snapshot 900 lives.
+row batches, then transposed once, directly into the model's column major
+matrix. This works because after allocation every variable index is a pure
+function of its block and offset: a thread building balance rows for bus 400
+needs no coordination to know where generator 12's dispatch at snapshot 900
+lives.
 
 Three decisions do most of the work.
 
@@ -395,11 +401,12 @@ appears to want the opposite layout, so balance is parallelised over *buses*
 rather than snapshots — equally valid, since both axes are independent, and it
 keeps every read sequential.
 
-**The CSR→CSC transpose is a parallel counting sort.** Column indices are
-already integers, so there is nothing to compare. Per-thread histograms, then a
-two-dimensional scan telling each thread where its own slice of each column
-begins, then a scatter that needs no atomics because the destinations are
-provably disjoint.
+**The transpose is a parallel counting sort, and it reads the batches
+directly.** Column indices are already integers, so there is nothing to compare:
+count, prefix sum the counts into offsets, scatter. The batches are the unit of
+parallelism, since they are already one per builder thread. There is no merged
+row major matrix in between, because nothing would read it — 375 MB of a large
+model, and a serial 150 ms pass, spent on a representation with no consumer.
 
 **The matrix reaches HiGHS as three pointers.** `Highs_passModel` accepts CSC
 directly. The safe `highs` wrapper crate was deliberately not used: its builder
@@ -444,7 +451,9 @@ is fast and wrong is worthless:
 - on a triangle of equal susceptance, power divides 2:1 between the direct and
   the two-hop path — the DC power flow physics, not merely its plumbing
 - storage covers a generator outage by having charged beforehand
-- the parallel transpose agrees with the serial one byte for byte at scale
+- the parallel transpose agrees with the serial one byte for byte at scale, and
+  transposing the batches directly agrees with merging them first and
+  transposing that — the operation it replaced
 - repeated builds of the same network produce identical matrices, so results
   never depend on how the thread pool happened to schedule
 - capacity is built exactly to the analytic break-even and not a MW past it,
@@ -517,12 +526,17 @@ solver afterwards and that part is not in dispute.
 | Variables | 16,258,560 | 16,258,560 |
 | Constraints | 6,167,040 | 6,167,040 |
 | Nonzeros | 29,153,280 | 29,153,216 |
-| Construction, to a matrix | **0.096 s** | **200.8 s** |
-| Peak memory | **1.95 GB** | **22.4 GB** |
+| Construction, to a matrix | **0.104 s** | **200.8 s** |
+| Peak memory | **1.50 GB** | **22.4 GB** |
 
-About two thousand times faster, on eleven times less memory. The script is
+About two thousand times faster, on fifteen times less memory. The script is
 [`benchmarks/linopy_build.py`](benchmarks/linopy_build.py) and the fairness
 notes are at the top of it.
+
+The gridwright figure went *up* slightly, from 0.096 s, when the transpose was
+folded into construction. The old number was construction to a row major matrix
+that then needed transposing before any solver could read it, which was not the
+same thing linopy was being asked for. 0.104 s is to a matrix a solver takes.
 
 **The memory number matters more than the speed one.** Two hundred seconds is an
 annoyance; 22 GB is where a laptop stops and the model does not get run at all.

@@ -302,41 +302,72 @@ was hiding most of the demand side.
 
 ## Memory
 
-Peak resident memory on the 256-bus, 8,760-snapshot model is 1.95 GB, and it is
-worth writing down where that goes because two attempts to reduce it did
-nothing and the reason is the same both times.
+Peak resident memory on the 256-bus, 8,760-snapshot model is 1.50 GB, down from
+1.95 GB. What moved it, and what did not, are both worth writing down.
 
 | | |
 | --- | --- |
 | Column bounds, costs, integrality | 406 MB |
 | Row bounds | 99 MB |
-| CSR, as assembled | 375 MB |
 | CSC, as handed to the solver | 415 MB |
 | Transpose counters | 65 MB |
-| Accounted | 1,360 MB |
-| Measured | 1,951 MB |
+| Accounted | 985 MB |
+| Measured | 1,504 MB |
 
-Assembly alone reaches 1,471 MB and the transpose adds 480 MB, which matches
-the CSC arrays and the counters exactly. So the 590 MB of slack is in assembly,
-and the obvious candidate is the per-thread row batches, which are copied into
-the model and then dropped.
+**What worked.** The model is now built column major and only column major: the
+constraint builders' row batches are transposed as they are absorbed, so the
+merged row major matrix never exists. Nothing downstream ever read it — HiGHS
+takes compressed sparse columns, and so does the simplex — so it was 375 MB
+spent on a representation with no reader, plus a row offsets array and a second
+copy of the row bounds. Measured saving 447 MB, rather more than the 375 MB
+predicted.
 
-Two things that did not help. Replacing the transpose's `threads × n_cols`
+It also made the model faster, for a reason that had nothing to do with memory:
+`to_csc` called the *serial* transpose, so every solve paid 150–205 ms for it.
+Folding the transpose into the absorb and threading it over the batches — which
+are already one per builder thread, so no chunking had to be invented — put
+model construction at **104 ms including the transpose**, against 96 ms plus a
+separate 150 ms before.
+
+**What did not work, and why.** Replacing the transpose's `threads × n_cols`
 histogram with one atomic counter array cut allocation from 1.8 GB to 65 MB and
 moved peak resident memory not at all. Taking ownership of the batches so each
 is released as it is merged, rather than holding all of them, likewise moved it
 not at all. In both cases the allocator keeps freed pages rather than returning
 them, so this metric records what was allocated at the high-water mark rather
-than what was live.
+than what was live. Both changes were kept regardless: the memory does become
+available for reuse, and 65 MB against 1.8 GB matters where address space is not
+free — the WebAssembly target has 4 GB of it in total.
 
-- [ ] **Build the CSC directly from the batches**, skipping the merged CSR
-      entirely. This is the one lever with a real 375 MB behind it rather than
-      an allocator artefact: nothing downstream reads the row-major form. HiGHS
-      takes compressed sparse columns and so does the simplex, so the CSR exists
-      only to be transposed and then sit there.
 - [ ] Measure against an allocator that returns pages, to find out how much of
-      the 590 MB is live and how much is retention. Until that is known, the
-      accounting above is a ceiling rather than a description.
+      the remaining 519 MB of slack is live and how much is retention. Until
+      that is known, the accounting above is a ceiling rather than a description.
+
+## Transpose, measured
+
+The transpose was suspected of costing ~90 ms and being the thing to optimise.
+It was neither. Per-phase timing on the real sparsity pattern, 14 threads:
+scatter 13.4 ms (48%), scan and cursor reset 4.5 ms, sort 4.2 ms, count 3.0 ms,
+allocation 3.0 ms — about 21 ms intact, not 90. The 90 ms readings were machine
+load: with four competing busy loops the same kernel measures 60–150 ms, because
+it is five back-to-back full-width parallel regions and each ends when its
+slowest worker does. That also explains why three different counting strategies
+all measured the same — the measurement was environment-bound, so the algorithm
+could not move it.
+
+Ruled out empirically, so nobody repeats them: allocation and zeroing (≤3 ms of
+`mmap`, page faults only on the first call in a process), the prefix scan
+(4.5 ms), `u32` versus `usize` indices (already `u32`), and the count phase
+(3 ms). Cache-blocked radix partitioning pays only in the uniform-random regime,
+which this matrix is not in — a random-column matrix of the same shape takes
+175 ms against 21 ms for the real one. The scatter moves ~700 MB at ~52 GB/s
+against 130–220 GB/s for `memcpy`, so it is 3–4× off bandwidth, not 20×.
+
+- [ ] Pre-fault the output arrays with a parallel sequential touch before the
+      scatter. Worth ~10 ms on the first call in a process, where ~29,000 soft
+      page faults are currently taken from inside random-access loops; faulting
+      the same pages sequentially is 3–5× cheaper. Only the first call, so it is
+      worth having for a one-shot CLI run and worth nothing for a server.
 
 ## Data formats
 
