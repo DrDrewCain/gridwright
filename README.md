@@ -32,6 +32,14 @@ So spatial fidelity gets traded away, in models that decide where grids and
 renewables get built. gridwright attacks the stated bottleneck: construction,
 not solving.
 
+**That quote has since been tested here, and it did not hold.** Building the
+same model, Python through PyPSA reached 5.59 M nonzeros per second against
+JuMP's 2.82 M: Python was about twice as fast as Julia, not non-competitive
+with it. What survives is the observation underneath it, that a general-purpose
+modelling layer is slow at this regardless of the language it is written in,
+and that is what this engine is not. The numbers are in
+[the comparison](#the-comparison-this-project-was-founded-on).
+
 ## What that actually buys, and what it does not
 
 On the same model, this builds in 0.104 s on 1.50 GB where linopy takes 200.8 s
@@ -598,15 +606,15 @@ ENTSO-E transparency platform publish the series; mapping zone-level series onto
 buses is normal practice and needs to be done and stated rather than assumed
 away.
 
-**3. The head-to-head is against the wrong tool.** The founding quote says
-Python is non-competitive "compared to tools based on Julia or C++". This
-project has measured itself against `linopy`, which is Python, and never against
-JuMP, which is the Julia tool the quote is pointing at. Beating the tool the
-quote criticises is weak evidence for the quote. **JuMP may well be
-competitive with this, and if it is, that is the single most useful thing this
-benchmark could establish**. The claim would then narrow to memory, to the
-WebAssembly target, and to the repeated-build case, all of which would still
-stand.
+**3. ~~The head-to-head is against the wrong tool.~~ Measured, and it cost us
+a headline.** The founding quote recommends Julia, and this project had only
+ever measured itself against `linopy`, which is Python. JuMP has now been
+measured: gridwright is about a hundred times faster on identical counts, so
+that comparison went the way the project hoped. The quote did not: Python built
+a larger matrix per second than Julia did. And the measurement turned up that
+our own linopy script was unfair, which narrows the published ratio from two
+thousand to about a hundred. See
+[the comparison](#the-comparison-this-project-was-founded-on).
 
 **4. Nobody has run a study with it.** Every number here is a microbenchmark or
 a property test. The claim that a fast build enables interactive editing,
@@ -627,10 +635,13 @@ Python is "non-competitive" at *building* optimisation problems. Quoting it is
 not measuring it, and it went unmeasured here for a long time.
 
 Same model, same machine, same session. A synthetic 256-bus ring over a year at
-hourly resolution, built in `linopy` 0.9.0 the way linopy is meant to be used
-(vectorised over xarray dimensions with incidence arrays, not Python loops), and
-in gridwright. Only construction is timed; both hand the result to the same
-solver afterwards and that part is not in dispute.
+hourly resolution, built in `linopy` 0.9.0 and in gridwright. Only construction
+is timed; both hand the result to the same solver afterwards and that part is
+not in dispute.
+
+This table was published with the claim that the linopy side used it "the way
+linopy is meant to be used". That claim was wrong, and what follows the table
+is the correction rather than a caveat.
 
 | | gridwright | linopy 0.9.0 |
 | --- | --- | --- |
@@ -640,33 +651,47 @@ solver afterwards and that part is not in dispute.
 | Construction, to a matrix | **0.104 s** | **200.8 s** |
 | Peak memory | **1.50 GB** | **22.4 GB** |
 
-About two thousand times faster, on fifteen times less memory. The script is
-[`benchmarks/linopy_build.py`](benchmarks/linopy_build.py) and the fairness
-notes are at the top of it.
+**That linopy column is unfair, and the unfairness is ours.** It has since been
+measured against JuMP and against PyPSA, and the second of those showed that
+`benchmarks/linopy_build.py` drives linopy down a path no linopy user would
+take: it writes `(p * g_at).sum("gen")` against a dense incidence array, which
+materialises a generator by bus by snapshot intermediate. PyPSA drives the
+*same linopy 0.9.0* to a larger matrix in **16.7 s on 12.1 GB**.
 
-**Read the right thing into this table.** Three caveats, kept here rather than
-elsewhere because a table travels without its context:
+So the honest comparison against a Python path that is actually in production
+use is about **100× on time and under 4× on memory per nonzero**, not two
+thousand and fifteen. The 200.8 s figure is reproducible and is a real
+measurement of the script; it is not a fair measurement of linopy, and the
+script is being fixed.
 
-1. **It is one synthetic 256-bus ring.** It says what construction costs on a
-   model of that shape and size. It is not evidence about any real network's
-   topology, and the only claims resting on it are claims about construction.
-2. **200.8 s and 22.4 GB are not, by themselves, alarming numbers.**
-   Optimisation routinely costs minutes and tens of gigabytes, and anyone who
-   shrugs at these two is not wrong to. The case is not that linopy is slow in
-   the abstract; it is that both numbers are *per build*, and the workloads
-   that matter build many times over. A rolling horizon over this year takes
-   122 builds: 6.8 hours of assembly at 200.8 s each, against 13 seconds at
-   0.104 s each. A scenario sweep multiplies it again.
-3. **This is construction only, and construction is the small half.** Solving
-   this same model takes far longer than either column. That is stated plainly
-   in [Scale](#scale) and is not walked back anywhere: at full hourly
-   resolution the fast build buys almost nothing, and what it buys is set out
-   in [What that actually buys](#what-that-actually-buys-and-what-it-does-not).
+| | gridwright | JuMP `Model()` | PyPSA | linopy, via our script |
+| --- | --- | --- | --- | --- |
+| Construction | **0.102 s** | 10.34 s | 10.39 s | 98.39 s |
+| Peak memory | **1.58 GB** | 5.08 GB | 12.13 GB | 23.02 GB |
+| M nonzeros/s | **285** | 2.82 | 5.59 | 0.30 |
 
-The gridwright figure went *up* slightly, from 0.096 s, when the transpose was
-folded into construction. The old number was construction to a row major matrix
-that then needed transposing before any solver could read it, which was not the
-same thing linopy was being asked for. 0.104 s is to a matrix a solver takes.
+Two things follow, and the second is uncomfortable enough that it belongs
+directly under the table rather than in a footnote.
+
+**gridwright is about a hundred times faster than JuMP**, on three counts that
+match exactly, with the nonzero count read out of HiGHS rather than predicted,
+and with three different JuMP construction styles agreeing within 3% so that it
+is not a strawman. That is the comparison this project should always have led
+with, because JuMP is the tool the founding quote recommends.
+
+**And the founding quote did not survive the test.** It says Python is
+non-competitive at building optimisation problems "compared to tools based on
+Julia or C++". On this model Python built a *larger* matrix at 5.59 M nonzeros
+per second against Julia's 2.82 M: about twice as fast. The real distinction is
+not the language. It is a purpose-built assembler against a general-purpose
+modelling layer, and JuMP and linopy are both the latter. The quote is left in
+the [Why](#why) section because it is what prompted the project, with this
+result noted there.
+
+Full method, counts and caveats in
+[`benchmarks/head_to_head.md`](benchmarks/head_to_head.md). The machine was not
+idle for that run, which is recorded there; the bias runs against gridwright,
+since it is the only parallel builder of the four.
 
 **The memory number matters more than the speed one.** Two hundred seconds is an
 annoyance; 22 GB is where a laptop stops and the model does not get run at all.
