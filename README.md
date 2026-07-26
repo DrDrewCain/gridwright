@@ -747,56 +747,75 @@ machine's state did not distort, which is worth saying because it is the one
 carrying the most weight.
 
 A full year at hourly resolution, solved whole, every rung run to completion.
-Best of two runs, on an idle machine:
+**Five runs on an idle machine, every observation listed**, quoted figure is the
+median:
 
-| Buses | Columns | Build | Solve | Growth |
-| --- | --- | --- | --- | --- |
-| 8 | 402,960 | 3.9 ms | 3.2 s | |
-| 16 | 805,920 | 4.8 ms | 9.5 s | 3.0× |
-| 32 | 1,611,840 | 7.3 ms | 28.3 s | 3.0× |
-| 64 | 3,223,680 | 12.8 ms | 101.1 s | 3.6× |
-| 128 | 6,447,360 | 23.1 ms | 314.6 s | 3.1× |
+| Buses | Columns | Build | Solve, all five (s) | Median | Growth |
+| --- | --- | --- | --- | --- | --- |
+| 8 | 402,960 | 4.4 ms | 3.4, 3.4, 3.5, 3.6, 3.8 | **3.5 s** | |
+| 16 | 805,920 | 5.2 ms | 9.9, 10.5, 10.7, 10.9, 11.1 | **10.7 s** | 3.1× |
+| 32 | 1,611,840 | 8.6 ms | 29.4, 30.0, 30.1, 31.8, 32.7 | **30.1 s** | 2.8× |
+| 64 | 3,223,680 | 15.5 ms | 104.9, 106.8, 107.1, 109.5, 117.6 | **107.1 s** | 3.6× |
+| 128 | 6,447,360 | 27.9 ms | 331.6, 335.8, 339.1, 358.0, 365.6 | **339.1 s** | 3.2× |
 
-**This table has been wrong twice, and both times because it was measured on a
-busy machine.** The first version reported the 64-bus case as "did not finish in
-seven minutes"; it takes 101 seconds. The second version, measured while six
-agents were running, put 128 buses at 561.8 s; on an idle machine it is
-314.6 s, so that row alone was 79% high.
+**This table has been wrong three times.** Twice because it was measured on a
+busy machine: the first version reported the 64-bus case as "did not finish in
+seven minutes", and the second, measured while six agents were running, put 128
+buses at 561.8 s.
 
-What an idle machine buys is visible in the spread. These figures repeat to
-within **1.4%** run to run: 314.6 against 318.9, and 101.1 against 102.5. The
-busy-machine version of the same measurement varied by 16%. Every number here is
-the best of two runs taken through `benchmarks/measure.sh`, which refuses to
-start while anything else of ours is running and records the load before and
-after each run.
+The third time is subtler and worth more. The corrected version was quoted as
+**best of two runs**, and best-of-N is a floor rather than an estimate. Against
+five runs the medians above sit 3 to 13% higher on every rung — 3.2 → 3.5,
+9.5 → 10.7, 28.3 → 30.1, 101.1 → 107.1, 314.6 → 339.1. Best-of-N is the right
+statistic for comparing two implementations, since taking the fastest of each
+strips noise that belongs to neither. It is the wrong one for "what will this
+cost me", and this table was using one number to answer both questions.
+
+That version also claimed the figures repeat to **within 1.4%**. They do not: at
+n=5 the spread is **11 to 12%** on every rung. The 1.4% came from a pair of runs
+that happened to agree, which is what two samples cannot be distinguished from a
+tight distribution. Every number here now comes through
+`benchmarks/measure.sh`, which refuses to start while anything else of ours is
+running and records the load before and after each run — and every observation
+is printed, because a reader can compute any summary they like from five values
+and can recover nothing from one.
 
 Growth is about 3× per doubling and roughly flat, not the 5× rising at the top
-that the previous version showed; that apparent acceleration was the busy 128
+that an earlier version showed; that apparent acceleration was the busy 128
 row. It was originally published as a flat 9.5×.
 
-Construction is 0.007% of runtime at 128 buses. **At full resolution the fast
+Construction is 0.008% of runtime at 128 buses. **At full resolution the fast
 build still buys almost nothing**, and that conclusion is untouched by the correction:
 it never rested on the solve being intractable.
 
 The same year through a rolling horizon of 96-hour windows keeping 72:
 
-| Buses | Windows | Rolling | Solved whole | |
-| --- | --- | --- | --- | --- |
-| 16 | 122 | 4.0 s | 10.3 s | 2.6× |
-| 32 | 122 | 8.7 s | 31.0 s | 3.6× |
-| 64 | 122 | 23.6 s | 110.7 s | 4.7× |
-| 128 | 122 | 76.3 s | 561.8 s | 7.4× |
+Five runs, same session and same machine as the table above, so the two columns
+are comparable rather than assembled from different days:
+
+| Buses | Windows | Rolling, all five (s) | Median | Whole (median) | |
+| --- | --- | --- | --- | --- | --- |
+| 16 | 122 | 3.92, 3.92, 3.95, 3.99, 4.14 | **3.95 s** | 10.7 s | 2.7× |
+| 32 | 122 | 8.08, 8.30, 8.35, 8.36, 8.69 | **8.35 s** | 30.1 s | 3.6× |
+| 64 | 122 | 21.82, 22.55, 22.77, 23.60, 23.63 | **22.77 s** | 107.1 s | 4.7× |
+| 128 | 122 | 68.68, 68.73, 72.28, 73.62, 74.77 | **72.28 s** | 339.1 s | 4.7× |
 
 The previous version claimed **23× at 32 buses, and that the rolling horizon
 "finishes where the monolithic solve does not"**. Neither is true. It is 3.6× at
 32 buses, and the monolithic solve finishes at every size tried, including 128.
 
-What is true, and is the better argument anyway, is that the advantage
-*compounds*: 2.6× at 16 buses, 7.4× at 128, because the whole-horizon solve
-grows superlinearly while the rolling one grows nearly linearly in the number
-of windows. Extrapolating that trend is how a continental model becomes
-tractable, and it is a claim about decomposition rather than about this
-builder.
+**It then claimed the advantage compounds to 7.4× at 128 buses, and that was
+also wrong.** The 7.4× divided the rolling time by 561.8 s — the very figure
+this page identifies four paragraphs earlier as a busy-machine artefact and
+discards. Discrediting a number does not discredit what was computed from it,
+and nothing here was checking for that.
+
+Measured properly, the advantage **compounds to 64 buses and then flattens**:
+2.7×, 3.6×, 4.7×, 4.7×. Rolling still wins by nearly five times at the top,
+which is the honest version of the argument and still a claim about
+decomposition rather than about this builder. There is no evidence in this
+ladder that the ratio keeps climbing, so it should not be extrapolated as
+though it does.
 
 On a real topology the advantage is **larger** than the ring suggests, not
 smaller: 16.7× and 10.6× on IEEE 57 and 118 with a real year attached, against

@@ -732,30 +732,56 @@ headline and it is better to have that on record than to discover it later.
 
 Full year at hourly resolution, synthetic ring, solved whole:
 
-| Buses | Columns | Build | Solve | Growth |
-| --- | --- | --- | --- | --- |
-| 8 | 402,960 | 4.4 ms | 3.2 s | |
-| 16 | 805,920 | 4.9 ms | 9.5 s | 3.0× |
-| 32 | 1,611,840 | 8.2 ms | 28.4 s | 3.0× |
-| 64 | 3,223,680 | 14.0 ms | 103.8 s | 3.7× |
-| 128 | 6,447,360 | 26.1 ms | 318.0 s | 3.1× |
+**n = 5.** Every observation is listed rather than reduced to one number, for
+reasons the sweep that produced it demonstrated twice over and which are set out
+below.
 
-Re-measured on an idle machine through `benchmarks/measure.sh`. The busy-machine
-version of this table put 128 buses at 561.8 s, which was 79% high, and made
-growth look like it accelerated to 5× at the top when it is flat at about 3×.
+| Buses | Columns | Build | Solve, all five (s) | Median | Growth |
+| --- | --- | --- | --- | --- | --- |
+| 8 | 402,960 | 4.4 ms | 3.4, 3.4, 3.5, 3.6, 3.8 | **3.5 s** | |
+| 16 | 805,920 | 5.2 ms | 9.9, 10.5, 10.7, 10.9, 11.1 | **10.7 s** | 3.1× |
+| 32 | 1,611,840 | 8.6 ms | 29.4, 30.0, 30.1, 31.8, 32.7 | **30.1 s** | 2.8× |
+| 64 | 3,223,680 | 15.5 ms | 104.9, 106.8, 107.1, 109.5, 117.6 | **107.1 s** | 3.6× |
+| 128 | 6,447,360 | 27.9 ms | 331.6, 335.8, 339.1, 358.0, 365.6 | **339.1 s** | 3.2× |
 
-Re-measured a third time on 26 July 2026, best of two, gate opening at a load
-between 1.2 and 3.8 — the quietest this table has ever been taken at. Every row
-reproduced to within 3%, so the shape and the numbers above are now settled.
+Build is the median of five; the column is millisecond-scale and noisy enough
+that only its order of magnitude should be read (see the first-run note below).
 
-**The run-to-run spread claim was wrong and is corrected here.** It said 1.4%.
-Measured across the whole ladder it is **3 to 7%**, and that is not load: the
-machine was quieter than when 1.4% was recorded. The variance is in the solve
-itself. Worth knowing that it is not uniform, because the reason is
-informative — the rolling ladder below repeated to within **0.05 to 0.2%** on
-the same machine in the same session. One enormous factorisation varies; a
-hundred and twenty-two small ones average out. So a single monolithic timing
-needs more repetitions to trust than a decomposed one does.
+The busy-machine version of this table put 128 buses at 561.8 s, which was 79%
+high, and made growth look like it accelerated to 5× at the top when it is flat
+at about 3×.
+
+**Three things this table got wrong before n was five, all in the same
+direction.**
+
+*The numbers were low.* Everything above was previously quoted as best-of-two,
+and best-of-N reports a floor: the median is 3 to 13% above it on every rung
+(3.2 → 3.5, 9.5 → 10.7, 28.4 → 30.1, 103.8 → 107.1, 318.0 → 339.1). Best-of-N is
+the right statistic for comparing two implementations, because taking the
+fastest of each strips noise belonging to neither. It is the wrong one for "what
+will this cost me". This document had been using one number for both questions.
+
+*The spread was understated twice.* It was first published as 1.4%, then
+corrected to 3–7% from two samples. At n=5 it is **11 to 12%** on every rung.
+
+*And the explanation offered for the spread was invented.* The previous revision
+claimed the rolling ladder below repeated to within 0.05 to 0.2% and reasoned
+that one enormous factorisation varies where a hundred and twenty-two small ones
+average out. That reasoning was built on two runs that returned 8.059901959 s
+and 8.059746 s — a 0.002% agreement on an eight-second measurement, which is a
+coincidence and not a distribution. At n=5 the rolling ladder's spread is 5.5 to
+8.9%, so the mechanism is not merely unsupported, its conclusion is backwards.
+**n=2 cannot distinguish a tight distribution from a lucky pair**, and the
+temptation on seeing one is to supply a mechanism for it.
+
+**A first-run penalty exists and it is in construction, not solving.** Run one
+was the slowest observation on three of the six ladders re-measured, and the
+effect scales with model size: building `case2869_pegase` — 68 M rows, 13 GB —
+takes 1.5 s on the first run against a 421 ms median, 3.6×. Solves show no such
+bias, even solves as short as 3.9 ms, so this is page-faulting freshly allocated
+matrices rather than process warm-up in general. Median-of-five is robust to it
+by construction, which is why the warm-up can stay off; a *mean* of five would
+not be, and would read 51% high on that row.
 
 **Re-measured to completion, best of two runs, and the previous version of this
 table was wrong in every row.** It reported 64 buses as "did not finish in seven
@@ -769,27 +795,47 @@ The rolling table below re-measured to within 6% of its published values, so
 this was specific rather than general. Most likely machine load, the third time
 in this project that a loaded machine produced a number that survived into a
 document, after the transpose that "took 90 ms" and takes 21, and the prefault
-experiment that measured backwards. Every timing is now best-of-N on an idle
-machine, the run-to-run spread is worth quoting (the two 64-bus runs differed by
-16%), and anything that cannot be re-measured should be treated as suspect
-rather than quoted.
+experiment that measured backwards.
 
-The conclusion is unchanged: construction is 0.009% of runtime at 128 buses, so
+**The standard this now sets**, which is stricter than the one it replaces:
+every timing is n=5 on an idle machine, every observation is printed rather than
+summarised, the quoted figure is the **median**, and the sample size is stated
+beside it. A reader can compute whatever summary they want from five values and
+can recover nothing from one. Anything that cannot be re-measured should be
+treated as suspect rather than quoted.
+
+One caveat on the table above, recorded rather than buried. The load climbed
+across this ladder's five runs — 4.98, 5.09, 4.68, 5.53, 5.67 — and runs four
+and five are visibly the slow ones at 64 and 128 buses. `measure.sh` gates at
+launch and cannot re-gate mid-run, so those two observations are upper bounds
+and the medians above are, if anything, slightly high. That is the opposite of
+the bias this section spent the day correcting, and it is worth one confirming
+pass at a quieter moment before these numbers travel anywhere else.
+
+The conclusion is unchanged: construction is 0.008% of runtime at 128 buses, so
 **at full resolution the fast builder buys almost nothing**. That never rested on
 the solve being intractable.
 
 The same year through a rolling horizon of 96-hour windows keeping 72:
 
-| Buses | Windows | Rolling | Solved whole | |
-| --- | --- | --- | --- | --- |
-| 16 | 122 | 3.87 s | 9.5 s | 2.5× |
-| 32 | 122 | 8.06 s | 28.4 s | 3.5× |
-| 64 | 122 | 21.7 s | 103.8 s | 4.8× |
-| 128 | 122 | 68.0 s | 318.0 s | 4.7× |
+**n = 5**, same session and same machine as the whole-horizon table above, so
+the two columns are comparable rather than assembled from different days.
+
+| Buses | Windows | Rolling, all five (s) | Median | Whole (median) | |
+| --- | --- | --- | --- | --- | --- |
+| 16 | 122 | 3.92, 3.92, 3.95, 3.99, 4.14 | **3.95 s** | 10.7 s | 2.7× |
+| 32 | 122 | 8.08, 8.30, 8.35, 8.36, 8.69 | **8.35 s** | 30.1 s | 3.6× |
+| 64 | 122 | 21.82, 22.55, 22.77, 23.60, 23.63 | **22.77 s** | 107.1 s | 4.7× |
+| 128 | 122 | 68.68, 68.73, 72.28, 73.62, 74.77 | **72.28 s** | 339.1 s | 4.7× |
 
 The previous claim, 23× at 32 buses and that rolling "finishes at 64 and 128
 where the monolithic solve does not", was an artefact of the bad table above.
-It is 3.5× at 32 buses, and the monolithic solve finishes at every size tried.
+It is 3.6× at 32 buses, and the monolithic solve finishes at every size tried.
+
+Worth noting what survived the move to n=5: the first three rows land on 2.7×,
+3.6× and 4.7×, against the 2.6×, 3.6× and 4.7× originally published. Those rows
+were right all along. Only the 128-bus row was ever wrong, and it was wrong
+because of the one figure in it that came from a loaded machine.
 
 **The claim that replaced it was also wrong, and in the same way.** This table
 read 7.4× at 128 buses against a "solved whole" column of 561.8 s — the exact
@@ -798,11 +844,11 @@ page contradicted each other, and the headline ratio was taken from the
 discredited one. Both columns now come from the same session on the same idle
 machine.
 
-What survives is weaker than what was claimed. The advantage **compounds to 64
-buses and then flattens**: 2.5×, 3.5×, 4.8×, 4.7×. It does not reach 7.4× and
-nothing here suggests it keeps climbing. Rolling still wins by nearly five times
-at the top, which is the honest version, and it is still a claim about
-decomposition rather than about this builder.
+What survives is weaker than what was claimed. On n=5 medians the advantage
+**compounds to 64 buses and then flattens**: 2.7×, 3.6×, 4.7×, 4.7×. It does not
+reach 7.4× and nothing here suggests it keeps climbing. Rolling still wins by
+nearly five times at the top, which is the honest version, and it is still a
+claim about decomposition rather than about this builder.
 
 Worth recording why this one is different in kind. It is not a fifth bad
 measurement; it is a **bad measurement that had already been caught**. The
@@ -977,22 +1023,22 @@ narrower claim than "construction is the bottleneck".
       Construction is essentially linear and never above 7 ms. The 13,659-bus
       network builds faster than the 1,354-bus one solves.
 
+      Medians of **n = 5**, except `case1354_pegase` which is carried over from
+      an earlier single pass and is the one figure here not taken that way.
+
       | case | buses | rows | cols | nonzeros | build | solve |
       | --- | --- | --- | --- | --- | --- | --- |
       | case1354_pegase | 1,354 | 3,345 | 4,959 | 11,569 | 1.6 ms | 51 ms |
-      | case2869_pegase | 2,869 | 7,451 | 10,830 | 26,289 | 4.0 ms | 0.24 s |
-      | case6470_rte | 6,470 | 15,395 | 22,706 | 52,016 | 3.8 ms | 0.73 s |
-      | case9241_pegase | 9,241 | 25,274 | 35,976 | 90,883 | 4.2 ms | see below |
-      | case13659_pegase | 13,659 | 34,110 | 51,877 | 120,038 | 5.5 ms | 6.5 s |
+      | case2869_pegase | 2,869 | 7,451 | 10,830 | 26,289 | 3.8 ms | 238 ms |
+      | case6470_rte | 6,470 | 15,395 | 22,706 | 52,016 | 3.7 ms | 737 ms |
+      | case9241_pegase | 9,241 | 25,274 | 35,976 | 90,883 | 5.3 ms | see below |
+      | case13659_pegase | 13,659 | 34,110 | 51,877 | 120,038 | 6.0 ms | 6.6 s |
 
-      Every row but the first was re-measured on 26 July 2026, best of two on an
-      idle machine; `case1354_pegase` is carried over and is the one figure here
-      not taken that way. The solve column moved down slightly and the build
-      column up, which is what millisecond timings do — the ring-versus-real test
-      in the same session recorded build spreads as wide as 214% on figures this
-      small. So read the build column as "a few milliseconds" rather than as
-      three significant figures. The solve column earns its digits: it repeated
-      to within 1%.
+      The solve column is worth its digits: 3.6 to 4.0% spread across five runs
+      at the two smaller sizes and 1.5% at the largest. The build column is not.
+      Its five observations at `case13659_pegase` were 9.5, 6.0, 6.4, 5.9 and
+      5.7 ms — a 67% range in which the first run is the outlier — so read it as
+      "a few milliseconds" and not as three significant figures.
 
       **HiGHS 1.15.0 cannot solve case9241_pegase, and the from-scratch simplex
       can.** `Highs_run` returns an error after three to nine seconds with model
@@ -1014,28 +1060,39 @@ narrower claim than "construction is the bottleneck".
       real topologies against the `rows^1.9` the ring gives. HiGHS runs the same
       ladder at about `rows^2.1`, so it is partly the problem and partly us.
 - [x] ~~**Re-run the large-case simplex ladder on an idle machine.**~~ **Done**,
-      and the drift was entirely load. Best of two, gate opening at load 3.09,
-      run-to-run spread under 0.5% on every rung:
+      and the drift was entirely load. **n = 5:**
 
-      | Case | Rows | Ours | HiGHS | Ours, spread | Was |
+      | Case | Rows | Ours, all five (s) | Median | HiGHS (median) | Was |
       | --- | --- | --- | --- | --- | --- |
-      | case2869_pegase | 7,451 | 2.7 s | 236.5 ms | 0% | 2.89 / 2.9 s |
-      | case6470_rte | 15,395 | 23.0 s | 732.8 ms | 0.4% | 23.5 / **42** s |
-      | case13659_pegase | 34,110 | 167.5 s | 6.5 s | 0.06% | 197 / **230** s |
+      | case2869_pegase | 7,451 | 2.7, 2.7, 2.7, 2.7, 2.8 | **2.7 s** | 243 ms | 2.89 / 2.9 s |
+      | case6470_rte | 15,395 | 23.5, 23.6, 23.7, 24.8, 24.9 | **23.7 s** | 760 ms | 23.5 / **42** s |
+      | case13659_pegase | 34,110 | 173.2, 173.5, 175.2, 175.9, 186.9 | **175.2 s** | 7.1 s | 197 / **230** s |
 
       The two contaminated passes read 42 s and 230 s; both are junk. The
-      *better* of the two earlier passes was also high — 197 s against 167.5, so
-      **18% over** — which is the part worth remembering. The instinct on seeing
-      two disagreeing passes is to trust the faster one, and here the faster one
-      was still wrong by a fifth. Only a genuinely idle machine settled it, and
-      the sub-0.5% spread is what says so.
+      *better* of the two earlier passes was also high — 197 s against a 175.2 s
+      median, so 12% over — which is the part worth remembering. The instinct on
+      seeing two disagreeing passes is to trust the faster one, and here the
+      faster one was still wrong.
 
-      The exponent survives and moves slightly. Over these three rungs the
-      from-scratch solver runs at `rows^2.5` to `rows^2.9`, against the `rows^2.5`
-      claimed above from the contaminated ladder; HiGHS runs the same rungs at
-      about `rows^2.1`, unchanged. The conclusion is unchanged with it: the
-      difficulty is partly the problem and partly us, and three points still
-      cannot settle how it divides.
+      **This entry previously claimed a run-to-run spread "under 0.5%" and that
+      was an artefact of n=2.** The two samples were 167.6 and 167.5 s, and a
+      0.06% agreement reads as a tight distribution when it is a coincidence. At
+      n=5 the spread is **3.7 to 7.9%** on ours and up to **19%** on HiGHS, whose
+      case13659 observations run 6.8 to 8.1 s. The same mistake was made
+      independently on the rolling ladder in the same session; both are recorded
+      because one instance looks like bad luck and two look like a method.
+
+      Run one is the slowest observation on both large rungs — 186.9 s against a
+      175.2 s median, and HiGHS 8.1 s against 7.1 s — consistent with the
+      first-run effect described in the scaling section.
+
+      The exponent survives. Over these three rungs the from-scratch solver runs
+      at `rows^2.5` to `rows^3.0` on medians, against the `rows^2.5` claimed from
+      the contaminated ladder; HiGHS runs the same rungs at about `rows^2.1`,
+      unchanged. The conclusion is unchanged with it: the difficulty is partly
+      the problem and partly us, and three points still cannot settle how it
+      divides.
+
 - [ ] **The `area` column blocked more than the GOC cases, and may still be
       blocking something.** Reading MATPOWER's control areas as synchronous
       areas is fixed, but the same question applies to every other reader that
