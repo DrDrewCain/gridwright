@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#" xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#">
+  <md:FullModel rdf:about="urn:uuid:8e0655f4-026d-8190-a2e3-fbf0a92d1872">
+    <md:Model.description>mini steady state hypothesis</md:Model.description>
+    <md:Model.created>2026-07-26T00:00:00Z</md:Model.created>
+    <md:Model.scenarioTime>2026-07-26T00:00:00Z</md:Model.scenarioTime>
+    <md:Model.version>1</md:Model.version>
+    <md:Model.modelingAuthoritySet>urn:gridwright:modelling-authority</md:Model.modelingAuthoritySet>
+    <md:Model.profile>http://entsoe.eu/CIM/SteadyStateHypothesis/1/1</md:Model.profile>
+    <md:Model.DependentOn rdf:resource="urn:uuid:3f0a71e5-6827-8631-b56a-1bc04ccc96f2"/>
+  </md:FullModel>
+  <cim:EnergyConsumer rdf:about="#_00000000-709a-8488-8b2c-37a0c9afd896">
+    <cim:EnergyConsumer.p>600</cim:EnergyConsumer.p>
+    <cim:EnergyConsumer.q>100</cim:EnergyConsumer.q>
+  </cim:EnergyConsumer>
+  <cim:SynchronousMachine rdf:about="#_00000000-7728-87b2-acfd-26ff25ea5000">
+    <cim:RotatingMachine.p>-610</cim:RotatingMachine.p>
+    <cim:RotatingMachine.q>-110</cim:RotatingMachine.q>
+    <cim:SynchronousMachine.operatingMode rdf:resource="http://iec.ch/TC57/2013/CIM-schema-cim16#SynchronousMachineOperatingMode.generator"/>
+    <cim:SynchronousMachine.referencePriority>0</cim:SynchronousMachine.referencePriority>
+    <cim:RegulatingCondEq.controlEnabled>false</cim:RegulatingCondEq.controlEnabled>
+  </cim:SynchronousMachine>
+  <cim:Terminal rdf:about="#_d3478ee3-7ef7-83f8-85f0-b43a698c1416">
+    <cim:ACDCTerminal.connected>true</cim:ACDCTerminal.connected>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_b8806b34-f82c-8165-9111-b5310fbab08c">
+    <cim:ACDCTerminal.connected>true</cim:ACDCTerminal.connected>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_c9d16e43-5952-889f-a29f-16f63574a9e3">
+    <cim:ACDCTerminal.connected>true</cim:ACDCTerminal.connected>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_2cd90db3-f10b-84d5-9a45-20a19c92bf6f">
+    <cim:ACDCTerminal.connected>true</cim:ACDCTerminal.connected>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_27835f22-6e89-85a0-a900-e5823c19f9f5">
+    <cim:ACDCTerminal.connected>true</cim:ACDCTerminal.connected>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_cd4fedda-4727-8eb9-b853-c8b252f699f4">
+    <cim:ACDCTerminal.connected>true</cim:ACDCTerminal.connected>
+  </cim:Terminal>
+</rdf:RDF>

@@ -1,0 +1,154 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#" xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#" xmlns:md="http://iec.ch/TC57/61970-552/ModelDescription/1#">
+  <md:FullModel rdf:about="urn:uuid:3f0a71e5-6827-8631-b56a-1bc04ccc96f2">
+    <md:Model.description>mini equipment</md:Model.description>
+    <md:Model.created>2026-07-26T00:00:00Z</md:Model.created>
+    <md:Model.scenarioTime>2026-07-26T00:00:00Z</md:Model.scenarioTime>
+    <md:Model.version>1</md:Model.version>
+    <md:Model.modelingAuthoritySet>urn:gridwright:modelling-authority</md:Model.modelingAuthoritySet>
+    <md:Model.profile>http://entsoe.eu/CIM/EquipmentCore/3/1</md:Model.profile>
+    <md:Model.profile>http://entsoe.eu/CIM/EquipmentOperation/3/1</md:Model.profile>
+  </md:FullModel>
+  <cim:GeographicalRegion rdf:ID="_8aa01e20-4444-8447-8064-8856b007b0d1">
+    <cim:IdentifiedObject.name>mini</cim:IdentifiedObject.name>
+  </cim:GeographicalRegion>
+  <cim:SubGeographicalRegion rdf:ID="_369aa0c7-5574-8459-8da6-7b90e5a5bb08">
+    <cim:IdentifiedObject.name>??</cim:IdentifiedObject.name>
+    <cim:SubGeographicalRegion.Region rdf:resource="#_8aa01e20-4444-8447-8064-8856b007b0d1"/>
+  </cim:SubGeographicalRegion>
+  <cim:Substation rdf:ID="_df148c90-347e-8015-8532-45e7784b3aa1">
+    <cim:IdentifiedObject.name>??</cim:IdentifiedObject.name>
+    <cim:Substation.Region rdf:resource="#_369aa0c7-5574-8459-8da6-7b90e5a5bb08"/>
+  </cim:Substation>
+  <cim:BaseVoltage rdf:ID="_ec31f2af-d5f3-8357-8f52-77b6c704cbaa">
+    <cim:IdentifiedObject.name>220kV</cim:IdentifiedObject.name>
+    <cim:BaseVoltage.nominalVoltage>220</cim:BaseVoltage.nominalVoltage>
+  </cim:BaseVoltage>
+  <cim:BaseVoltage rdf:ID="_c399a8b1-f78d-8da5-8384-ccb6a6f59134">
+    <cim:IdentifiedObject.name>400kV</cim:IdentifiedObject.name>
+    <cim:BaseVoltage.nominalVoltage>400</cim:BaseVoltage.nominalVoltage>
+  </cim:BaseVoltage>
+  <cim:VoltageLevel rdf:ID="_0861c09f-82a1-8860-884f-3d7ca14328b6">
+    <cim:IdentifiedObject.name>?? 220kV</cim:IdentifiedObject.name>
+    <cim:VoltageLevel.Substation rdf:resource="#_df148c90-347e-8015-8532-45e7784b3aa1"/>
+    <cim:VoltageLevel.BaseVoltage rdf:resource="#_ec31f2af-d5f3-8357-8f52-77b6c704cbaa"/>
+  </cim:VoltageLevel>
+  <cim:VoltageLevel rdf:ID="_3c70e4c6-9e68-8339-bc67-f4dd7e0540b3">
+    <cim:IdentifiedObject.name>?? 400kV</cim:IdentifiedObject.name>
+    <cim:VoltageLevel.Substation rdf:resource="#_df148c90-347e-8015-8532-45e7784b3aa1"/>
+    <cim:VoltageLevel.BaseVoltage rdf:resource="#_c399a8b1-f78d-8da5-8384-ccb6a6f59134"/>
+  </cim:VoltageLevel>
+  <cim:Line rdf:ID="_3adf3b26-3be9-87e9-94a5-db765a7bc480">
+    <cim:IdentifiedObject.name>NORTH-SOUTH 1</cim:IdentifiedObject.name>
+    <cim:Line.Region rdf:resource="#_369aa0c7-5574-8459-8da6-7b90e5a5bb08"/>
+  </cim:Line>
+  <cim:ACLineSegment rdf:ID="_00000000-533f-8f78-a7aa-d7ed06096c2d">
+    <cim:IdentifiedObject.name>NORTH-SOUTH 1</cim:IdentifiedObject.name>
+    <cim:Equipment.EquipmentContainer rdf:resource="#_3adf3b26-3be9-87e9-94a5-db765a7bc480"/>
+    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_c399a8b1-f78d-8da5-8384-ccb6a6f59134"/>
+    <cim:ACLineSegment.r>2</cim:ACLineSegment.r>
+    <cim:ACLineSegment.x>20</cim:ACLineSegment.x>
+    <cim:ACLineSegment.bch>0</cim:ACLineSegment.bch>
+    <cim:ACLineSegment.gch>0</cim:ACLineSegment.gch>
+  </cim:ACLineSegment>
+  <cim:PowerTransformer rdf:ID="_00000001-7766-87f9-9d7f-3ada13228d26">
+    <cim:IdentifiedObject.name>TX 400/220</cim:IdentifiedObject.name>
+    <cim:Equipment.EquipmentContainer rdf:resource="#_df148c90-347e-8015-8532-45e7784b3aa1"/>
+  </cim:PowerTransformer>
+  <cim:PowerTransformerEnd rdf:ID="_aa1ecdcc-07d3-824b-88e4-e96a382157e6">
+    <cim:IdentifiedObject.name>TX 400/220 W1</cim:IdentifiedObject.name>
+    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_00000001-7766-87f9-9d7f-3ada13228d26"/>
+    <cim:TransformerEnd.Terminal rdf:resource="#_c9d16e43-5952-889f-a29f-16f63574a9e3"/>
+    <cim:TransformerEnd.endNumber>1</cim:TransformerEnd.endNumber>
+    <cim:TransformerEnd.BaseVoltage rdf:resource="#_c399a8b1-f78d-8da5-8384-ccb6a6f59134"/>
+    <cim:PowerTransformerEnd.ratedU>400</cim:PowerTransformerEnd.ratedU>
+    <cim:PowerTransformerEnd.ratedS>500</cim:PowerTransformerEnd.ratedS>
+    <cim:PowerTransformerEnd.r>0.8</cim:PowerTransformerEnd.r>
+    <cim:PowerTransformerEnd.x>16</cim:PowerTransformerEnd.x>
+    <cim:PowerTransformerEnd.g>0</cim:PowerTransformerEnd.g>
+    <cim:PowerTransformerEnd.b>0</cim:PowerTransformerEnd.b>
+    <cim:PowerTransformerEnd.connectionKind rdf:resource="http://iec.ch/TC57/2013/CIM-schema-cim16#WindingConnection.Y"/>
+    <cim:PowerTransformerEnd.phaseAngleClock>0</cim:PowerTransformerEnd.phaseAngleClock>
+  </cim:PowerTransformerEnd>
+  <cim:PowerTransformerEnd rdf:ID="_441a265a-c902-8223-8f8d-ef7c4412fcf8">
+    <cim:IdentifiedObject.name>TX 400/220 W2</cim:IdentifiedObject.name>
+    <cim:PowerTransformerEnd.PowerTransformer rdf:resource="#_00000001-7766-87f9-9d7f-3ada13228d26"/>
+    <cim:TransformerEnd.Terminal rdf:resource="#_2cd90db3-f10b-84d5-9a45-20a19c92bf6f"/>
+    <cim:TransformerEnd.endNumber>2</cim:TransformerEnd.endNumber>
+    <cim:TransformerEnd.BaseVoltage rdf:resource="#_ec31f2af-d5f3-8357-8f52-77b6c704cbaa"/>
+    <cim:PowerTransformerEnd.ratedU>220</cim:PowerTransformerEnd.ratedU>
+    <cim:PowerTransformerEnd.ratedS>500</cim:PowerTransformerEnd.ratedS>
+    <cim:PowerTransformerEnd.r>0</cim:PowerTransformerEnd.r>
+    <cim:PowerTransformerEnd.x>0</cim:PowerTransformerEnd.x>
+    <cim:PowerTransformerEnd.g>0</cim:PowerTransformerEnd.g>
+    <cim:PowerTransformerEnd.b>0</cim:PowerTransformerEnd.b>
+    <cim:PowerTransformerEnd.connectionKind rdf:resource="http://iec.ch/TC57/2013/CIM-schema-cim16#WindingConnection.Y"/>
+    <cim:PowerTransformerEnd.phaseAngleClock>0</cim:PowerTransformerEnd.phaseAngleClock>
+  </cim:PowerTransformerEnd>
+  <cim:ThermalGeneratingUnit rdf:ID="_b15f4e04-ac05-87c9-ba4a-400724a4a043">
+    <cim:IdentifiedObject.name>CCGT</cim:IdentifiedObject.name>
+    <cim:Equipment.EquipmentContainer rdf:resource="#_df148c90-347e-8015-8532-45e7784b3aa1"/>
+    <cim:GeneratingUnit.maxOperatingP>800</cim:GeneratingUnit.maxOperatingP>
+    <cim:GeneratingUnit.minOperatingP>200</cim:GeneratingUnit.minOperatingP>
+  </cim:ThermalGeneratingUnit>
+  <cim:SynchronousMachine rdf:ID="_00000000-7728-87b2-acfd-26ff25ea5000">
+    <cim:IdentifiedObject.name>CCGT</cim:IdentifiedObject.name>
+    <cim:Equipment.EquipmentContainer rdf:resource="#_3c70e4c6-9e68-8339-bc67-f4dd7e0540b3"/>
+    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_c399a8b1-f78d-8da5-8384-ccb6a6f59134"/>
+    <cim:RotatingMachine.GeneratingUnit rdf:resource="#_b15f4e04-ac05-87c9-ba4a-400724a4a043"/>
+    <cim:SynchronousMachine.type rdf:resource="http://iec.ch/TC57/2013/CIM-schema-cim16#SynchronousMachineKind.generator"/>
+    <cim:RotatingMachine.ratedU>400</cim:RotatingMachine.ratedU>
+    <cim:RotatingMachine.ratedS>854.4003745317531</cim:RotatingMachine.ratedS>
+    <cim:SynchronousMachine.maxQ>300</cim:SynchronousMachine.maxQ>
+    <cim:SynchronousMachine.minQ>-150</cim:SynchronousMachine.minQ>
+  </cim:SynchronousMachine>
+  <cim:EnergyConsumer rdf:ID="_00000000-709a-8488-8b2c-37a0c9afd896">
+    <cim:IdentifiedObject.name>CITY LOAD</cim:IdentifiedObject.name>
+    <cim:Equipment.EquipmentContainer rdf:resource="#_0861c09f-82a1-8860-884f-3d7ca14328b6"/>
+    <cim:ConductingEquipment.BaseVoltage rdf:resource="#_ec31f2af-d5f3-8357-8f52-77b6c704cbaa"/>
+  </cim:EnergyConsumer>
+  <cim:Terminal rdf:ID="_d3478ee3-7ef7-83f8-85f0-b43a698c1416">
+    <cim:IdentifiedObject.name>NORTH-SOUTH 1 T1</cim:IdentifiedObject.name>
+    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_00000000-533f-8f78-a7aa-d7ed06096c2d"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_b8806b34-f82c-8165-9111-b5310fbab08c">
+    <cim:IdentifiedObject.name>NORTH-SOUTH 1 T2</cim:IdentifiedObject.name>
+    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_00000000-533f-8f78-a7aa-d7ed06096c2d"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_c9d16e43-5952-889f-a29f-16f63574a9e3">
+    <cim:IdentifiedObject.name>TX 400/220 T1</cim:IdentifiedObject.name>
+    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_00000001-7766-87f9-9d7f-3ada13228d26"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_2cd90db3-f10b-84d5-9a45-20a19c92bf6f">
+    <cim:IdentifiedObject.name>TX 400/220 T2</cim:IdentifiedObject.name>
+    <cim:ACDCTerminal.sequenceNumber>2</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_00000001-7766-87f9-9d7f-3ada13228d26"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_27835f22-6e89-85a0-a900-e5823c19f9f5">
+    <cim:IdentifiedObject.name>CCGT T1</cim:IdentifiedObject.name>
+    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_00000000-7728-87b2-acfd-26ff25ea5000"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:ID="_cd4fedda-4727-8eb9-b853-c8b252f699f4">
+    <cim:IdentifiedObject.name>CITY LOAD T1</cim:IdentifiedObject.name>
+    <cim:ACDCTerminal.sequenceNumber>1</cim:ACDCTerminal.sequenceNumber>
+    <cim:Terminal.ConductingEquipment rdf:resource="#_00000000-709a-8488-8b2c-37a0c9afd896"/>
+  </cim:Terminal>
+  <cim:OperationalLimitType rdf:ID="_1707e84f-f8e0-896a-874b-af6d8b062134">
+    <cim:IdentifiedObject.name>PATL</cim:IdentifiedObject.name>
+    <cim:OperationalLimitType.direction rdf:resource="http://iec.ch/TC57/2013/CIM-schema-cim16#OperationalLimitDirectionKind.absoluteValue"/>
+  </cim:OperationalLimitType>
+  <cim:OperationalLimitSet rdf:ID="_37fd7fca-390d-845f-b48d-c1a4fd77e297">
+    <cim:IdentifiedObject.name>NORTH-SOUTH 1 PATL</cim:IdentifiedObject.name>
+    <cim:OperationalLimitSet.Terminal rdf:resource="#_d3478ee3-7ef7-83f8-85f0-b43a698c1416"/>
+  </cim:OperationalLimitSet>
+  <cim:CurrentLimit rdf:ID="_36aa9ca7-bd77-8afb-958a-49620a32818e">
+    <cim:IdentifiedObject.name>PATL</cim:IdentifiedObject.name>
+    <cim:OperationalLimit.OperationalLimitSet rdf:resource="#_37fd7fca-390d-845f-b48d-c1a4fd77e297"/>
+    <cim:OperationalLimit.OperationalLimitType rdf:resource="#_1707e84f-f8e0-896a-874b-af6d8b062134"/>
+    <cim:CurrentLimit.value>1500</cim:CurrentLimit.value>
+  </cim:CurrentLimit>
+</rdf:RDF>

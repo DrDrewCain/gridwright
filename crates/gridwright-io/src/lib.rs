@@ -58,7 +58,9 @@ pub mod cgmes;
 #[cfg(feature = "cgmes")]
 pub mod cgmes_write;
 #[cfg(feature = "cgmes")]
-pub use cgmes_write::{WrittenModel, to_cgmes, write_cgmes};
+pub use cgmes_write::{
+    ModelOptions, WrittenModel, to_cgmes, to_cgmes_with, write_cgmes, write_cgmes_with,
+};
 
 /// A network read from a file, plus what had to be discarded to make it fit.
 ///

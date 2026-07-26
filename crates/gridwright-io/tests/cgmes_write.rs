@@ -17,7 +17,7 @@
 
 #![cfg(feature = "cgmes")]
 
-use gridwright_io::{cgmes, load_any, to_cgmes};
+use gridwright_io::{ModelOptions, cgmes, load_any, to_cgmes, to_cgmes_with};
 use gridwright_net::{Generator, Line, Load, Network, Snapshots, StorageUnit};
 
 fn path(rel: &str) -> std::path::PathBuf {
@@ -517,8 +517,12 @@ fn what_cim_cannot_hold_is_reported() {
         "phase shift",
         "generation costs",
         "shunt",
+        // The two facts a network does not contain. Both are reported when the
+        // caller did not supply them, rather than filled in from the clock or
+        // from a load flow nobody ran.
         "Model.created",
-        "connectionKind",
+        "no state variables profile was written",
+        "no operating point in the hypothesis",
     ] {
         assert!(
             joined.contains(expected),
@@ -580,6 +584,22 @@ fn a_bus_with_no_nominal_voltage_is_reported_rather_than_guessed_at() {
 /// fixture carries 132 kV across the transmission core and 33 or 11 kV below
 /// it, so it has three base voltages, three voltage levels, and transformers
 /// that are transformers because they change voltage.
+/// The moment the checked-in fixture was made, in seconds since the epoch.
+///
+/// A constant rather than the clock, because `Model.created` is the one header
+/// field that would otherwise make the fixture differ from itself on every run.
+/// It is the real moment the fixture was first generated, which is what the
+/// attribute means, and it stays put because the fixture does.
+const FIXTURE_CREATED: i64 = 1_785_024_000; // 2026-07-26T00:00:00Z
+
+fn fixture_options() -> ModelOptions<'static> {
+    ModelOptions {
+        created: Some(FIXTURE_CREATED),
+        scenario_time: Some(FIXTURE_CREATED),
+        state: None,
+    }
+}
+
 fn fixture_source() -> Network {
     gridwright_io::psse::load_raw(path("examples/psse/case14_v33.raw"))
         .unwrap()
@@ -601,30 +621,78 @@ fn fixture_source() -> Network {
 /// derivation that is stable within a process and not across builds.
 #[test]
 #[ignore = "writes into the repository; run deliberately to refresh the fixture"]
-fn regenerate_the_checked_in_fixture() {
-    let dir = path("examples/cgmes_written");
-    std::fs::create_dir_all(&dir).unwrap();
-    for (file, text) in to_cgmes(&fixture_source(), "case14").documents {
-        std::fs::write(dir.join(file), text).unwrap();
+fn regenerate_the_checked_in_fixtures() {
+    for fixture in written_fixtures() {
+        std::fs::create_dir_all(&fixture.dir).unwrap();
+        for (file, text) in fixture.documents {
+            std::fs::write(fixture.dir.join(file), text).unwrap();
+        }
     }
 }
 
+/// One checked-in fixture: where it lives, and what the writer says it holds.
+struct WrittenFixture {
+    dir: std::path::PathBuf,
+    documents: Vec<(String, String)>,
+}
+
+/// Every checked-in fixture, as the writer produces it.
+///
+/// One list, used both to write the files and to check them, so the two cannot
+/// drift into disagreeing about which network a fixture came from.
+fn written_fixtures() -> Vec<WrittenFixture> {
+    // The model with no solved state, which is the ordinary case: a network
+    // converted from somewhere else has plant and topology and nobody has run a
+    // load flow on it.
+    let plain = to_cgmes_with(&fixture_source(), "case14", &fixture_options());
+
+    // And one with a state, so the state variables profile is on disk to be
+    // read rather than only described. The state is the hand-derived one from
+    // `examples/cgmes_solved`, where every number is checked in a comment, so
+    // nothing in the SV file here was made up by this writer or by anything
+    // else: it is that published answer, written back out.
+    let (solved_case, solved_state) =
+        cgmes::load_model_with_state(path("examples/cgmes_solved")).unwrap();
+    let solved_state = solved_state.expect("the solved fixture publishes a state");
+    let solved = to_cgmes_with(
+        &solved_case.network,
+        "mini",
+        &ModelOptions {
+            created: Some(FIXTURE_CREATED),
+            scenario_time: Some(FIXTURE_CREATED),
+            state: Some(&solved_state),
+        },
+    );
+
+    vec![
+        WrittenFixture {
+            dir: path("examples/cgmes_written"),
+            documents: plain.documents,
+        },
+        WrittenFixture {
+            dir: path("examples/cgmes_written_solved"),
+            documents: solved.documents,
+        },
+    ]
+}
+
 #[test]
-fn the_checked_in_fixture_is_byte_for_byte_what_this_writer_produces() {
+fn the_checked_in_fixtures_are_byte_for_byte_what_this_writer_produces() {
     // Determinism across builds and not merely within one run. The identifiers
     // are derived from a hash written out by hand here rather than taken from
     // the standard library, whose hasher is explicitly allowed to change
     // between releases; this is the test that would catch it if that promise
     // were ever quietly broken by using one.
-    let dir = path("examples/cgmes_written");
-    for (file, text) in to_cgmes(&fixture_source(), "case14").documents {
-        let on_disk = std::fs::read_to_string(dir.join(&file))
-            .unwrap_or_else(|e| panic!("{file} is missing from the fixture: {e}"));
-        assert_eq!(
-            on_disk, text,
-            "{file} differs from what the writer now produces; if the change was \
-             intended, refresh it with the ignored regeneration test in this file"
-        );
+    for fixture in written_fixtures() {
+        for (file, text) in fixture.documents {
+            let on_disk = std::fs::read_to_string(fixture.dir.join(&file))
+                .unwrap_or_else(|e| panic!("{file} is missing from the fixture: {e}"));
+            assert_eq!(
+                on_disk, text,
+                "{file} differs from what the writer now produces; if the change was \
+                 intended, refresh it with the ignored regeneration test in this file"
+            );
+        }
     }
 }
 
@@ -643,4 +711,194 @@ fn the_checked_in_fixture_reads_back_as_the_network_it_was_written_from() {
         case.network.loads.iter().any(|l| l.p_set > 0.0),
         "the equipment profile alone would give a network with no demand in it"
     );
+}
+
+#[test]
+fn a_solved_state_is_written_as_a_state_variables_profile_and_comes_back_unchanged() {
+    // The strongest thing that can be said about the SV profile, and the reason
+    // it is written from a state rather than from a network: the state that
+    // goes out is the state that comes back, component for component, in CIM's
+    // own signs. Nothing here was invented, because the state was read from a
+    // published fixture that was worked out by hand.
+    let (case, state) = cgmes::load_model_with_state(path("examples/cgmes_solved")).unwrap();
+    let state = state.expect("the solved fixture publishes a state");
+
+    let written = to_cgmes_with(
+        &case.network,
+        "mini",
+        &ModelOptions {
+            created: Some(FIXTURE_CREATED),
+            scenario_time: Some(FIXTURE_CREATED),
+            state: Some(&state),
+        },
+    );
+    assert_eq!(written.documents.len(), 4, "no state variables profile");
+    assert_eq!(written.documents[3].0, "mini_SV.xml");
+
+    let (back_case, back) = cgmes::parse_model_with_state(&written.documents, "mini").unwrap();
+    assert_same_network(&back_case.network, &case.network, &written.notes);
+    let back = back.expect("the written model publishes a state");
+
+    assert_eq!(back.voltages, state.voltages, "voltages moved");
+    assert_eq!(back.branches, state.branches, "branch flows moved");
+    assert_eq!(back.generators, state.generators, "machine flows moved");
+    assert_eq!(back.loads, state.loads, "load flows moved");
+
+    // 610 MW out of the machine, 610 into the line, and the line delivering 603
+    // at the far end: the losses survived, which they would not have if either
+    // end had been written at the wrong terminal.
+    assert_eq!(back.branches[0].end0.map(|f| f.p), Some(610.0));
+    assert_eq!(back.branches[0].end1.map(|f| f.p), Some(-603.0));
+
+    // What was not written, said rather than left to be noticed by whoever
+    // compares the tap positions and finds none.
+    let joined = written.notes.join("\n");
+    assert!(joined.contains("tap positions"), "{:?}", written.notes);
+    assert!(joined.contains("TopologicalIsland"), "{:?}", written.notes);
+}
+
+#[test]
+fn an_angle_goes_back_out_in_degrees() {
+    // The reader stores radians because everything downstream of it wants
+    // radians, and CIM publishes degrees. Writing radians into that field would
+    // fail nowhere: it would make every angle difference wrong by a factor of
+    // 57 and produce flows that look plausible.
+    let (case, state) = cgmes::load_model_with_state(path("examples/cgmes_solved")).unwrap();
+    let state = state.unwrap();
+    // SOUTH 400 sits at -5 degrees in the fixture, which the reader holds as
+    // -0.0873 radians.
+    let radians = state.voltages[1].unwrap().angle;
+    assert!((radians + 5f64.to_radians()).abs() < 1e-12);
+
+    let written = to_cgmes_with(
+        &case.network,
+        "mini",
+        &ModelOptions {
+            state: Some(&state),
+            ..Default::default()
+        },
+    );
+    let sv = &written.documents[3].1;
+    assert!(
+        sv.contains("<cim:SvVoltage.angle>-5</cim:SvVoltage.angle>"),
+        "the angle was not written back in degrees:\n{sv}"
+    );
+}
+
+#[test]
+fn a_machine_gets_an_operating_point_only_when_a_solved_state_supplies_one() {
+    // A network states what a machine can do. What it is doing is a different
+    // claim, and the hypothesis is where somebody would read it, so it is
+    // written when it is known and reported when it is not.
+    let (case, state) = cgmes::load_model_with_state(path("examples/cgmes_solved")).unwrap();
+    let state = state.unwrap();
+
+    let without = to_cgmes(&case.network, "mini");
+    assert!(!without.documents[2].1.contains("RotatingMachine.p"));
+    assert!(
+        without
+            .notes
+            .join("\n")
+            .contains("no operating point in the hypothesis")
+    );
+
+    let with = to_cgmes_with(
+        &case.network,
+        "mini",
+        &ModelOptions {
+            state: Some(&state),
+            ..Default::default()
+        },
+    );
+    // Negative because it is generating: CIM signs a terminal's flow into the
+    // equipment, and the state was read in that convention and not flipped.
+    assert!(
+        with.documents[2]
+            .1
+            .contains("<cim:RotatingMachine.p>-610</cim:RotatingMachine.p>"),
+        "{}",
+        with.documents[2].1
+    );
+}
+
+#[test]
+fn a_stated_moment_reaches_every_header_and_an_unstated_one_is_reported() {
+    // `Model.created` is required by CGMES and is not in a network. The
+    // resolution is that the caller states it, which keeps the writer a
+    // function of its arguments; what must not happen is a header quietly
+    // stamped from the clock, since then the same network writes a different
+    // file every run.
+    let net = case14();
+    let stated = to_cgmes_with(&net, "case14", &fixture_options());
+    for (file, text) in &stated.documents {
+        assert!(
+            text.contains("<md:Model.created>2026-07-26T00:00:00Z</md:Model.created>"),
+            "{file} has no created timestamp"
+        );
+        assert!(text.contains("<md:Model.scenarioTime>"), "{file}");
+    }
+    assert!(
+        !stated.notes.join("\n").contains("Model.created"),
+        "it was stated, so there is nothing to report: {:?}",
+        stated.notes
+    );
+    // And stating it does not cost determinism, because it is an argument.
+    assert_eq!(
+        to_cgmes_with(&net, "case14", &fixture_options()).documents,
+        stated.documents
+    );
+
+    let unstated = to_cgmes(&net, "case14");
+    assert!(!unstated.documents[0].1.contains("Model.created"));
+    assert!(unstated.notes.join("\n").contains("Model.created"));
+}
+
+#[test]
+fn writing_to_a_directory_stamps_the_moment_it_wrote() {
+    // The one place the clock is read, because a file being written to disk is
+    // genuinely happening now and that is what the attribute records. Every
+    // other entry point stays a function of its arguments.
+    let dir = tmp("stamped");
+    let _ = std::fs::remove_dir_all(&dir);
+    gridwright_io::write_cgmes(&case14(), &dir).unwrap();
+    let eq = std::fs::read_to_string(dir.join("stamped_EQ.xml")).unwrap();
+    let created = eq
+        .lines()
+        .find(|l| l.contains("Model.created"))
+        .expect("no created timestamp in a file written to disk");
+    // Not a placeholder date: this century, and shaped like an xsd:dateTime.
+    assert!(created.contains("T") && created.contains("Z"), "{created}");
+    assert!(created.contains(">20"), "{created}");
+}
+
+#[test]
+fn the_checked_in_solved_fixture_republishes_the_state_it_was_built_from() {
+    // The fixture that has a state variables profile in it, read back off disk
+    // with the reader that reads a published archive. Its numbers are the ones
+    // derived by hand in `examples/cgmes_solved`, so this is a check that they
+    // survived a write and a read rather than a check of the writer against
+    // itself.
+    let (original, state) = cgmes::load_model_with_state(path("examples/cgmes_solved")).unwrap();
+    let state = state.unwrap();
+    let (back, back_state) =
+        cgmes::load_model_with_state(path("examples/cgmes_written_solved")).unwrap();
+    assert_same_network(&back.network, &original.network, &back.notes);
+
+    let back_state = back_state.expect("the fixture carries a state variables profile");
+    assert_eq!(back_state.voltages, state.voltages);
+    assert_eq!(back_state.branches, state.branches);
+    assert_eq!(back_state.generators, state.generators);
+    assert_eq!(back_state.loads, state.loads);
+
+    // 410 kV on a 400 kV node is 1.025 per unit, which is the number the
+    // original fixture derives in its own comment.
+    let north = back_state.voltages[0].unwrap();
+    assert_eq!(north.v_kv, 410.0);
+    assert!((north.v_pu.unwrap() - 1.025).abs() < 1e-12);
+
+    // The tap position and the shunt sections are not in the file, because
+    // neither has an object here to hang off. Said in the notes rather than
+    // discovered by finding an empty list.
+    assert!(back_state.taps.is_empty());
+    assert!(back_state.shunts.is_empty());
 }

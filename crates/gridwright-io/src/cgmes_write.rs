@@ -10,7 +10,7 @@
 //!
 //! # What is emitted
 //!
-//! Three profiles, as separate documents, which is how a CGMES model is
+//! Separate documents, one per profile, which is how a CGMES model is
 //! published:
 //!
 //! - **EQ**, the equipment profile: the containment hierarchy, base voltages,
@@ -21,13 +21,37 @@
 //! - **TP**, the topology profile: one `TopologicalNode` per bus, and the
 //!   association from each terminal to the node it reaches.
 //! - **SSH**, the steady state hypothesis: what the loads are drawing, which
-//!   terminals are connected, and how much of each shunt is switched in.
+//!   terminals are connected, how much of each shunt is switched in, and the
+//!   machines' operating points where a solved state supplied them.
+//! - **SV**, the state variables profile, and only when a caller hands over a
+//!   [`crate::cgmes::SolvedState`]. See below.
 //!
 //! The split is not cosmetic. `EnergyConsumer.p` lives in SSH and not in EQ,
 //! so an equipment profile on its own describes a network with plant in it and
 //! no demand. That is a property of the standard rather than of this writer,
 //! and it is why the SSH document is always produced rather than only when
 //! something is switched off.
+//!
+//! # The two things a network does not know
+//!
+//! A `Network` says what a system is and can do. Two kinds of fact a CGMES file
+//! needs are not in it, and both are handled the same way, through
+//! [`ModelOptions`]: they are taken from the caller and never invented.
+//!
+//! The first is **when**. `Model.created` and `Model.scenarioTime` are required
+//! and neither is derivable, and reading the clock inside the writer would mean
+//! the same network wrote a different file every run. So the caller states them,
+//! which keeps the writer a function of its arguments; [`write_cgmes`] stamps
+//! the current time, because a file being written to disk really is happening
+//! now and that is exactly what `Model.created` records.
+//!
+//! The second is **what it was doing**. A state variables profile is the
+//! operator's own answer, published so the receiver can reproduce it, and it is
+//! the single most dangerous thing in this module to invent: somebody checks
+//! their own solution against it. So an SV profile is written only from a
+//! `SolvedState`, which is the type the reader produces from a real one, and
+//! never from a network on its own. The same holds for the machine set points
+//! in SSH.
 //!
 //! # Terminals, which are the whole difficulty
 //!
@@ -98,6 +122,7 @@ const EQ_PROFILE: &str = "http://entsoe.eu/CIM/EquipmentCore/3/1";
 const EQ_OPERATION_PROFILE: &str = "http://entsoe.eu/CIM/EquipmentOperation/3/1";
 const TP_PROFILE: &str = "http://entsoe.eu/CIM/Topology/4/1";
 const SSH_PROFILE: &str = "http://entsoe.eu/CIM/SteadyStateHypothesis/1/1";
+const SV_PROFILE: &str = "http://entsoe.eu/CIM/StateVariables/4/1";
 
 /// Who made the model. CGMES requires a modelling authority set and it is a
 /// URI rather than a name, so this identifies the tool rather than claiming to
@@ -116,11 +141,75 @@ const UNLIMITED: f64 = 1e6;
 /// written without going through a directory.
 #[derive(Debug, Clone)]
 pub struct WrittenModel {
-    /// File name and content, in the order equipment, topology, hypothesis.
+    /// File name and content, in the order equipment, topology, hypothesis,
+    /// and state variables where a solved state was supplied.
     pub documents: Vec<(String, String)>,
     /// What CIM could not hold, or could only hold by guessing, stated rather
     /// than discovered.
     pub notes: Vec<String>,
+}
+
+/// The facts a CGMES file needs that a [`Network`] does not contain.
+///
+/// Three things are in this position, and the reason they are parameters rather
+/// than defaults is the same for all three: they are true or false about the
+/// world rather than derivable from the model, so a writer that filled them in
+/// would be making them up.
+///
+/// Leaving them out has a cost, which is that the header is then missing
+/// attributes CGMES requires. Supplying them is therefore the ordinary case and
+/// [`write_cgmes`] does it, since a file being written to disk is already
+/// happening at a particular moment and that moment is exactly what
+/// `Model.created` records.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ModelOptions<'a> {
+    /// When the file was made, in seconds since the Unix epoch.
+    ///
+    /// Not read from the clock inside the writer. That would make the same
+    /// network produce a different file on every run, and the writer being a
+    /// function of its arguments is what makes its output comparable at all.
+    /// A caller who wants the current time passes it, which keeps the impurity
+    /// where it belongs.
+    pub created: Option<i64>,
+    /// The moment the operating point describes, in seconds since the epoch.
+    ///
+    /// Distinct from `created`: a model built today may describe next winter's
+    /// peak. A [`Network`]'s snapshots carry weights and no calendar, so there
+    /// is nothing here to derive it from.
+    pub scenario_time: Option<i64>,
+    /// A solved state to publish beside the model, as a state variables
+    /// profile.
+    ///
+    /// The only honest source of one. A network states what a system can do and
+    /// an SV profile states what it did, so writing one without this would mean
+    /// inventing a load flow, and somebody would then check their own answer
+    /// against it.
+    pub state: Option<&'a crate::cgmes::SolvedState>,
+}
+
+/// Render a Unix timestamp as the `xsd:dateTime` a CIM header carries.
+///
+/// Written out rather than taken from a date library because this crate has no
+/// date dependency and adding one for eleven lines of arithmetic would be a
+/// poor trade. The civil-from-days conversion is Howard Hinnant's, which shifts
+/// the epoch to the first of March so that the leap day lands at the end of the
+/// year and the month lengths become a linear formula.
+fn xsd_datetime(seconds: i64) -> String {
+    let days = seconds.div_euclid(86_400);
+    let time = seconds.rem_euclid(86_400);
+    // Days since 0000-03-01, which is 719468 days before the Unix epoch.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + i64::from(m <= 2);
+    let (h, min, s) = (time / 3600, (time % 3600) / 60, time % 60);
+    format!("{y:04}-{m:02}-{d:02}T{h:02}:{min:02}:{s:02}Z")
 }
 
 /// A 64-bit hash of a string, salted so one string yields several.
@@ -273,12 +362,17 @@ struct TerminalRecord {
 }
 
 /// Write the model header every CGMES document carries.
+///
+/// `Model.created` and `Model.scenarioTime` appear only when the caller stated
+/// them, since neither is derivable from a network and both are required. See
+/// [`ModelOptions`] for why that is a parameter rather than a call to the clock.
 fn header(
     out: &mut String,
     model: &str,
     description: &str,
     profiles: &[&str],
-    depends_on: Option<&str>,
+    depends_on: &[&str],
+    options: &ModelOptions<'_>,
 ) {
     out.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
     out.push_str(&format!(
@@ -289,6 +383,18 @@ fn header(
     out.push_str(&format!(
         "    <md:Model.description>{description}</md:Model.description>\n"
     ));
+    if let Some(t) = options.created {
+        out.push_str(&format!(
+            "    <md:Model.created>{}</md:Model.created>\n",
+            xsd_datetime(t)
+        ));
+    }
+    if let Some(t) = options.scenario_time {
+        out.push_str(&format!(
+            "    <md:Model.scenarioTime>{}</md:Model.scenarioTime>\n",
+            xsd_datetime(t)
+        ));
+    }
     out.push_str("    <md:Model.version>1</md:Model.version>\n");
     out.push_str(&format!(
         "    <md:Model.modelingAuthoritySet>{AUTHORITY}</md:Model.modelingAuthoritySet>\n"
@@ -296,7 +402,7 @@ fn header(
     for p in profiles {
         out.push_str(&format!("    <md:Model.profile>{p}</md:Model.profile>\n"));
     }
-    if let Some(d) = depends_on {
+    for d in depends_on {
         out.push_str(&format!(
             "    <md:Model.DependentOn rdf:resource=\"{}\"/>\n",
             urn(d)
@@ -308,10 +414,24 @@ fn header(
 /// Write a network as a CGMES model: an equipment, a topology and a steady
 /// state hypothesis profile.
 ///
+/// The header will have no `Model.created` and no `Model.scenarioTime`, because
+/// neither can be derived from a network and this entry point takes nothing to
+/// derive them from. Use [`to_cgmes_with`] to state them, or [`write_cgmes`],
+/// which stamps the moment it writes.
+///
 /// See the module documentation for what is emitted and what is not. The
 /// returned notes are not decoration; several of them describe information that
 /// left the model at this point and cannot be recovered from the file.
 pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
+    to_cgmes_with(net, name, &ModelOptions::default())
+}
+
+/// Write a network as a CGMES model, stating the things a network cannot.
+///
+/// The same output as [`to_cgmes`] plus whatever [`ModelOptions`] supplies: a
+/// complete model header, and a state variables profile when a solved state is
+/// given.
+pub fn to_cgmes_with(net: &Network, name: &str, options: &ModelOptions<'_>) -> WrittenModel {
     let base = if net.base_mva > 0.0 {
         net.base_mva
     } else {
@@ -419,12 +539,14 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
     let mut unplaceable_shunts = 0usize;
     let mut empty_loads = 0usize;
     let mut invented_carriers = 0usize;
+    let mut unbounded_machines = 0usize;
 
     // ---------------------------------------------------------------- EQ ----
 
     let eq_model = mrid(&format!("FullModel:EQ:{name}"));
     let tp_model = mrid(&format!("FullModel:TP:{name}"));
     let ssh_model = mrid(&format!("FullModel:SSH:{name}"));
+    let sv_model = mrid(&format!("FullModel:SV:{name}"));
 
     let mut eq = String::new();
     let mut limits = String::new();
@@ -550,6 +672,23 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
                 num_prop(&mut eq, "PowerTransformerEnd.x", x);
                 num_prop(&mut eq, "PowerTransformerEnd.g", 0.0);
                 num_prop(&mut eq, "PowerTransformerEnd.b", 0.0);
+                // The winding connection is not a free choice being made here.
+                // A phase displacement is exactly what a vector group encodes,
+                // and this branch has already said its displacement is zero, so
+                // a star on both ends with a clock of zero is the CIM spelling
+                // of what the network states rather than a guess about the
+                // hardware. Where the branch does carry a shift, the network
+                // determines nothing about which windings produce it, so both
+                // attributes are left out and the note about the lost shift
+                // covers it.
+                if l.phase_shift.abs() <= 1e-12 {
+                    enum_link(
+                        &mut eq,
+                        "PowerTransformerEnd.connectionKind",
+                        "WindingConnection.Y",
+                    );
+                    num_prop(&mut eq, "PowerTransformerEnd.phaseAngleClock", 0.0);
+                }
                 close(&mut eq, "PowerTransformerEnd");
             }
             if l.s_nom >= UNLIMITED {
@@ -697,6 +836,33 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
             );
         }
         link(&mut eq, "RotatingMachine.GeneratingUnit", &unit);
+        // Not a guess about the plant: the object being written came out of the
+        // network's generators, so it generates.
+        enum_link(
+            &mut eq,
+            "SynchronousMachine.type",
+            "SynchronousMachineKind.generator",
+        );
+        // The machine is modelled as sitting directly on its bus, so the
+        // voltage it is rated for is the voltage of that bus. This states the
+        // model rather than the nameplate of some real machine behind a unit
+        // transformer the model does not contain.
+        if net.buses[g.bus].v_nom > 0.0 {
+            num_prop(&mut eq, "RotatingMachine.ratedU", net.buses[g.bus].v_nom);
+        }
+        // Apparent rating from the corner of the capability the network does
+        // state: a machine allowed to reach `p_nom` at `q_max` is by definition
+        // rated for at least the apparent power of that point. Where the
+        // reactive range is unbounded the corner is not defined and the active
+        // rating is all there is to say, which understates it by the power
+        // factor and is counted below.
+        let rated_s = if g.q_max.is_finite() {
+            g.p_nom.hypot(g.q_max)
+        } else {
+            unbounded_machines += 1;
+            g.p_nom
+        };
+        num_prop(&mut eq, "RotatingMachine.ratedS", rated_s);
         // An unbounded reactive range is written by writing nothing, which is
         // what the reader takes an absent limit to mean. A large finite number
         // would be a limit the machine does not have.
@@ -829,7 +995,8 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
         &eq_model,
         &format!("{name} equipment"),
         &profiles,
-        None,
+        &[],
+        options,
     );
     eq_out.push_str(&eq);
 
@@ -841,7 +1008,8 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
         &tp_model,
         &format!("{name} topology"),
         &[TP_PROFILE],
-        Some(&eq_model),
+        &[&eq_model],
+        options,
     );
     for (b, bus) in net.buses.iter().enumerate() {
         defined(&mut tp, "TopologicalNode", &bus_mrid[b]);
@@ -878,7 +1046,8 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
         &ssh_model,
         &format!("{name} steady state hypothesis"),
         &[SSH_PROFILE],
-        Some(&eq_model),
+        &[&eq_model],
+        options,
     );
     for (i, l) in net.loads.iter().enumerate() {
         let p = net.load_profile.at(i, 0).unwrap_or(l.p_set);
@@ -896,8 +1065,36 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
         bool_prop(&mut ssh, "RegulatingCondEq.controlEnabled", false);
         close(&mut ssh, "LinearShuntCompensator");
     }
-    for id in &gen_mrid {
+    let mut machines_without_dispatch = 0usize;
+    for (i, id) in gen_mrid.iter().enumerate() {
         updated(&mut ssh, "SynchronousMachine", id);
+        // The machine's operating point. A network states what a machine can
+        // do and a hypothesis states what it is doing, so the only honest
+        // source is a solved state the caller already has. CIM signs a
+        // terminal's flow into the equipment, which is the same convention the
+        // state was read in, so a generating machine is negative in both and
+        // nothing is flipped on the way through.
+        match options
+            .state
+            .and_then(|s| s.generators.get(i).copied())
+            .flatten()
+        {
+            Some(flow) => {
+                num_prop(&mut ssh, "RotatingMachine.p", flow.p);
+                num_prop(&mut ssh, "RotatingMachine.q", flow.q);
+            }
+            None => machines_without_dispatch += 1,
+        }
+        // It generates, and nothing here is designated the angle reference: a
+        // priority of zero is CIM's way of saying a machine is not a candidate
+        // for it, and choosing which bus holds the angle is the solver's
+        // business rather than the model's.
+        enum_link(
+            &mut ssh,
+            "SynchronousMachine.operatingMode",
+            "SynchronousMachineOperatingMode.generator",
+        );
+        num_prop(&mut ssh, "SynchronousMachine.referencePriority", 0.0);
         bool_prop(&mut ssh, "RegulatingCondEq.controlEnabled", false);
         close(&mut ssh, "SynchronousMachine");
     }
@@ -908,17 +1105,91 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
     }
     ssh.push_str("</rdf:RDF>\n");
 
+    // ---------------------------------------------------------------- SV ----
+    //
+    // Written only from a state the caller supplies. A state variables profile
+    // full of flat voltages and zero flows would be the worst file this module
+    // could produce: it is precisely the thing somebody checks their own answer
+    // against, so an invented one is not a partial model, it is a wrong answer
+    // published as an operator's.
+    let sv = options.state.map(|state| {
+        let mut sv = String::new();
+        header(
+            &mut sv,
+            &sv_model,
+            &format!("{name} state variables"),
+            &[SV_PROFILE],
+            &[&eq_model, &tp_model],
+            options,
+        );
+        for (b, voltage) in state.voltages.iter().enumerate() {
+            let Some(v) = voltage else { continue };
+            defined(
+                &mut sv,
+                "SvVoltage",
+                &mrid(&format!("SvVoltage:{}", bus_mrid[b])),
+            );
+            link(&mut sv, "SvVoltage.TopologicalNode", &bus_mrid[b]);
+            num_prop(&mut sv, "SvVoltage.v", v.v_kv);
+            // Back to degrees, which is what CIM publishes and the reader
+            // converts on the way in. Leaving radians here would not fail
+            // anywhere; it would make every angle difference wrong by a factor
+            // of 57 and produce flows that look plausible.
+            num_prop(&mut sv, "SvVoltage.angle", v.angle.to_degrees());
+            close(&mut sv, "SvVoltage");
+        }
+        // A flow belongs to a terminal, not to a branch, which is what lets the
+        // two ends of one branch disagree by exactly the losses. Each end is
+        // written at the terminal that reaches the bus it was measured at,
+        // rather than at whichever terminal came first.
+        let flow = |sv: &mut String, terminal: &str, p: f64, q: f64| {
+            defined(sv, "SvPowerFlow", &mrid(&format!("SvPowerFlow:{terminal}")));
+            link(sv, "SvPowerFlow.Terminal", terminal);
+            num_prop(sv, "SvPowerFlow.p", p);
+            num_prop(sv, "SvPowerFlow.q", q);
+            close(sv, "SvPowerFlow");
+        };
+        for (i, branch) in state.branches.iter().enumerate() {
+            let Some(id) = branch_mrid.get(i) else {
+                continue;
+            };
+            for (end, at) in [(1u32, branch.end0), (2, branch.end1)] {
+                if let Some(f) = at {
+                    let terminal = mrid(&format!("Terminal:{id}:{end}"));
+                    flow(&mut sv, &terminal, f.p, f.q);
+                }
+            }
+        }
+        for (i, at) in state.generators.iter().enumerate() {
+            if let (Some(f), Some(id)) = (at, gen_mrid.get(i)) {
+                flow(&mut sv, &mrid(&format!("Terminal:{id}:1")), f.p, f.q);
+            }
+        }
+        for (i, at) in state.loads.iter().enumerate() {
+            if let (Some(f), Some(id)) = (at, load_mrid.get(i)) {
+                flow(&mut sv, &mrid(&format!("Terminal:{id}:1")), f.p, f.q);
+            }
+        }
+        sv.push_str("</rdf:RDF>\n");
+        sv
+    });
+
     // ------------------------------------------------------------- notes ----
 
     notes.push(format!(
         "CIM/CGMES: {} topological nodes, {} branches ({} as transformers), {} \
-         synchronous machines, {} loads, {shunts} shunt compensators, across an \
-         equipment, a topology and a steady state hypothesis profile",
+         synchronous machines, {} loads, {shunts} shunt compensators, across the {} \
+         profiles",
         net.buses.len(),
         net.lines.len(),
         (0..net.lines.len()).filter(|i| is_transformer(*i)).count(),
         net.generators.len(),
         net.loads.len(),
+        if sv.is_some() {
+            "equipment, topology, steady state hypothesis and state variables"
+        } else {
+            "equipment, topology and steady state hypothesis"
+        },
     ));
     notes.push(
         "demand is written into the steady state hypothesis and not into the equipment \
@@ -926,20 +1197,79 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
          therefore describes this network with no load in it"
             .into(),
     );
-    notes.push(
-        "the model header carries no Model.created, because a wall clock timestamp \
-         would make the same network write a different file on every run and \
-         reproducible output was chosen over it; a strict validator will ask for one"
-            .into(),
-    );
-    notes.push(
-        "attributes CGMES asks for that a network does not carry are left absent rather \
-         than invented: PowerTransformerEnd.connectionKind and phaseAngleClock, \
-         RotatingMachine.ratedS and ratedU, SynchronousMachine.type, and the machine \
-         set points RotatingMachine.p and q in the hypothesis. A validator will report \
-         them missing, which is the honest outcome"
-            .into(),
-    );
+    if options.created.is_none() {
+        notes.push(
+            "the model header carries no Model.created, which CGMES requires; nothing in \
+             a network says when a file was made and reading the clock here would mean \
+             the same network wrote a different file on every run. Pass it through \
+             ModelOptions, or use write_cgmes, which stamps the moment it writes"
+                .into(),
+        );
+    }
+    if options.scenario_time.is_none() {
+        notes.push(
+            "the model header carries no Model.scenarioTime; a network's snapshots carry \
+             weights and no calendar, so the moment this operating point describes is not \
+             in the model and has to be stated through ModelOptions"
+                .into(),
+        );
+    }
+    if machines_without_dispatch > 0 {
+        notes.push(format!(
+            "{machines_without_dispatch} machines have no operating point in the \
+             hypothesis: a network states what a machine can do and CGMES asks what it \
+             is doing. Supply a solved state through ModelOptions and it is written from \
+             that rather than guessed at"
+        ));
+    }
+    if unbounded_machines > 0 {
+        notes.push(format!(
+            "{unbounded_machines} machines have an unbounded reactive range, so their \
+             apparent rating was written as their active rating; with a reactive limit \
+             it is the apparent power at the corner of the stated capability instead"
+        ));
+    }
+    if options.state.is_none() {
+        notes.push(
+            "no state variables profile was written, because a network carries no solved \
+             state; one full of flat voltages and zero flows would be the one file here \
+             worth least, since an SV profile is what somebody checks their own answer \
+             against"
+                .into(),
+        );
+    } else {
+        notes.push(
+            "the state variables profile carries the published voltages and terminal \
+             flows in CIM's own signs, into the equipment, so every node still sums to \
+             zero on what was written"
+                .into(),
+        );
+    }
+    if let Some(state) = options.state {
+        if !state.taps.is_empty() {
+            notes.push(format!(
+                "{} tap positions in the solved state were not written: they belong to \
+                 tap changers, and this writer states a fixed ratio through the windings' \
+                 rated voltages rather than emitting a changer for a control the network \
+                 does not describe",
+                state.taps.len()
+            ));
+        }
+        if !state.shunts.is_empty() {
+            notes.push(format!(
+                "{} shunt compensator settings in the solved state were not written, \
+                 since the compensators they refer to are not the bus shunts this model \
+                 carries",
+                state.shunts.len()
+            ));
+        }
+        notes.push(
+            "no TopologicalIsland was written, which the state variables profile asks \
+             for: an island names the node its angles are measured against, and a solved \
+             state does not say which node that was"
+                .into(),
+        );
+    }
     if no_voltage > 0 {
         notes.push(format!(
             "{no_voltage} lines sit on buses with no nominal voltage, so their per-unit \
@@ -1057,14 +1387,15 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
             .into(),
     );
 
-    WrittenModel {
-        documents: vec![
-            (format!("{name}_EQ.xml"), eq_out),
-            (format!("{name}_TP.xml"), tp),
-            (format!("{name}_SSH.xml"), ssh),
-        ],
-        notes,
+    let mut documents = vec![
+        (format!("{name}_EQ.xml"), eq_out),
+        (format!("{name}_TP.xml"), tp),
+        (format!("{name}_SSH.xml"), ssh),
+    ];
+    if let Some(sv) = sv {
+        documents.push((format!("{name}_SV.xml"), sv));
     }
+    WrittenModel { documents, notes }
 }
 
 /// Write a CGMES model as a directory of profile documents.
@@ -1072,9 +1403,40 @@ pub fn to_cgmes(net: &Network, name: &str) -> WrittenModel {
 /// A directory rather than a file, because a CGMES model is not one document,
 /// and this is the layout [`crate::cgmes::load_model`] reads when pointed at an
 /// unpacked model.
+///
+/// The header is stamped with the current time, which is the one thing this
+/// entry point knows that [`to_cgmes`] does not: a file is being written, and it
+/// is being written now. That is `Model.created`, a CGMES requirement with no
+/// other honest source. It does mean two calls a second apart produce two
+/// different files, so a caller who needs byte-identical output should use
+/// [`write_cgmes_with`] and state the moment.
 pub fn write_cgmes(
     net: &Network,
     dir: impl AsRef<std::path::Path>,
+) -> Result<Vec<String>, crate::IoError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok());
+    write_cgmes_with(
+        net,
+        dir,
+        &ModelOptions {
+            created: now,
+            ..Default::default()
+        },
+    )
+}
+
+/// Write a CGMES model to a directory, stating the things a network cannot.
+///
+/// The filesystem counterpart of [`to_cgmes_with`], and the entry point to use
+/// when the output has to be reproducible: everything it writes is a function
+/// of its arguments, including the header timestamps.
+pub fn write_cgmes_with(
+    net: &Network,
+    dir: impl AsRef<std::path::Path>,
+    options: &ModelOptions<'_>,
 ) -> Result<Vec<String>, crate::IoError> {
     let dir = dir.as_ref();
     let name = dir
@@ -1085,7 +1447,7 @@ pub fn write_cgmes(
         path: dir.display().to_string(),
         source,
     })?;
-    let written = to_cgmes(net, &name);
+    let written = to_cgmes_with(net, &name, options);
     for (file, text) in &written.documents {
         let path = dir.join(file);
         std::fs::write(&path, text).map_err(|source| crate::IoError::Read {
@@ -1139,6 +1501,25 @@ mod tests {
             cim_num(1.234_567_891_23e-9).parse(),
             Ok(1.234_567_891_23e-9)
         );
+    }
+
+    #[test]
+    fn a_timestamp_becomes_the_date_and_time_it_stands_for() {
+        // Hand-checked against dates that are easy to be sure of. The reason
+        // this is written out rather than taken from a library is that the
+        // library would be a dependency for eleven lines of arithmetic, and the
+        // reason it is tested at three points rather than one is that a
+        // conversion which is right at the epoch and wrong across a leap year
+        // would still look right.
+        assert_eq!(xsd_datetime(0), "1970-01-01T00:00:00Z");
+        assert_eq!(xsd_datetime(86_399), "1970-01-01T23:59:59Z");
+        // 2000-02-29, the leap day of the century that is a leap year, which is
+        // the case the hundred-and-four-hundred rules disagree about.
+        assert_eq!(xsd_datetime(951_782_400), "2000-02-29T00:00:00Z");
+        assert_eq!(xsd_datetime(1_234_567_890), "2009-02-13T23:31:30Z");
+        // And before the epoch, since the arithmetic is signed and a negative
+        // remainder would silently give the wrong day.
+        assert_eq!(xsd_datetime(-1), "1969-12-31T23:59:59Z");
     }
 
     #[test]
