@@ -55,6 +55,10 @@ pub mod excel;
 pub mod netcdf;
 #[cfg(feature = "cgmes")]
 pub mod cgmes;
+#[cfg(feature = "cgmes")]
+pub mod cgmes_write;
+#[cfg(feature = "cgmes")]
+pub use cgmes_write::{WrittenModel, to_cgmes, write_cgmes};
 
 /// A network read from a file, plus what had to be discarded to make it fit.
 ///
@@ -289,10 +293,27 @@ impl TableSource for CsvDir<'_> {
         kind: &'static str,
     ) -> Result<Option<TimeSeries>, IoError> {
         let name = self.label(stem);
-        let Some(text) = self.text(&name)? else {
-            return Ok(None);
+        let path = self.0.join(&name);
+        // Straight off the disk rather than through [`TableSource::text`],
+        // which would read the whole document into a `String` first. That
+        // `String` is the file, and a wide series is the one file here big
+        // enough for that to matter: a year of hourly data for four thousand
+        // generators is around 300 MB of text sitting beside the 280 MB of
+        // `f64` it is being turned into, for no reason other than that it was
+        // convenient to have it all at once. Only one line ever needs to be.
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            // A missing optional series is not an error, exactly as for
+            // `text`; a missing required file is reported by its caller.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(source) => {
+                return Err(IoError::Read {
+                    path: path.display().to_string(),
+                    source,
+                });
+            }
         };
-        stream_wide(&text, names, n_snap, defaults, &name, kind).map(Some)
+        read_wide(file, &path, names, n_snap, defaults, &name, kind).map(Some)
     }
 }
 
@@ -571,7 +592,7 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
     Ok(net)
 }
 
-/// Read a wide time series straight into its final layout.
+/// A wide time series being filled, one line at a time.
 ///
 /// The alternative, and what this replaces, is to parse the file into a
 /// [`Table`] and transpose that. A table holds every cell as a `String`, and a
@@ -581,14 +602,156 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
 /// series are the large ones and it does not.
 ///
 /// So the header is parsed once, to map columns onto components, and the body
-/// is then read a line at a time with each value going directly to its place in
-/// the component-major buffer. Nothing but one line is held at a time.
+/// is then handed over a line at a time with each value going directly to its
+/// place in the component-major buffer, which is allocated at its final size
+/// before the first line arrives because the header and the snapshot count
+/// between them already say what that size is. Nothing but one line is held.
 ///
-/// Only the header may contain quoting, since a component name can hold a comma
-/// and a number cannot. A body line containing a quote falls back to the full
-/// parser rather than being split naively, because being wrong about that would
-/// silently shift every column after it.
-fn stream_wide(
+/// It exists as a type rather than as a loop so that reading from a `String`
+/// and reading from a file share every decision about quoting, blank lines,
+/// short rows and line numbering. Two loops that agreed when written would not
+/// have stayed agreed, and the two paths have to produce identical networks.
+struct WideSink<'a> {
+    header: Vec<String>,
+    /// Which component each column feeds, or `None` for an unnamed column.
+    column_of: Vec<Option<usize>>,
+    data: Vec<f64>,
+    n_components: usize,
+    n_snap: usize,
+    /// Body lines seen, which is also the snapshot the next one belongs to.
+    rows: usize,
+    file: &'a str,
+}
+
+impl<'a> WideSink<'a> {
+    fn new(
+        header_line: &str,
+        names: &[String],
+        n_snap: usize,
+        defaults: &[f64],
+        file: &'a str,
+        kind: &'static str,
+    ) -> Result<Self, IoError> {
+        let header = Table::parse(header_line)
+            .map_err(|source| IoError::Csv {
+                file: file.to_string(),
+                source,
+            })?
+            .header;
+
+        // Which component each column feeds, and a complaint about any that
+        // feeds none: a column naming a component that does not exist is almost
+        // always a rename applied to one file and not the other, and ignoring
+        // it loses data without saying so.
+        let mut column_of: Vec<Option<usize>> = Vec::with_capacity(header.len());
+        for h in &header {
+            let h = h.trim();
+            if h.is_empty() {
+                column_of.push(None);
+                continue;
+            }
+            match names.iter().position(|n| n.eq_ignore_ascii_case(h)) {
+                Some(i) => column_of.push(Some(i)),
+                None => {
+                    return Err(IoError::UnknownComponentColumn {
+                        file: file.to_string(),
+                        column: h.to_string(),
+                        kind,
+                    });
+                }
+            }
+        }
+
+        let mut data = Vec::with_capacity(names.len() * n_snap);
+        for (c, _) in names.iter().enumerate() {
+            data.extend(std::iter::repeat_n(
+                defaults.get(c).copied().unwrap_or(0.0),
+                n_snap,
+            ));
+        }
+
+        Ok(Self {
+            header,
+            column_of,
+            data,
+            n_components: names.len(),
+            n_snap,
+            rows: 0,
+            file,
+        })
+    }
+
+    /// Absorb one body line.
+    ///
+    /// Only the header may contain quoting, since a component name can hold a
+    /// comma and a number cannot. A body line containing a quote falls back to
+    /// the full parser rather than being split naively, because being wrong
+    /// about that would silently shift every column after it.
+    fn row(&mut self, line: &str) -> Result<(), IoError> {
+        if line.trim().is_empty() {
+            return Ok(());
+        }
+        // A file with more rows than snapshots is an error, but the count is
+        // worth finishing so the message can say how many too many.
+        if self.rows >= self.n_snap {
+            self.rows += 1;
+            return Ok(());
+        }
+        let quoted = line.contains('"');
+        let cells: Vec<String>;
+        let fields: Vec<&str> = if quoted {
+            cells = Table::parse(line)
+                .map_err(|source| IoError::Csv {
+                    file: self.file.to_string(),
+                    source,
+                })?
+                .header;
+            cells.iter().map(String::as_str).collect()
+        } else {
+            line.split(',').collect()
+        };
+
+        for (c, cell) in fields.iter().enumerate() {
+            let Some(Some(component)) = self.column_of.get(c).copied() else {
+                continue;
+            };
+            let v = cell.trim();
+            if v.is_empty() {
+                continue;
+            }
+            let parsed = v.parse::<f64>().map_err(|_| IoError::Csv {
+                file: self.file.to_string(),
+                source: crate::csv::CsvError::BadNumber {
+                    line: self.rows + 2,
+                    field: self.header.get(c).cloned().unwrap_or_else(|| c.to_string()),
+                    value: v.to_string(),
+                },
+            })?;
+            self.data[component * self.n_snap + self.rows] = parsed;
+        }
+        self.rows += 1;
+        Ok(())
+    }
+
+    fn finish(self) -> Result<TimeSeries, IoError> {
+        if self.rows != self.n_snap {
+            return Err(IoError::TimeSeriesRows {
+                file: self.file.to_string(),
+                got: self.rows,
+                want: self.n_snap,
+            });
+        }
+        TimeSeries::from_flat(self.data, self.n_components, self.n_snap).map_err(IoError::Invalid)
+    }
+}
+
+/// Read a wide time series out of text already in memory.
+///
+/// For a caller holding the document as bytes — a file picker, a dropped
+/// folder, anything with no filesystem behind it — where the text exists
+/// whether this wants it to or not. A caller reading from disk should prefer
+/// [`read_wide`], which never holds more than a line.
+pub fn stream_wide(
     text: &str,
     names: &[String],
     n_snap: usize,
@@ -600,99 +763,63 @@ fn stream_wide(
     let Some(header_line) = lines.next() else {
         return Ok(TimeSeries::empty());
     };
-    let header = Table::parse(header_line)
-        .map_err(|source| IoError::Csv {
-            file: file.to_string(),
-            source,
-        })?
-        .header;
-
-    // Which component each column feeds, and a complaint about any that feeds
-    // none: a column naming a component that does not exist is almost always a
-    // rename applied to one file and not the other, and ignoring it loses data
-    // without saying so.
-    let mut column_of: Vec<Option<usize>> = Vec::with_capacity(header.len());
-    for h in &header {
-        let h = h.trim();
-        if h.is_empty() {
-            column_of.push(None);
-            continue;
-        }
-        match names.iter().position(|n| n.eq_ignore_ascii_case(h)) {
-            Some(i) => column_of.push(Some(i)),
-            None => {
-                return Err(IoError::UnknownComponentColumn {
-                    file: file.to_string(),
-                    column: h.to_string(),
-                    kind,
-                });
-            }
-        }
-    }
-
-    let mut data = Vec::with_capacity(names.len() * n_snap);
-    for (c, _) in names.iter().enumerate() {
-        data.extend(std::iter::repeat_n(
-            defaults.get(c).copied().unwrap_or(0.0),
-            n_snap,
-        ));
-    }
-
-    let mut rows = 0usize;
+    let mut sink = WideSink::new(header_line, names, n_snap, defaults, file, kind)?;
     for line in lines {
-        if line.trim().is_empty() {
-            continue;
-        }
-        if rows >= n_snap {
-            rows += 1;
-            continue;
-        }
-        let quoted = line.contains('"');
-        let cells: Vec<String>;
-        let fields: Vec<&str> = if quoted {
-            cells = Table::parse(line)
-                .map_err(|source| IoError::Csv {
-                    file: file.to_string(),
-                    source,
-                })?
-                .header;
-            cells.iter().map(String::as_str).collect()
-        } else {
-            line.split(',').collect()
-        };
+        sink.row(line)?;
+    }
+    sink.finish()
+}
 
-        for (c, cell) in fields.iter().enumerate() {
-            let Some(Some(component)) = column_of.get(c).copied() else {
-                continue;
-            };
-            let v = cell.trim();
-            if v.is_empty() {
-                continue;
-            }
-            let parsed = v.parse::<f64>().map_err(|_| IoError::Csv {
-                file: file.to_string(),
-                source: crate::csv::CsvError::BadNumber {
-                    line: rows + 2,
-                    field: header
-                        .get(c)
-                        .cloned()
-                        .unwrap_or_else(|| c.to_string()),
-                    value: v.to_string(),
-                },
-            })?;
-            data[component * n_snap + rows] = parsed;
-        }
-        rows += 1;
+/// Read a wide time series from a reader, a line at a time.
+///
+/// The same work as [`stream_wide`] without the document ever being resident.
+/// The buffer is sized for a wide row — four thousand components rendered to
+/// six decimal places is around forty kilobytes — so a row is normally
+/// assembled from one refill rather than several.
+///
+/// `path` names the file for an I/O error, which is about where the bytes came
+/// from; `file` names it for a parse error, which is about what is in them. On
+/// a directory read those differ, the first being a full path and the second
+/// the bare name every other message in this module uses.
+pub fn read_wide<R: std::io::Read>(
+    reader: R,
+    path: &Path,
+    names: &[String],
+    n_snap: usize,
+    defaults: &[f64],
+    file: &str,
+    kind: &'static str,
+) -> Result<TimeSeries, IoError> {
+    use std::io::BufRead;
+
+    let mut reader = std::io::BufReader::with_capacity(1 << 16, reader);
+    let mut line = String::new();
+    let read = |r: &mut std::io::BufReader<R>, line: &mut String| -> Result<usize, IoError> {
+        line.clear();
+        r.read_line(line).map_err(|source| IoError::Read {
+            path: path.display().to_string(),
+            source,
+        })
+    };
+
+    // `str::lines` drops the terminator and a `\r` before it; `read_line` keeps
+    // both, so they are taken off here rather than left to confuse a parse of
+    // the last field on every line.
+    fn trim_terminator(line: &str) -> &str {
+        line.strip_suffix('\n')
+            .map_or(line, |l| l.strip_suffix('\r').unwrap_or(l))
     }
 
-    if rows != n_snap {
-        return Err(IoError::TimeSeriesRows {
-            file: file.to_string(),
-            got: rows,
-            want: n_snap,
-        });
+    if read(&mut reader, &mut line)? == 0 {
+        return Ok(TimeSeries::empty());
     }
-    TimeSeries::from_flat(data, names.len(), n_snap).map_err(IoError::Invalid)
+    let mut sink = WideSink::new(trim_terminator(&line), names, n_snap, defaults, file, kind)?;
+    // One `String`, reused, so the only per-line allocation is the one growth
+    // to the width of the widest row.
+    while read(&mut reader, &mut line)? != 0 {
+        sink.row(trim_terminator(&line))?;
+    }
+    sink.finish()
 }
 
 /// Parse a willingness-to-pay curve from one cell.
