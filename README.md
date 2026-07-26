@@ -716,9 +716,34 @@ not. And the topology is synthetic, for the reason given below.
 
 ## Scale
 
-Measured, on synthetic topologies, and labelled as such wherever it appears.
+Measured on synthetic topologies, and labelled as such wherever it appears.
 Correctness is validated against real networks; these say only how the problem
 grows.
+
+**The ring flatters the solve, and now by how much.** A synthetic ring has
+degree two and a banded matrix; a real network is meshed with variable degree
+and carries 2.2 to 2.3 nonzeros per column against the ring's 1.65. Measured
+against real topologies at matched column count, with a real year of German
+hourly demand and renewable output attached:
+
+| case | columns | real network | matched ring | |
+| --- | --- | --- | --- | --- |
+| IEEE 14 | 543,120 | 7.9 s | 6.2 s | 1.3× |
+| IEEE 57 | 2,049,840 | 307.1 s | 44.0 s | **7.0×** |
+| IEEE 118 | 4,826,760 | 832.3 s | 206.5 s | **4.0×** |
+
+So every solve time in this section should be read as **four to seven times
+optimistic** for a real network of the same size. The ratio is not monotone, so
+that is a range rather than a trend. The ring side of that table reproduces the
+figures below to within 5%, which is what makes the comparison a comparison
+rather than a story about one afternoon.
+
+Construction is unaffected: it is linear in what is written either way.
+
+These three rows were measured while the machine was busy and are being re-run
+under `benchmarks/measure.sh`. The three real-case solve times were stable to
+within 6% across runs; one ring row varied by 29% and is the least trustworthy
+number in the table.
 
 A full year at hourly resolution, solved whole, every rung run to completion.
 Best of two runs, on an idle machine:
@@ -772,6 +797,12 @@ grows superlinearly while the rolling one grows nearly linearly in the number
 of windows. Extrapolating that trend is how a continental model becomes
 tractable, and it is a claim about decomposition rather than about this
 builder.
+
+On a real topology the advantage is **larger** than the ring suggests, not
+smaller: 16.4× and 10.6× on IEEE 57 and 118 with a real year attached, against
+3.9× and 4.7× for rings of the same size. Decomposition partly cancels the bad
+news above, which is the one place where the ring was pessimistic rather than
+optimistic.
 
 Note that the rolling horizon performs **122 builds instead of one**, and
 construction still does not register. What the fast build actually buys is set
