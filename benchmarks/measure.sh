@@ -26,9 +26,23 @@
 #   benchmarks/measure.sh <label> <command...>
 #
 # Environment:
-#   GW_MAX_LOAD    one-minute load average above which it will not start (2.0)
+#   GW_MAX_LOAD    one-minute load average above which it will not start
+#                  (default: half the core count)
 #   GW_WAIT_MINS   how long to wait for the machine to go quiet (120)
 #   GW_RUNS        repetitions (3)
+#
+# On the threshold. The first version of this refused above a load of 2.0 and
+# then never ran, because an interactive desktop does not go that quiet: a
+# browser, the window server and the editor together hold a steady 4 to 5 on a
+# 14-core machine, and none of that is going away while anybody is using it.
+# Waiting for a number that cannot occur is not caution, it is a gate that never
+# opens, so the default is now half the cores.
+#
+# What actually ruins a measurement here is not background load in general, it
+# is *another build or benchmark of ours* competing for the same cores, which is
+# what happened all four times. That check has no threshold and is not
+# negotiable. The load figure is a second line of defence and is recorded beside
+# every run so a reader can judge it rather than trust it.
 
 set -u
 cd "$(dirname "$0")/.."
@@ -36,7 +50,8 @@ cd "$(dirname "$0")/.."
 LABEL="${1:?usage: measure.sh <label> <command...>}"
 shift
 
-MAX_LOAD="${GW_MAX_LOAD:-2.0}"
+CORES="$(sysctl -n hw.ncpu 2>/dev/null || echo 8)"
+MAX_LOAD="${GW_MAX_LOAD:-$(printf '%s\n' "scale=1; $CORES / 2" | bc -l)}"
 WAIT_MINS="${GW_WAIT_MINS:-120}"
 RUNS="${GW_RUNS:-3}"
 
@@ -53,7 +68,8 @@ ours_running() {
 }
 
 printf '=== %s ===\n' "$LABEL"
-printf 'waiting for an idle machine (load below %s, nothing of ours running)\n' "$MAX_LOAD"
+printf 'machine has %s cores; waiting for load below %s and nothing of ours running\n' \
+  "$CORES" "$MAX_LOAD"
 
 waited=0
 while :; do
@@ -79,8 +95,10 @@ printf 'warm-up (discarded)\n'
 "$@" >/dev/null 2>&1
 
 for i in $(seq 1 "$RUNS"); do
-  printf -- '--- run %s of %s (load %s) ---\n' "$i" "$RUNS" "$(one_minute_load)"
+  before="$(one_minute_load)"
+  printf -- '--- run %s of %s (load before %s) ---\n' "$i" "$RUNS" "$before"
   "$@" 2>&1
+  printf -- '--- run %s load after %s ---\n' "$i" "$(one_minute_load)"
 done
 
 printf 'final load %s\n' "$(one_minute_load)"
