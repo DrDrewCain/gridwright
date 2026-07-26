@@ -163,6 +163,11 @@ pub struct Options {
     /// column generation, cutting stock, crew scheduling — and the knob is here
     /// for a caller whose problem looks like that.
     pub price_window: usize,
+    /// Start each bounded variable on whichever bound the objective prefers.
+    ///
+    /// A crash in the loosest sense: it does not change the starting basis, so
+    /// it cannot make one singular, and it costs one comparison per column.
+    pub cost_crash: bool,
 }
 
 impl Default for Options {
@@ -175,6 +180,7 @@ impl Default for Options {
             refactor_every: 256,
             refactor_fill_ratio: 0.5,
             price_window: usize::MAX,
+            cost_crash: true,
         }
     }
 }
@@ -242,8 +248,22 @@ impl<'a> Tab<'a> {
         let mut at = vec![At::Lower; n];
         let mut value = vec![0.0; n];
         // Every structural and slack starts nonbasic on whichever bound it has.
+        //
+        // Where it has both, the cost decides. A variable the objective wants
+        // large starts large: the simplex would move it there anyway, and each
+        // such move is an iteration, so starting it in the right place is an
+        // iteration not spent. That is the cheapest crash there is — no
+        // factorisation, no search, one comparison per column — and unlike a
+        // triangular crash it cannot make the starting basis singular, because
+        // it does not change which variables are basic at all.
         for v in 0..(n_struct + m) {
-            at[v] = if lower[v].is_finite() {
+            at[v] = if lower[v].is_finite() && upper[v].is_finite() {
+                if o.cost_crash && cost[v] < 0.0 {
+                    At::Upper
+                } else {
+                    At::Lower
+                }
+            } else if lower[v].is_finite() {
                 At::Lower
             } else if upper[v].is_finite() {
                 At::Upper

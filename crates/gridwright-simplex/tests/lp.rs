@@ -157,3 +157,56 @@ fn a_two_bus_dispatch_prices_both_nodes() {
     assert!(close(s.row_dual[0].abs(), 40.0), "DE price {}", s.row_dual[0]);
     assert!(close(s.row_dual[1].abs(), 10.0), "FR price {}", s.row_dual[1]);
 }
+
+#[test]
+fn the_cost_crash_starts_variables_where_the_objective_wants_them() {
+    // Maximise x + 2y subject to x + y <= 10, both in [0, 8], written as a
+    // minimisation of the negated objective. Both costs are then negative, so
+    // both variables start at their upper bounds — which is where the answer
+    // very nearly is, and the simplex has less to do.
+    //
+    // The crash is inert on an ordinary energy model, where generation costs,
+    // shedding penalties and capital costs are all non-negative and no variable
+    // has a bound the objective prefers. It bites on a maximisation, which is
+    // the same problem with every sign flipped.
+    let starts = [0u32, 1, 2];
+    let rows = [0u32, 0];
+    let vals = [1.0f64, 1.0];
+    let lower = [0.0f64, 0.0];
+    let upper = [8.0f64, 8.0];
+    let cost = [-1.0f64, -2.0];
+    let row_lower = [f64::NEG_INFINITY];
+    let row_upper = [10.0f64];
+    let p = Problem {
+        n_cols: 2,
+        n_rows: 1,
+        col_starts: &starts,
+        row_indices: &rows,
+        values: &vals,
+        col_lower: &lower,
+        col_upper: &upper,
+        col_cost: &cost,
+        row_lower: &row_lower,
+        row_upper: &row_upper,
+    };
+
+    let crashed = solve(p, Options { cost_crash: true, ..Default::default() }).unwrap();
+    let plain = solve(p, Options { cost_crash: false, ..Default::default() }).unwrap();
+
+    assert_eq!(crashed.status, Status::Optimal);
+    assert_eq!(plain.status, Status::Optimal);
+    // y takes its full 8 and x takes what is left, so the objective is -(2+16).
+    assert!((crashed.objective + 18.0).abs() < 1e-9, "{}", crashed.objective);
+    assert!(
+        (crashed.objective - plain.objective).abs() < 1e-9,
+        "the crash changed the answer: {} against {}",
+        crashed.objective,
+        plain.objective
+    );
+    assert!(
+        crashed.iterations <= plain.iterations,
+        "the crash cost iterations rather than saving them: {} against {}",
+        crashed.iterations,
+        plain.iterations
+    );
+}

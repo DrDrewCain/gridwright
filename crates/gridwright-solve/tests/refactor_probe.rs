@@ -75,21 +75,20 @@ fn ring(buses: usize, hours: usize) -> Network {
 
 #[test]
 #[ignore = "a measurement, not a guard"]
-fn how_much_the_pricing_window_is_worth() {
+fn how_much_the_crash_is_worth() {
     let lopf = build_lopf(&ring(48, 96)).unwrap();
     println!("\n  {} rows", lopf.model.num_rows());
-    println!("  window       time");
-    for window in [500usize, 2_000, 10_000, 50_000, usize::MAX] {
+    println!("  crash    time");
+    for crash in [false, true] {
         let solver = SimplexSolver {
             options: gridwright_simplex::Options {
-                price_window: window,
+                cost_crash: crash,
                 ..Default::default()
             },
             ..Default::default()
         };
         let t = Instant::now();
         let s = solver.solve(&lopf).unwrap();
-        let label = if window == usize::MAX { "all".into() } else { window.to_string() };
-        println!("  {label:>8}   {:?}  {:?}", t.elapsed(), s.status);
+        println!("  {crash:>5}    {:?}  {:?}  obj {:.3}", t.elapsed(), s.status, s.objective);
     }
 }

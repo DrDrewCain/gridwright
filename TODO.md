@@ -66,11 +66,25 @@ concrete in the way, named.
 
       It also corrects the line above it: naming pricing as the largest cost was
       a guess dressed as a conclusion, and it was wrong.
-- [ ] **The triangular solves**, which is what is actually left. Every iteration
-      performs one forward and one transposed solve against the factors, and no
-      amount of choosing differently avoids them. The honest options are fewer
-      iterations — a better starting basis, or a crash basis rather than
-      all-slack — rather than a cheaper iteration.
+- [x] ~~**A cost-based crash.**~~ **Done**, and inert on the models this is
+      for, which is worth knowing rather than discovering. Each bounded variable
+      now starts on whichever bound the objective prefers: the simplex would
+      move it there anyway and each move is an iteration. It costs one
+      comparison per column and cannot make the starting basis singular, since
+      it does not change which variables are basic.
+
+      On an energy model it does nothing at all, because generation costs,
+      shedding penalties and capital costs are all non-negative and no variable
+      has a bound the objective prefers. It bites on a maximisation, which is
+      the same problem with every sign flipped, and there is a test for that.
+- [ ] **A structural crash**, which is the version that would help. Rather than
+      choosing bounds, choose a starting *basis*: a triangular selection of
+      structural columns instead of the all-artificial one, so phase one starts
+      much nearer feasible. Harder, because a badly chosen basis is singular and
+      the selection has to guarantee it is not.
+- [ ] **The triangular solves** are what is left after that. Every iteration
+      performs one forward and one transposed solve against the factors, and
+      nothing about choosing differently avoids them.
 - [x] ~~**A fill-reducing ordering.**~~ **Measured and rejected**, twice.
       Greedy minimum degree maintains the column counts as elimination proceeds
       and follows the singleton cascade an LP basis is full of. It **halves the
