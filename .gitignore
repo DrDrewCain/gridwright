@@ -1,3 +1,10 @@
 /target
 **/*.rs.bk
 .DS_Store
+
+# Real time series fetched by benchmarks/fetch_opsd_time_series.py. Not
+# committed: the 130 MB upstream file is too large, and the small distilled one
+# derives from ENTSO-E Transparency data whose redistribution terms are less
+# explicit than the CC-BY 4.0 the PGLib cases in examples/ carry. Run the
+# script once and real_scale.rs finds it here.
+/benchmarks/.cache/
