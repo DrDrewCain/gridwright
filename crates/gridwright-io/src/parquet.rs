@@ -330,6 +330,20 @@ impl TableSource for ParquetDir<'_> {
     fn label(&self, stem: &str) -> String {
         format!("{stem}.parquet")
     }
+
+    fn wide(
+        &self,
+        _stem: &str,
+        _names: &[String],
+        _n: usize,
+        _defaults: &[f64],
+        _kind: &'static str,
+    ) -> Result<Option<gridwright_net::TimeSeries>, IoError> {
+        // Read separately, and numerically, once the component names are known.
+        // Going through the shared path would render every value to text and
+        // parse it back, which is precisely what this format exists to avoid.
+        Ok(None)
+    }
 }
 
 /// Load a network from a directory of Parquet files.

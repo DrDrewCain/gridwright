@@ -77,29 +77,29 @@ concrete in the way, named.
       shedding penalties and capital costs are all non-negative and no variable
       has a bound the objective prefers. It bites on a maximisation, which is
       the same problem with every sign flipped, and there is a test for that.
-- [ ] **A structural crash**, which is now the one remaining change with a large
-      share to address, and the first in a while: **phase one is about three
-      quarters of every solve.** Measured across the size ladder it is 724 of
-      958 iterations at 432 rows and 33,670 of 45,205 at 20,736 — consistently
-      74 to 75%.
+- [x] ~~**A structural crash.**~~ **Done, and it is the largest single win in
+      the solver so far.** Phase one was about three quarters of every solve
+      because the starting basis was every artificial variable. A triangular
+      selection of structural columns now covers *every* row of the test models,
+      and the ladder reads:
 
-      The reason is the starting basis. It is every artificial variable, which
-      is feasible for a problem nobody asked about and a long way from one for
-      the problem in hand. A triangular selection of structural columns would
-      start much nearer: a generator column is a singleton in its bus's balance
-      row, so choosing one per bus satisfies every balance row outright.
+      | Rows | Before | After |
+      | --- | --- | --- |
+      | 3,456 | 0.59 s | 0.27 s |
+      | 13,824 | 9.6 s | 5.1 s |
+      | 20,736 | 21.0 s | 11.2 s |
 
-      Two things make it harder than it sounds, and both are why it has not been
-      done rather than excuses for not doing it. A badly chosen basis is
-      singular, so the selection has to guarantee triangularity. And phase one
-      here penalises artificials only, on the assumption that every other basic
-      variable is within bounds — a crashed structural that lands outside its
-      bounds would be invisible to it, so either the crash has to guarantee
-      feasibility of what it puts in the basis or phase one has to change to a
-      composite objective that sees any infeasible basic.
+      About three times faster, at the same objective, with the differential
+      tests against HiGHS unchanged on all six real networks.
 
-      `Solution::phase_one_iterations` reports the split, so whether an attempt
-      worked is a number rather than an impression.
+      Three bugs on the way, each caught by a network the previous one had
+      passed. The substitution ran forwards where the structure is upper
+      triangular. The artificials were left as `seed` set them, though crashing
+      changes the residuals their signs were chosen against. And the row's
+      target was taken as its slack's bound when the running activity already
+      carried the slack's term, which counts it twice — that one produces
+      plausible values and a basis that factors perfectly well, and surfaces
+      thousands of iterations later as a solve that will not converge.
 - [ ] **The triangular solves** are what is left after that. Every iteration
       performs one forward and one transposed solve against the factors, and
       nothing about choosing differently avoids them.

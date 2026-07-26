@@ -178,6 +178,14 @@ pub struct Options {
     /// A crash in the loosest sense: it does not change the starting basis, so
     /// it cannot make one singular, and it costs one comparison per column.
     pub cost_crash: bool,
+    /// Replace artificials in the starting basis with structural columns.
+    ///
+    /// Phase one is about three quarters of a solve, and it exists because the
+    /// starting basis is every artificial variable. A triangular selection of
+    /// structural columns starts much nearer feasible. Verified and abandoned
+    /// wholesale if it would put a basic variable out of bounds, since phase
+    /// one would not notice.
+    pub structural_crash: bool,
 }
 
 impl Default for Options {
@@ -191,6 +199,7 @@ impl Default for Options {
             refactor_fill_ratio: 0.5,
             price_window: usize::MAX,
             cost_crash: true,
+            structural_crash: true,
         }
     }
 }
@@ -362,6 +371,233 @@ impl<'a> Tab<'a> {
         }
     }
 
+    /// Replace artificials in the starting basis with structural columns, where
+    /// that can be done safely.
+    ///
+    /// The starting basis is every artificial variable. That is feasible for a
+    /// problem nobody asked about and a long way from one for the problem in
+    /// hand, and getting from there to a feasible point is about three quarters
+    /// of every solve: 33,670 of 45,205 iterations at 20,736 rows.
+    ///
+    /// A better start is available cheaply. A generator's column is a singleton
+    /// in its bus's balance row, so putting it in the basis satisfies that row
+    /// outright. Choosing columns that are singletons in the *remaining* rows,
+    /// repeatedly, builds a basis that is triangular by construction and so
+    /// cannot be singular — the same singleton cascade the factorisation's
+    /// column ordering already relies on.
+    ///
+    /// # Why it verifies and reverts
+    ///
+    /// Phase one here penalises artificials and nothing else, on the assumption
+    /// that every other basic variable sits within its bounds. A crashed
+    /// structural landing outside its bounds would be invisible to it, and
+    /// phase two would then start from a point that is not feasible at all —
+    /// which is not a slower answer but a wrong one.
+    ///
+    /// So the crash is checked rather than trusted. Triangularity makes that
+    /// cheap: the basic values follow by forward substitution in pivot order,
+    /// with no factorisation needed. If any lands out of bounds the whole crash
+    /// is abandoned and the all-artificial basis stands. Taking the good start
+    /// only when it is provably safe is worth more than taking it usually.
+    fn crash(&mut self) -> bool {
+        let m = self.m;
+        let mut assigned: Vec<Option<usize>> = vec![None; m];
+        let mut row_done = vec![false; m];
+        let mut used = vec![false; self.n_struct + self.n_slack];
+        // Rows each column still touches, and the count, so a singleton is
+        // recognised without rescanning.
+        let mut col_rows: Vec<Vec<(usize, f64)>> = Vec::with_capacity(self.n_struct + self.n_slack);
+        let mut buf = Vec::new();
+        for v in 0..(self.n_struct + self.n_slack) {
+            self.column_no_artificial(v, &mut buf);
+            col_rows.push(buf.clone());
+        }
+
+        // Order of assignment, which is the order forward substitution follows.
+        let mut order: Vec<usize> = Vec::with_capacity(m);
+        let mut progress = true;
+        while progress {
+            progress = false;
+            for v in 0..col_rows.len() {
+                if used[v] || self.lower[v] >= self.upper[v] {
+                    continue;
+                }
+                // A singleton among the rows not yet spoken for. Its other
+                // entries then lie in rows already assigned, which is what
+                // makes the whole selection triangular and so nonsingular.
+                let mut live = col_rows[v].iter().filter(|&&(r, a)| !row_done[r] && a != 0.0);
+                let Some(&(row, a)) = live.next() else {
+                    continue;
+                };
+                if live.next().is_some() {
+                    continue;
+                }
+                // Nonsingular is not the same as usable. A triangular basis of
+                // small pivots is invertible and hopelessly conditioned, and the
+                // failure arrives much later as a solve that will not converge
+                // rather than as a factorisation that refuses.
+                //
+                // So the pivot is judged against the largest entry in its own
+                // column rather than against an absolute floor, which is the
+                // test crash procedures have used since Bixby. An absolute one
+                // passed IEEE 300 and failed PEGASE 1354, whose coefficients
+                // span a far wider range.
+                let biggest = col_rows[v]
+                    .iter()
+                    .map(|&(_, x)| x.abs())
+                    .fold(0.0f64, f64::max);
+                if a.abs() < CRASH_PIVOT_THRESHOLD * biggest || a.abs() < 1e-8 {
+                    continue;
+                }
+                used[v] = true;
+                row_done[row] = true;
+                assigned[row] = Some(v);
+                order.push(row);
+                progress = true;
+            }
+        }
+        if order.is_empty() {
+            return false;
+        }
+
+        // Forward substitution in pivot order. Every column assigned later
+        // touches no row assigned earlier, by construction, so each value
+        // follows from the rows already settled.
+        let mut activity = vec![0.0; m];
+        for v in 0..(self.n_struct + self.n_slack) {
+            if used[v] || self.value[v] == 0.0 {
+                continue;
+            }
+            for &(r, a) in &col_rows[v] {
+                activity[r] += a * self.value[v];
+            }
+        }
+        // Row by row, in *reverse* pivot order, which is the direction the
+        // structure actually demands.
+        //
+        // A column is chosen when it is a singleton among the rows not yet
+        // spoken for, so its other entries lie in rows assigned *earlier*.
+        // Ordered by assignment, that puts every off-pivot entry above the
+        // diagonal: the system is upper triangular, and upper triangular
+        // systems are solved from the bottom up. Going forwards instead settles
+        // a row and then keeps adding to it, which leaves every early row
+        // unbalanced — and the resulting basis is not singular, so nothing
+        // complains until the factorisation fails much later. IEEE 300 caught
+        // it; the smaller cases did not.
+        //
+        // A column whose value would fall outside
+        // its bounds is not a reason to abandon the whole crash: that row keeps
+        // its artificial, the column stays where it was, and the rest of the
+        // selection still stands. The basis remains triangular either way,
+        // since an artificial is a unit vector in its own row.
+        //
+        // All-or-nothing was tried first and threw away a complete covering of
+        // every row because one column out of nine thousand wanted 600 against
+        // a bound of 400.
+        let mut trial = vec![0.0; self.n_struct + self.n_slack];
+        let mut accepted = 0usize;
+        for &row in order.iter().rev() {
+            let v = assigned[row].expect("assigned");
+            let a = col_rows[v]
+                .iter()
+                .find(|&&(r, _)| r == row)
+                .map(|&(_, a)| a)
+                .expect("the pivot entry exists");
+            // The row to satisfy is `A x − s + artificial = 0`, and `activity`
+            // already carries the slack's own term, since slacks sit in the
+            // same column range as the structurals and are summed with them.
+            // So the target is zero: the column has to cancel what is there,
+            // not reach the row's bound.
+            //
+            // Taking the slack's bound as the target instead counts it twice,
+            // which produces values that are wrong but plausible and a basis
+            // that factors perfectly well. It shows up as a solve that will not
+            // converge, several thousand iterations later.
+            let x = -activity[row] / a;
+            let usable =
+                x.is_finite() && x >= self.lower[v] - 1e-9 && x <= self.upper[v] + 1e-9;
+            if usable {
+                trial[v] = x;
+                accepted += 1;
+            } else {
+                // Leave this row to its artificial, and put the column back
+                // where it was so its contribution is still accounted for.
+                assigned[row] = None;
+                used[v] = false;
+            }
+            let contributed = if usable { x } else { self.value[v] };
+            if contributed != 0.0 {
+                for &(r, coeff) in &col_rows[v] {
+                    if r != row || !usable {
+                        activity[r] += coeff * contributed;
+                    }
+                }
+            }
+        }
+        if accepted == 0 {
+            return false;
+        }
+
+        // Accepted. Install it, leaving artificials basic on the rows the crash
+        // could not reach.
+        let mut covered = vec![false; m];
+        for &row in &order {
+            let Some(v) = assigned[row] else { continue };
+            let artificial = self.n_struct + self.n_slack + row;
+            self.basis[row] = v;
+            self.is_basic[v] = true;
+            self.is_basic[artificial] = false;
+            self.value[v] = trial[v];
+            self.at[artificial] = At::Lower;
+            covered[row] = true;
+        }
+
+        // And re-derive the artificials against the configuration the crash
+        // leaves behind, which is the step whose absence broke this.
+        //
+        // `seed` picks each artificial's sign so that it starts non-negative
+        // given the residual of the all-nonbasic configuration. The crash moves
+        // structural columns into the basis at new values, so those residuals
+        // change — and an artificial left basic on an uncovered row may now
+        // need a negative value, which its own bounds forbid and which phase
+        // one, penalising artificials rather than repairing them, cannot escape
+        // from. IEEE 300 found that; the smaller cases did not.
+        self.reseed(&covered);
+        true
+    }
+
+    /// Recompute artificial signs and values for the rows still relying on
+    /// them.
+    ///
+    /// The same arithmetic as [`Tab::seed`], over whatever configuration
+    /// currently holds, and skipping the rows a crash has already balanced —
+    /// their artificials are nonbasic at zero and must stay there.
+    fn reseed(&mut self, covered: &[bool]) {
+        let mut residual = vec![0.0; self.m];
+        let mut col = Vec::new();
+        for v in 0..(self.n_struct + self.n_slack) {
+            let x = self.value[v];
+            if x == 0.0 {
+                continue;
+            }
+            self.column_no_artificial(v, &mut col);
+            for &(r, a) in &col {
+                residual[r] += a * x;
+            }
+        }
+        for r in 0..self.m {
+            let artificial = self.n_struct + self.n_slack + r;
+            if covered[r] {
+                self.artificial_sign[r] = 1.0;
+                self.value[artificial] = 0.0;
+            } else {
+                let t = residual[r];
+                self.artificial_sign[r] = if t > 0.0 { -1.0 } else { 1.0 };
+                self.value[artificial] = t.abs();
+            }
+        }
+    }
+
     /// As `column`, but never asks about artificials; used while seeding them.
     fn column_no_artificial(&self, v: usize, out: &mut Vec<(usize, f64)>) {
         out.clear();
@@ -419,11 +655,20 @@ impl<'a> Tab<'a> {
     }
 }
 
+/// How large a crash pivot must be against the biggest entry in its column.
+///
+/// A tenth, which is the usual figure. Higher rejects more columns and leaves
+/// more artificials; lower admits pivots that make the basis unusable.
+const CRASH_PIVOT_THRESHOLD: f64 = 0.1;
+
 /// Solve a linear program.
 pub fn solve(p: Problem<'_>, o: Options) -> Result<Solution, SolveError> {
     validate(&p)?;
     let mut t = Tab::new(p, o);
     t.seed();
+    if o.structural_crash {
+        t.crash();
+    }
     // The starting basis is diag(artificial_sign), not the identity: `seed`
     // chooses a sign per row so each artificial starts non-negative. Leaving
     // `inv` as the identity silently negates every row whose residual was

@@ -144,6 +144,100 @@ pub trait TableSource {
     fn text(&self, name: &str) -> Result<Option<String>, IoError>;
     /// What to call this table in an error message.
     fn label(&self, stem: &str) -> String;
+
+    /// A wide time series: one column per component, one row per snapshot.
+    ///
+    /// Separate from [`TableSource::table`] because these are the large files
+    /// and a table is the wrong shape for them. A year of hourly data across a
+    /// thousand components is 8.76 million cells, and holding each as a
+    /// `String` before transposing costs hundreds of megabytes for numbers that
+    /// occupy eight bytes.
+    ///
+    /// The default goes through a table anyway, which is right for a source
+    /// whose values are not text to begin with — a spreadsheet, where every
+    /// cell is already an object. A source reading text overrides it and streams
+    /// straight into the component-major buffer.
+    fn wide(
+        &self,
+        stem: &str,
+        names: &[String],
+        n_snap: usize,
+        defaults: &[f64],
+        kind: &'static str,
+    ) -> Result<Option<TimeSeries>, IoError> {
+        let Some(t) = self.table(stem)? else {
+            return Ok(None);
+        };
+        transpose_wide(&t, names, n_snap, defaults, &self.label(stem), kind).map(Some)
+    }
+}
+
+/// Transpose a wide table into component-major order.
+///
+/// The path for sources whose cells are not text. Reports a column naming a
+/// component that does not exist, since that is almost always a rename applied
+/// to one file and not the other, and ignoring it loses data without saying so.
+fn transpose_wide(
+    t: &Table,
+    names: &[String],
+    n_snap: usize,
+    defaults: &[f64],
+    file: &str,
+    kind: &'static str,
+) -> Result<TimeSeries, IoError> {
+    if t.rows.len() != n_snap {
+        return Err(IoError::TimeSeriesRows {
+            file: file.to_string(),
+            got: t.rows.len(),
+            want: n_snap,
+        });
+    }
+    let mut column_of: Vec<Option<usize>> = Vec::with_capacity(t.header.len());
+    for h in &t.header {
+        let h = h.trim();
+        if h.is_empty() {
+            column_of.push(None);
+            continue;
+        }
+        match names.iter().position(|n| n.eq_ignore_ascii_case(h)) {
+            Some(i) => column_of.push(Some(i)),
+            None => {
+                return Err(IoError::UnknownComponentColumn {
+                    file: file.to_string(),
+                    column: h.to_string(),
+                    kind,
+                });
+            }
+        }
+    }
+
+    let mut data = Vec::with_capacity(names.len() * n_snap);
+    for (c, _) in names.iter().enumerate() {
+        data.extend(std::iter::repeat_n(
+            defaults.get(c).copied().unwrap_or(0.0),
+            n_snap,
+        ));
+    }
+    for (row, cells) in t.rows.iter().enumerate() {
+        for (c, cell) in cells.iter().enumerate() {
+            let Some(Some(component)) = column_of.get(c).copied() else {
+                continue;
+            };
+            let v = cell.trim();
+            if v.is_empty() {
+                continue;
+            }
+            data[component * n_snap + row] = v.parse::<f64>().map_err(|_| IoError::Csv {
+                file: file.to_string(),
+                source: crate::csv::CsvError::BadNumber {
+                    line: row + 2,
+                    field: t.header.get(c).cloned().unwrap_or_default(),
+                    value: v.to_string(),
+                },
+            })?;
+        }
+    }
+    TimeSeries::from_flat(data, names.len(), n_snap).map_err(IoError::Invalid)
 }
 
 /// A directory of CSV files.
@@ -178,6 +272,21 @@ impl TableSource for CsvDir<'_> {
 
     fn label(&self, stem: &str) -> String {
         format!("{stem}.csv")
+    }
+
+    fn wide(
+        &self,
+        stem: &str,
+        names: &[String],
+        n_snap: usize,
+        defaults: &[f64],
+        kind: &'static str,
+    ) -> Result<Option<TimeSeries>, IoError> {
+        let name = self.label(stem);
+        let Some(text) = self.text(&name)? else {
+            return Ok(None);
+        };
+        stream_wide(&text, names, n_snap, defaults, &name, kind).map(Some)
     }
 }
 
@@ -406,20 +515,22 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
     }
 
     // Wide time series, transposed on the way in.
-    if let Some(t) = src.table("gen_availability")? {
-        net.gen_availability =
-            wide_series(&t, &gen_names, n_snap, 1.0, &src.label("gen_availability"), "generator")?;
+    // The wide series are the large files, and they are streamed rather than
+    // tabled: a year of hourly data across a thousand components is 8.76
+    // million cells, and holding each as a `String` first costs hundreds of
+    // megabytes for numbers that occupy eight bytes.
+    if let Some(ts) = src.wide(
+        "gen_availability",
+        &gen_names,
+        n_snap,
+        &vec![1.0; gen_names.len()],
+        "generator",
+    )? {
+        net.gen_availability = ts;
     }
-    if let Some(t) = src.table("load_profile")? {
-        let defaults: Vec<f64> = net.loads.iter().map(|l| l.p_set).collect();
-        net.load_profile = wide_series_with(
-            &t,
-            &load_names,
-            n_snap,
-            &defaults,
-            &src.label("load_profile"),
-            "load",
-        )?;
+    let defaults: Vec<f64> = net.loads.iter().map(|l| l.p_set).collect();
+    if let Some(ts) = src.wide("load_profile", &load_names, n_snap, &defaults, "load")? {
+        net.load_profile = ts;
     }
 
     if let Some(text) = src.text("co2_price.txt")?
@@ -454,64 +565,126 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
     Ok(net)
 }
 
-/// Transpose a wide table into component major order, with one shared default.
-fn wide_series(
-    t: &Table,
-    names: &[String],
-    n_snap: usize,
-    default: f64,
-    file: &str,
-    kind: &'static str,
-) -> Result<TimeSeries, IoError> {
-    let defaults = vec![default; names.len()];
-    wide_series_with(t, names, n_snap, &defaults, file, kind)
-}
-
-/// As above, but each component may have its own fallback value.
-fn wide_series_with(
-    t: &Table,
+/// Read a wide time series straight into its final layout.
+///
+/// The alternative, and what this replaces, is to parse the file into a
+/// [`Table`] and transpose that. A table holds every cell as a `String`, and a
+/// year of hourly data across a thousand components is 8.76 million of them:
+/// hundreds of megabytes of allocator overhead for numbers that occupy eight
+/// bytes each. The description files are small and a table suits them; the time
+/// series are the large ones and it does not.
+///
+/// So the header is parsed once, to map columns onto components, and the body
+/// is then read a line at a time with each value going directly to its place in
+/// the component-major buffer. Nothing but one line is held at a time.
+///
+/// Only the header may contain quoting, since a component name can hold a comma
+/// and a number cannot. A body line containing a quote falls back to the full
+/// parser rather than being split naively, because being wrong about that would
+/// silently shift every column after it.
+fn stream_wide(
+    text: &str,
     names: &[String],
     n_snap: usize,
     defaults: &[f64],
     file: &str,
     kind: &'static str,
 ) -> Result<TimeSeries, IoError> {
-    if t.rows.len() != n_snap {
-        return Err(IoError::TimeSeriesRows {
+    let mut lines = text.lines();
+    let Some(header_line) = lines.next() else {
+        return Ok(TimeSeries::empty());
+    };
+    let header = Table::parse(header_line)
+        .map_err(|source| IoError::Csv {
             file: file.to_string(),
-            got: t.rows.len(),
-            want: n_snap,
-        });
-    }
-    // A column naming a component that does not exist is a mistake worth
-    // reporting: it is almost always a rename that was applied to one file and
-    // not the other, and silently ignoring it loses data without saying so.
-    for h in &t.header {
+            source,
+        })?
+        .header;
+
+    // Which component each column feeds, and a complaint about any that feeds
+    // none: a column naming a component that does not exist is almost always a
+    // rename applied to one file and not the other, and ignoring it loses data
+    // without saying so.
+    let mut column_of: Vec<Option<usize>> = Vec::with_capacity(header.len());
+    for h in &header {
         let h = h.trim();
-        if !h.is_empty() && !names.iter().any(|n| n.eq_ignore_ascii_case(h)) {
-            return Err(IoError::UnknownComponentColumn {
-                file: file.to_string(),
-                column: h.to_string(),
-                kind,
-            });
+        if h.is_empty() {
+            column_of.push(None);
+            continue;
+        }
+        match names.iter().position(|n| n.eq_ignore_ascii_case(h)) {
+            Some(i) => column_of.push(Some(i)),
+            None => {
+                return Err(IoError::UnknownComponentColumn {
+                    file: file.to_string(),
+                    column: h.to_string(),
+                    kind,
+                });
+            }
         }
     }
 
     let mut data = Vec::with_capacity(names.len() * n_snap);
-    for (c, name) in names.iter().enumerate() {
-        let fallback = defaults.get(c).copied().unwrap_or(0.0);
-        match t.column(name) {
-            Some(_) => {
-                for r in 0..n_snap {
-                    data.push(t.number(r, name, fallback).map_err(|source| IoError::Csv {
-                        file: file.to_string(),
-                        source,
-                    })?);
-                }
-            }
-            // A component with no column keeps its scalar value at every step.
-            None => data.extend(std::iter::repeat_n(fallback, n_snap)),
+    for (c, _) in names.iter().enumerate() {
+        data.extend(std::iter::repeat_n(
+            defaults.get(c).copied().unwrap_or(0.0),
+            n_snap,
+        ));
+    }
+
+    let mut rows = 0usize;
+    for line in lines {
+        if line.trim().is_empty() {
+            continue;
         }
+        if rows >= n_snap {
+            rows += 1;
+            continue;
+        }
+        let quoted = line.contains('"');
+        let cells: Vec<String>;
+        let fields: Vec<&str> = if quoted {
+            cells = Table::parse(line)
+                .map_err(|source| IoError::Csv {
+                    file: file.to_string(),
+                    source,
+                })?
+                .header;
+            cells.iter().map(String::as_str).collect()
+        } else {
+            line.split(',').collect()
+        };
+
+        for (c, cell) in fields.iter().enumerate() {
+            let Some(Some(component)) = column_of.get(c).copied() else {
+                continue;
+            };
+            let v = cell.trim();
+            if v.is_empty() {
+                continue;
+            }
+            let parsed = v.parse::<f64>().map_err(|_| IoError::Csv {
+                file: file.to_string(),
+                source: crate::csv::CsvError::BadNumber {
+                    line: rows + 2,
+                    field: header
+                        .get(c)
+                        .cloned()
+                        .unwrap_or_else(|| c.to_string()),
+                    value: v.to_string(),
+                },
+            })?;
+            data[component * n_snap + rows] = parsed;
+        }
+        rows += 1;
+    }
+
+    if rows != n_snap {
+        return Err(IoError::TimeSeriesRows {
+            file: file.to_string(),
+            got: rows,
+            want: n_snap,
+        });
     }
     TimeSeries::from_flat(data, names.len(), n_snap).map_err(IoError::Invalid)
 }

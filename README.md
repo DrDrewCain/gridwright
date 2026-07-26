@@ -572,12 +572,19 @@ The pure-Rust solver, which is what a browser has:
 
 | Rows | Time |
 | --- | --- |
-| 864 | 57 ms |
-| 3,456 | 1.1 s |
-| 13,824 | 36 s |
+| 864 | 23 ms |
+| 3,456 | 0.27 s |
+| 13,824 | 5.1 s |
+| 20,736 | 11.2 s |
 
-About `m^1.9`. Before the sparse factorisation replaced the dense inverse this
-was `m^2.7`, and 2,592 rows would not finish inside ten minutes.
+Two changes account for most of that. Replacing the dense basis inverse with a
+sparse LU, where the win was not the sparsity itself but the symbolic step that
+finds which earlier pivots actually reach a column. And a structural crash
+basis: phase one used to be three quarters of every solve, because the starting
+basis was every artificial variable rather than anything to do with the problem.
+
+At the start of this the same 864-row model took 1.2 seconds and 2,592 rows
+would not finish inside ten minutes.
 
 ## Licence
 

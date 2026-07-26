@@ -129,6 +129,17 @@ impl TableSource for ParquetFiles<'_> {
     fn label(&self, stem: &str) -> String {
         format!("{stem}.parquet")
     }
+
+    fn wide(
+        &self,
+        _stem: &str,
+        _names: &[String],
+        _n: usize,
+        _defaults: &[f64],
+        _kind: &'static str,
+    ) -> Result<Option<gridwright_net::TimeSeries>, IoError> {
+        Ok(None)
+    }
 }
 
 const HDF5_MAGIC: &[u8] = b"\x89HDF\r\n\x1a\n";
