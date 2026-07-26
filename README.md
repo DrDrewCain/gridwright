@@ -32,6 +32,45 @@ So spatial fidelity gets traded away, in models that decide where grids and
 renewables get built. gridwright attacks the stated bottleneck: construction,
 not solving.
 
+## What that actually buys, and what it does not
+
+On the same model, this builds in 0.104 s on 1.50 GB where linopy takes 200.8 s
+on 22.4 GB. Left there, the number claims more than follows from it, so the
+qualification belongs here rather than five hundred lines further down.
+
+**It does not make a hard solve tractable.** On a full year at hourly
+resolution the solve dominates completely: construction is 0.0–0.1% of runtime.
+A model that takes HiGHS four minutes still takes four minutes. If your model
+already solves, and you build it once, this buys you nothing you could measure
+and you should use PyPSA, which has a decade of features this does not.
+
+**Nor is 22.4 GB alarming on its own.** On a workstation it is unremarkable,
+and 200 seconds is an annoyance rather than an obstacle. Anyone reading those
+two numbers as a crisis is right to be sceptical.
+
+What the difference buys is narrower, and it is about *where* and *how often*
+rather than how fast:
+
+- **Whether the model fits at all.** 1.50 GB against 22.4 GB is the difference
+  between a laptop, a CI runner or a browser tab and a machine you have to book.
+  PyPSA-Eur's advice to cluster Europe down to a couple of hundred nodes is a
+  memory decision before it is a time decision.
+- **Building stops being a per-iteration tax.** One build is not the case that
+  matters. A rolling horizon over a year is 122 builds; a scenario sweep is
+  hundreds; an interactive edit is one per keystroke-ish. At 200 s each, 122
+  windows is **6.8 hours of pure assembly** before any solving happens. At
+  0.104 s each it is 13 seconds. This is where the ratio stops being a
+  curiosity.
+- **It runs where a Python stack cannot.** The whole engine, the format layer
+  and a solver compile to `wasm32-unknown-unknown`, so the model can be built
+  and solved in a browser tab with no server at all.
+
+That is a much narrower claim than "construction is the bottleneck", and it is
+the one the measurements in [Scale](#scale) actually support. Those
+measurements are on synthetic topologies and say only how the problem grows;
+correctness is validated against real published networks, which is a different
+question and is treated as one.
+
 ## What it does today
 
 **Dispatch.** Linear optimal power flow across a multi-country network:
@@ -549,6 +588,25 @@ About two thousand times faster, on fifteen times less memory. The script is
 [`benchmarks/linopy_build.py`](benchmarks/linopy_build.py) and the fairness
 notes are at the top of it.
 
+**Read the right thing into this table.** Three caveats, kept here rather than
+elsewhere because a table travels without its context:
+
+1. **It is one synthetic 256-bus ring.** It says what construction costs on a
+   model of that shape and size. It is not evidence about any real network's
+   topology, and no claim here rests on it that is not about construction.
+2. **200.8 s and 22.4 GB are not, by themselves, alarming numbers.** Optimisation
+   people routinely spend minutes and tens of gigabytes, and a reviewer who
+   shrugs at them is right to. The case is not that linopy is slow in the
+   abstract; it is that both numbers are *per build*, and the interesting
+   workloads build many times. A rolling horizon over this year is 122 builds:
+   6.8 hours of assembly at 200.8 s each against 13 seconds at 0.104 s each. A
+   scenario sweep multiplies it again.
+3. **This is construction only, and construction is the small half.** Solving
+   this same model takes far longer than either column. That is stated plainly
+   in [Scale](#scale) and is not walked back anywhere: at full hourly
+   resolution the fast build buys almost nothing, and what it buys is set out
+   in [What that actually buys](#what-that-actually-buys-and-what-it-does-not).
+
 The gridwright figure went *up* slightly, from 0.096 s, when the transpose was
 folded into construction. The old number was construction to a row major matrix
 that then needed transposing before any solver could read it, which was not the
@@ -578,7 +636,13 @@ A full year at hourly resolution, solved whole:
 | --- | --- | --- | --- |
 | 16 | 1.0M | 11 ms | 20 s |
 | 32 | 2.0M | 14 ms | 194 s |
-| 64 | 4.1M | — | did not finish in seven minutes |
+| 64 | 4.1M | — | being measured; see below |
+
+The seven-minute cutoff this row used to carry was not a property of the
+problem, it was the point at which I stopped waiting, and reporting it as
+though it meant something was wrong. Minutes are not a long time for an
+optimisation of this size. It is being run to completion and this row will
+carry the number rather than an abandonment.
 
 The solve grows about 9.5× for a doubling and construction is 0.0–0.1% of
 runtime. **At full resolution the fast build buys almost nothing.** The same

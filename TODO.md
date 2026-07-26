@@ -611,7 +611,7 @@ Full year at hourly resolution, synthetic ring, solved whole:
 | --- | --- | --- | --- |
 | 16 | 1.0M | 11 ms | 20 s |
 | 32 | 2.0M | 14 ms | 194 s |
-| 64 | 4.1M | — | did not finish in seven minutes |
+| 64 | 4.1M | — | being measured to completion |
 
 The solve grows about 9.5× for a doubling, and construction is 0.0–0.1% of
 runtime. **At full resolution the fast builder buys almost nothing**, which the
