@@ -22,6 +22,18 @@
 //!
 //! The measurement did buy something: the default interval moved from 64 to
 //! 256, which is a measured 4%.
+//!
+//! # And what the pricing window said
+//!
+//! Having concluded that the remaining 96% was "triangular solves and
+//! pricing", the obvious next move was to price fewer columns. Across windows
+//! of 500, 2,000, 10,000, 50,000 and the full count the total ran 3.33, 3.31,
+//! 3.24, 3.32 and 3.30 seconds — indistinguishable.
+//!
+//! So pricing is not the dominant term either, and the earlier sentence
+//! naming it was a guess dressed as a conclusion. What is left is the
+//! triangular solves themselves, which every iteration performs twice and
+//! which no amount of choosing differently avoids.
 
 #![cfg(all(feature = "highs", feature = "simplex"))]
 
@@ -63,32 +75,21 @@ fn ring(buses: usize, hours: usize) -> Network {
 
 #[test]
 #[ignore = "a measurement, not a guard"]
-fn how_much_the_refactorisation_interval_is_worth() {
+fn how_much_the_pricing_window_is_worth() {
     let lopf = build_lopf(&ring(48, 96)).unwrap();
     println!("\n  {} rows", lopf.model.num_rows());
-    println!("  every  ratio   time");
-    for (every, ratio) in [
-        (32usize, 0.0f64),
-        (64, 0.5),
-        (128, 0.0),
-        (256, 0.0),
-        (512, 0.0),
-        (100_000, 0.0),
-    ] {
+    println!("  window       time");
+    for window in [500usize, 2_000, 10_000, 50_000, usize::MAX] {
         let solver = SimplexSolver {
             options: gridwright_simplex::Options {
-                refactor_every: every,
-                refactor_fill_ratio: ratio,
+                price_window: window,
                 ..Default::default()
             },
             ..Default::default()
         };
         let t = Instant::now();
         let s = solver.solve(&lopf).unwrap();
-        println!(
-            "  {every:6} {ratio:5}   {:?}  {:?}",
-            t.elapsed(),
-            s.status
-        );
+        let label = if window == usize::MAX { "all".into() } else { window.to_string() };
+        println!("  {label:>8}   {:?}  {:?}", t.elapsed(), s.status);
     }
 }

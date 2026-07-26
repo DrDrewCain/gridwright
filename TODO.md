@@ -49,10 +49,28 @@ concrete in the way, named.
 
       The measurement paid for itself anyway — the default interval moved from
       64 to 256, worth a measured 4%.
-- [ ] **Faster pricing.** Now the largest single cost, at something like 96% of
-      a solve together with the triangular solves. Dantzig pricing scans every
-      column each iteration; partial or devex pricing scans a subset and is what
-      a production code does.
+- [x] ~~**Faster pricing.**~~ **Built, measured, and left switched off.**
+
+      Having found that Forrest-Tomlin addressed only 2.3%, the obvious next
+      move was to price fewer columns, since Dantzig's rule materialises every
+      column on every iteration. Partial pricing is implemented and available as
+      `price_window`, and across windows of 500, 2,000, 10,000, 50,000 and the
+      full count on a 9,216-row model the total ran 3.33, 3.31, 3.24, 3.32 and
+      3.30 seconds. Indistinguishable: a cheaper scan buys a worse entering
+      variable and the two cancel.
+
+      That is a fact about the shape of these models. An energy system model has
+      a few times as many columns as rows, so a scan is a small multiple of a
+      solve. Partial pricing earns its keep where columns vastly outnumber rows,
+      and the knob is there for a caller whose problem looks like that.
+
+      It also corrects the line above it: naming pricing as the largest cost was
+      a guess dressed as a conclusion, and it was wrong.
+- [ ] **The triangular solves**, which is what is actually left. Every iteration
+      performs one forward and one transposed solve against the factors, and no
+      amount of choosing differently avoids them. The honest options are fewer
+      iterations — a better starting basis, or a crash basis rather than
+      all-slack — rather than a cheaper iteration.
 - [x] ~~**A fill-reducing ordering.**~~ **Measured and rejected**, twice.
       Greedy minimum degree maintains the column counts as elimination proceeds
       and follows the singleton cascade an LP basis is full of. It **halves the
