@@ -607,31 +607,34 @@ headline and it is better to have that on record than to discover it later.
 
 Full year at hourly resolution, synthetic ring, solved whole:
 
-| Buses | Columns | Build | Solve |
-| --- | --- | --- | --- |
-| 8 | 402,960 | 14.7 ms | 3.8 s |
-| 16 | 805,920 | 4.7 ms | 10.3 s |
-| 32 | 1,611,840 | 8.5 ms | 31.0 s |
-| 64 | 3,223,680 | 19.1 ms | 110.7 s |
+| Buses | Columns | Build | Solve | Growth |
+| --- | --- | --- | --- | --- |
+| 8 | 402,960 | 4.5 ms | 3.5 s | |
+| 16 | 805,920 | 4.7 ms | 10.3 s | 2.9× |
+| 32 | 1,611,840 | 8.5 ms | 31.0 s | 3.0× |
+| 64 | 3,223,680 | 15.0 ms | 110.7 s | 3.6× |
+| 128 | 6,447,360 | 50.4 ms | 561.8 s | 5.1× |
 
-**Re-measured to completion, and the previous version of this table was wrong
-in every row.** It reported 64 buses as "did not finish in seven minutes"; it
-solves in under two minutes, and the whole ladder above takes 156 seconds. It
-reported 20 s at 16 buses against 10.3, and 194 s at 32 against 31.0. It
-overstated the variable counts by about a quarter. It put growth at 9.5× per
-doubling; it is about 3×.
+**Re-measured to completion, best of two runs, and the previous version of this
+table was wrong in every row.** It reported 64 buses as "did not finish in seven
+minutes"; it solves in under two. 128 was never attempted and solves in nine and
+a half. It reported 20 s at 16 buses against 10.3, and 194 s at 32 against 31.0.
+It overstated the variable counts by about a quarter. It put growth at a flat
+9.5× per doubling; it is 3× rising to 5×, a different shape as well as a
+different number.
 
 The rolling table below re-measured to within 6% of its published values, so
-this was specific rather than general. Most likely machine load — the third
-time in this project that a loaded machine has produced a number that survived
-into a document, after the transpose that "took 90 ms" and actually takes 21,
-and the prefault experiment that measured backwards. Every timing is now
-best-of-N on an idle machine, and anything that cannot be re-measured should be
-treated as suspect rather than quoted.
+this was specific rather than general. Most likely machine load — the third time
+in this project that a loaded machine produced a number that survived into a
+document, after the transpose that "took 90 ms" and takes 21, and the prefault
+experiment that measured backwards. Every timing is now best-of-N on an idle
+machine, the run-to-run spread is worth quoting (the two 64-bus runs differed by
+16%), and anything that cannot be re-measured should be treated as suspect
+rather than quoted.
 
-The conclusion is unchanged: construction is 0.017% of runtime at 64 buses, so
-**at full resolution the fast builder buys almost nothing**. That never rested
-on the solve being intractable.
+The conclusion is unchanged: construction is 0.009% of runtime at 128 buses, so
+**at full resolution the fast builder buys almost nothing**. That never rested on
+the solve being intractable.
 
 The same year through a rolling horizon of 96-hour windows keeping 72:
 
@@ -640,13 +643,18 @@ The same year through a rolling horizon of 96-hour windows keeping 72:
 | 16 | 122 | 4.0 s | 10.3 s | 2.6× |
 | 32 | 122 | 8.7 s | 31.0 s | 3.6× |
 | 64 | 122 | 23.6 s | 110.7 s | 4.7× |
-| 128 | 122 | 76.3 s | — | |
+| 128 | 122 | 76.3 s | 561.8 s | 7.4× |
 
 The previous claim — 23× at 32 buses, and that rolling "finishes at 64 and 128
 where the monolithic solve does not" — was an artefact of the bad table above.
-It is 3.6× at 32 buses and the monolithic solve finishes comfortably at 64. The
-advantage is real and grows with size, but it is a factor of a few rather than
-an order of magnitude.
+It is 3.6× at 32 buses, and the monolithic solve finishes at every size tried.
+
+What is true, and is the better argument, is that the advantage **compounds**:
+2.6× at 16 buses and 7.4× at 128, because the whole-horizon solve grows
+superlinearly while the rolling one grows nearly linearly in the number of
+windows. That is a claim about decomposition rather than about this builder.
+
+
 
 Note what that does to the argument. Rolling performs **122 builds instead of
 one**, and construction still does not register. So the build speed is not what

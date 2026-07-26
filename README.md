@@ -631,33 +631,38 @@ Measured, on synthetic topologies, and labelled as such wherever it appears.
 Correctness is validated against real networks; these say only how the problem
 grows.
 
-A full year at hourly resolution, solved whole, every rung run to completion:
+A full year at hourly resolution, solved whole, every rung run to completion.
+Best of two runs, on an idle machine:
 
-| Buses | Columns | Build | Solve |
-| --- | --- | --- | --- |
-| 8 | 402,960 | 14.7 ms | 3.8 s |
-| 16 | 805,920 | 4.7 ms | 10.3 s |
-| 32 | 1,611,840 | 8.5 ms | 31.0 s |
-| 64 | 3,223,680 | 19.1 ms | **110.7 s** |
+| Buses | Columns | Build | Solve | Growth |
+| --- | --- | --- | --- | --- |
+| 8 | 402,960 | 4.5 ms | 3.5 s | |
+| 16 | 805,920 | 4.7 ms | 10.3 s | 2.9× |
+| 32 | 1,611,840 | 8.5 ms | 31.0 s | 3.0× |
+| 64 | 3,223,680 | 15.0 ms | **110.7 s** | 3.6× |
+| 128 | 6,447,360 | 50.4 ms | **561.8 s** | 5.1× |
 
-**This table replaces an earlier one that was wrong, and the correction is
-larger than the row that prompted it.** The 64-bus case was published as "did
-not finish in seven minutes". It solves in under two minutes. The whole ladder
-above takes 156 seconds; the claim that one row of it was intractable came from
-stopping the clock rather than from the problem.
+**This table replaces an earlier one that was wrong in every row, and the
+correction is larger than the row that prompted it.** The 64-bus case was
+published as "did not finish in seven minutes". It solves in under two minutes.
+The 128-bus case, never attempted, solves in nine and a half.
 
-Re-running it moved every other number too: 16 buses was published as 20 s and
-is 10.3 s, 32 as 194 s and is 31.0 s, and the variable counts were overstated by
-about a quarter. The growth rate was published as 9.5× per doubling and is
-about 3×. The rolling-horizon table below re-measured to within 6% of its
-published values, so the fault was specific to this table rather than general —
-most likely machine load, which has now corrupted a measurement in this project
-three separate times and is the reason every timing here is best-of-N on an
-idle machine.
+Re-running moved everything else too: 16 buses was published as 20 s and is
+10.3 s, 32 as 194 s and is 31.0 s, and the variable counts were about a quarter
+high. Growth was published as a flat 9.5× per doubling; it is 3× at the small
+end rising to 5× at the large one, which is a different shape as well as a
+different number.
 
-Construction is 0.017% of runtime at 64 buses. **At full resolution the fast
-build still buys almost nothing**, and that conclusion is unchanged by the
-correction — it was never resting on the solve being intractable.
+The rolling-horizon table below re-measured to within 6% of its published
+values, so the fault was specific to this table rather than general — most
+likely machine load, which has now corrupted a measurement in this project
+three separate times. That is why every timing here is best-of-N on an idle
+machine, and why the run-to-run spread is worth stating: the two 64-bus runs
+differed by 16%.
+
+Construction is 0.009% of runtime at 128 buses. **At full resolution the fast
+build still buys almost nothing**, and that conclusion is untouched by the
+correction — it never rested on the solve being intractable.
 
 The same year through a rolling horizon of 96-hour windows keeping 72:
 
@@ -666,19 +671,23 @@ The same year through a rolling horizon of 96-hour windows keeping 72:
 | 16 | 122 | 4.0 s | 10.3 s | 2.6× |
 | 32 | 122 | 8.7 s | 31.0 s | 3.6× |
 | 64 | 122 | 23.6 s | 110.7 s | 4.7× |
-| 128 | 122 | 76.3 s | — | |
+| 128 | 122 | 76.3 s | 561.8 s | 7.4× |
 
-The previous version of this claimed **23× at 32 buses, and that the rolling
-horizon "finishes where the monolithic solve does not"**. Neither is true. It is
-3.6× at 32 buses, and the monolithic solve finishes comfortably at 64. The
-advantage is real, grows with size, and is a factor of a few rather than an
-order of magnitude.
+The previous version claimed **23× at 32 buses, and that the rolling horizon
+"finishes where the monolithic solve does not"**. Neither is true. It is 3.6× at
+32 buses, and the monolithic solve finishes at every size tried, including 128.
+
+What is true, and is the better argument anyway, is that the advantage
+*compounds*: 2.6× at 16 buses, 7.4× at 128, because the whole-horizon solve
+grows superlinearly while the rolling one grows nearly linearly in the number
+of windows. Extrapolating that trend is how a continental model becomes
+tractable, and it is a claim about decomposition rather than about this
+builder.
 
 Note that the rolling horizon performs **122 builds instead of one**, and
-construction still does not register: decomposition is what makes a year
-tractable, not the builder. What the fast build actually buys is set out in
-[What that actually buys](#what-that-actually-buys-and-what-it-does-not), and
-none of it is "the solve gets faster".
+construction still does not register. What the fast build actually buys is set
+out in [What that actually buys](#what-that-actually-buys-and-what-it-does-not),
+and none of it is "the solve gets faster".
 
 The pure-Rust solver, which is what a browser has:
 
