@@ -184,77 +184,166 @@ pub fn from_csr_par(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usiz
         return from_csr(row_starts, cols, vals, n_cols);
     }
 
-    // Phase 1: private histograms, one row of `n_cols` counts per chunk.
-    let mut hist = vec![0u32; n_chunks * n_cols];
-    hist.par_chunks_mut(n_cols)
+    // One shared counter array, incremented atomically, rather than a private
+    // dense histogram per thread.
+    //
+    // The reasoning and the measurement disagreed, and the measurement is
+    // recorded here because the reasoning was persuasive. This matrix has 16.3
+    // million columns and 29 million nonzeros — under two entries per column —
+    // so a `threads × n_cols` histogram is 910 MB of counters to count 29
+    // million items, plus a 65 MB cursor copy per thread. That looks obviously
+    // wasteful and it is, in address space. It is **not** wasteful in resident
+    // memory or in time: peak RSS is 1.951 GB either way, to within 60 KB, and
+    // the transpose takes about 88 ms either way. Most of those 910 MB are
+    // never written, because a chunk only touches the columns its own rows
+    // reach, and pages nobody writes are never faulted in.
+    //
+    // Kept anyway, for the reason that survives: 65 MB of allocation against
+    // 1.8 GB. Address space is not free everywhere, and the WebAssembly target
+    // has 4 GB of it in total.
+    //
+    // What it costs is ordering. `fetch_add` hands out slots in whatever order
+    // threads arrive, so rows within a column come out unsorted and have to be
+    // sorted afterwards. That is nearly free at this density and it is not
+    // optional: an unsorted column would make the transpose depend on thread
+    // timing, and two runs of the same model would produce different files.
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    // Zeroed in one allocation rather than built element by element:
+    // `AtomicU32` has the same layout and representation as `u32`, and an
+    // all-zero `u32` is an `AtomicU32` holding zero. Sixteen million
+    // constructor calls is not a small thing when the whole operation is
+    // supposed to take a tenth of a second.
+    let counts: Vec<AtomicU32> = {
+        let zeros = vec![0u32; n_cols];
+        // SAFETY: `AtomicU32` is `#[repr(C)]` over `u32`, same size and
+        // alignment, and every bit pattern valid for one is valid for the
+        // other.
+        unsafe { std::mem::transmute::<Vec<u32>, Vec<AtomicU32>>(zeros) }
+    };
+    cols.par_iter().for_each(|&c| {
+        counts[c as usize].fetch_add(1, Ordering::Relaxed);
+    });
+
+    // The prefix sum is over sixteen million columns and was the largest single
+    // cost here, being sequential while everything around it was not. Done in
+    // three parallel passes instead: each chunk totals itself, the chunk totals
+    // are scanned (there are only as many as there are threads), and each chunk
+    // then fills its own range from its own base.
+    let scan_chunk = n_cols.div_ceil(threads).max(1 << 16);
+    let n_scan = n_cols.div_ceil(scan_chunk).max(1);
+    let mut chunk_total = vec![0u32; n_scan];
+    chunk_total
+        .par_iter_mut()
         .enumerate()
-        .for_each(|(chunk, counts)| {
+        .for_each(|(chunk, total)| {
+            let c0 = chunk * scan_chunk;
+            let c1 = ((chunk + 1) * scan_chunk).min(n_cols);
+            *total = counts[c0..c1]
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed))
+                .sum();
+        });
+    let mut base = Vec::with_capacity(n_scan);
+    let mut running = 0u32;
+    for &t in &chunk_total {
+        base.push(running);
+        running += t;
+    }
+    debug_assert_eq!(running as usize, nnz);
+
+    let mut starts = vec![0u32; n_cols + 1];
+    starts[n_cols] = running;
+    starts[..n_cols]
+        .par_chunks_mut(scan_chunk)
+        .enumerate()
+        .for_each(|(chunk, out)| {
+            let c0 = chunk * scan_chunk;
+            let mut running = base[chunk];
+            for (k, slot) in out.iter_mut().enumerate() {
+                *slot = running;
+                running += counts[c0 + k].load(Ordering::Relaxed);
+            }
+        });
+
+    // The counters become the write cursors, each starting where its column
+    // does. Filling them in parallel from `starts` costs one more pass and
+    // saves the sequential one it replaces.
+    counts
+        .par_iter()
+        .enumerate()
+        .for_each(|(j, slot)| slot.store(starts[j], Ordering::Relaxed));
+
+    let mut out_rows = vec![0u32; nnz];
+    let mut out_vals = vec![0.0f64; nnz];
+    {
+        let rows_ptr = SendPtr(out_rows.as_mut_ptr());
+        let vals_ptr = SendPtr(out_vals.as_mut_ptr());
+        let counts = &counts;
+        (0..n_chunks).into_par_iter().for_each(|chunk| {
             let r0 = chunk * chunk_rows;
             let r1 = ((chunk + 1) * chunk_rows).min(n_rows);
             if r0 >= r1 {
                 return;
             }
-            let s = row_starts[r0] as usize;
-            let e = row_starts[r1] as usize;
-            for &c in &cols[s..e] {
-                counts[c as usize] += 1;
+            let rows_ptr = &rows_ptr;
+            let vals_ptr = &vals_ptr;
+            for r in r0..r1 {
+                let s = row_starts[r] as usize;
+                let e = row_starts[r + 1] as usize;
+                for k in s..e {
+                    let c = cols[k] as usize;
+                    let dst = counts[c].fetch_add(1, Ordering::Relaxed) as usize;
+                    // SAFETY: every slot between `starts[c]` and `starts[c+1]`
+                    // is handed out exactly once, because the counter for `c`
+                    // begins at `starts[c]` and is only ever incremented, and
+                    // the number of increments equals the count phase one took.
+                    // No two threads can receive the same `dst`.
+                    unsafe {
+                        *rows_ptr.0.add(dst) = r as u32;
+                        *vals_ptr.0.add(dst) = vals[k];
+                    }
+                }
             }
         });
-
-    // Phase 2: scan down each column across chunks, then across columns.
-    // `hist` is rewritten in place to hold absolute destination offsets, so
-    // hist[chunk * n_cols + j] becomes where that chunk starts writing col j.
-    let mut starts = vec![0u32; n_cols + 1];
-    let mut running = 0u32;
-    for j in 0..n_cols {
-        starts[j] = running;
-        for chunk in 0..n_chunks {
-            let slot = &mut hist[chunk * n_cols + j];
-            let count = *slot;
-            *slot = running;
-            running += count;
-        }
     }
-    starts[n_cols] = running;
-    debug_assert_eq!(running as usize, nnz);
 
-    // Phase 3: disjoint scatter. The output buffers are handed out as raw
-    // pointers because the disjointness is a property of the offsets computed
-    // above rather than something the borrow checker can see.
-    let mut out_rows = vec![0u32; nnz];
-    let mut out_vals = vec![0.0f64; nnz];
-
+    // Restore row order within each column. Two entries per column on average,
+    // so this is a handful of comparisons rather than a sort in any meaningful
+    // sense, and it is what makes the result independent of how the threads
+    // happened to interleave.
     {
         let rows_ptr = SendPtr(out_rows.as_mut_ptr());
         let vals_ptr = SendPtr(out_vals.as_mut_ptr());
-
-        hist.par_chunks(n_cols)
-            .enumerate()
-            .for_each(|(chunk, offsets)| {
-                let r0 = chunk * chunk_rows;
-                let r1 = ((chunk + 1) * chunk_rows).min(n_rows);
-                if r0 >= r1 {
+        let starts_ref = &starts;
+        (0..n_cols)
+            .into_par_iter()
+            .with_min_len(4096)
+            .for_each(|j| {
+                let s = starts_ref[j] as usize;
+                let e = starts_ref[j + 1] as usize;
+                if e <= s + 1 {
                     return;
                 }
-                // Local copy so the cursor advances without touching shared state.
-                let mut cursor: Vec<u32> = offsets.to_vec();
                 let rows_ptr = &rows_ptr;
                 let vals_ptr = &vals_ptr;
-                for r in r0..r1 {
-                    let s = row_starts[r] as usize;
-                    let e = row_starts[r + 1] as usize;
-                    for k in s..e {
-                        let c = cols[k] as usize;
-                        let dst = cursor[c] as usize;
-                        // SAFETY: `dst` lies in this chunk's exclusive slice of
-                        // column `c`, sized in phase 1 and assigned in phase 2,
-                        // so no other chunk can produce the same index. `dst`
-                        // is below `nnz` because the offsets sum to `nnz`.
-                        unsafe {
-                            *rows_ptr.0.add(dst) = r as u32;
-                            *vals_ptr.0.add(dst) = vals[k];
+                // SAFETY: `s..e` is column `j`'s exclusive range, and no other
+                // parallel item touches it.
+                unsafe {
+                    let r = std::slice::from_raw_parts_mut(rows_ptr.0.add(s), e - s);
+                    let v = std::slice::from_raw_parts_mut(vals_ptr.0.add(s), e - s);
+                    // Insertion sort, moving both arrays together. At this
+                    // length it beats anything cleverer and allocates nothing.
+                    for i in 1..r.len() {
+                        let (ri, vi) = (r[i], v[i]);
+                        let mut k = i;
+                        while k > 0 && r[k - 1] > ri {
+                            r[k] = r[k - 1];
+                            v[k] = v[k - 1];
+                            k -= 1;
                         }
-                        cursor[c] += 1;
+                        r[k] = ri;
+                        v[k] = vi;
                     }
                 }
             });
@@ -268,6 +357,7 @@ pub fn from_csr_par(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usiz
         n_rows,
     }
 }
+
 
 /// A raw pointer that may cross into worker threads.
 ///
