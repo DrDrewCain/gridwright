@@ -388,8 +388,28 @@ impl Model {
             .extend(batch.starts[1..].iter().map(|&s| s + shift));
     }
 
-    /// Merge many batches, reserving for all of them first.
-    pub fn absorb_all(&mut self, batches: &[RowBatch]) {
+    /// Merge many batches, reserving for all of them first and releasing each
+    /// as it is taken.
+    ///
+    /// Taking ownership rather than borrowing is what keeps the peak down, and
+    /// the reason is worth stating because it is not obvious. Reserving the
+    /// whole destination up front costs one allocation and no copying, and
+    /// freshly reserved capacity is not *resident* until something writes to
+    /// it. So as each batch is copied in and dropped, the pages it held are
+    /// released while the pages it filled become resident, and the two roughly
+    /// cancel.
+    ///
+    /// Borrowing instead keeps every batch alive until the merge finishes, so
+    /// the whole constraint matrix exists twice at once.
+    ///
+    /// Whether that shows up in peak resident memory is a separate question,
+    /// and measured here it does not: 1,471 MB either way on a 16-million
+    /// variable model. The allocator holds freed pages rather than returning
+    /// them to the operating system, so resident memory records the high-water
+    /// mark of what was *allocated* rather than of what was live. The change is
+    /// kept because the memory does become available for reuse, which is real
+    /// even where this metric cannot see it.
+    pub fn absorb_all(&mut self, batches: Vec<RowBatch>) {
         let rows: usize = batches.iter().map(RowBatch::rows).sum();
         let nnz: usize = batches.iter().map(RowBatch::nnz).sum();
         self.rows.cols.reserve(nnz);
@@ -398,7 +418,8 @@ impl Model {
         self.rows.upper.reserve(rows);
         self.rows.starts.reserve(rows);
         for b in batches {
-            self.absorb(b);
+            self.absorb(&b);
+            // `b` is dropped here, before the next one is copied.
         }
     }
 
@@ -515,7 +536,7 @@ mod tests {
 
         let mut m = Model::new();
         m.add_block(2, 0.0, 10.0, 1.0);
-        m.absorb_all(&[one, two]);
+        m.absorb_all(vec![one, two]);
 
         assert_eq!(m.num_rows(), 3);
         assert_eq!(m.nnz(), 5);
@@ -530,7 +551,7 @@ mod tests {
     fn merging_empty_batches_changes_nothing() {
         let mut m = Model::new();
         m.add_block(2, 0.0, 1.0, 0.0);
-        m.absorb_all(&[RowBatch::new(), RowBatch::new()]);
+        m.absorb_all(vec![RowBatch::new(), RowBatch::new()]);
         assert_eq!(m.num_rows(), 0);
         assert_eq!(m.nnz(), 0);
         assert_eq!(m.rows.starts, vec![0]);

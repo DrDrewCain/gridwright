@@ -670,7 +670,7 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
             t,
         ));
     }
-    model.absorb_all(&all);
+    model.absorb_all(all);
 
     Ok(Lopf {
         model,

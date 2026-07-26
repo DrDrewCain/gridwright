@@ -300,6 +300,44 @@ was hiding most of the demand side.
       with extra steps, and it is also the only part that cannot be written
       linearly, which is why a contract makes the model an integer one.
 
+## Memory
+
+Peak resident memory on the 256-bus, 8,760-snapshot model is 1.95 GB, and it is
+worth writing down where that goes because two attempts to reduce it did
+nothing and the reason is the same both times.
+
+| | |
+| --- | --- |
+| Column bounds, costs, integrality | 406 MB |
+| Row bounds | 99 MB |
+| CSR, as assembled | 375 MB |
+| CSC, as handed to the solver | 415 MB |
+| Transpose counters | 65 MB |
+| Accounted | 1,360 MB |
+| Measured | 1,951 MB |
+
+Assembly alone reaches 1,471 MB and the transpose adds 480 MB, which matches
+the CSC arrays and the counters exactly. So the 590 MB of slack is in assembly,
+and the obvious candidate is the per-thread row batches, which are copied into
+the model and then dropped.
+
+Two things that did not help. Replacing the transpose's `threads × n_cols`
+histogram with one atomic counter array cut allocation from 1.8 GB to 65 MB and
+moved peak resident memory not at all. Taking ownership of the batches so each
+is released as it is merged, rather than holding all of them, likewise moved it
+not at all. In both cases the allocator keeps freed pages rather than returning
+them, so this metric records what was allocated at the high-water mark rather
+than what was live.
+
+- [ ] **Build the CSC directly from the batches**, skipping the merged CSR
+      entirely. This is the one lever with a real 375 MB behind it rather than
+      an allocator artefact: nothing downstream reads the row-major form. HiGHS
+      takes compressed sparse columns and so does the simplex, so the CSR exists
+      only to be transposed and then sit there.
+- [ ] Measure against an allocator that returns pages, to find out how much of
+      the 590 MB is live and how much is retention. Until that is known, the
+      accounting above is a ceiling rather than a description.
+
 ## Data formats
 
 Every reader targets the same `Network`, and every one returns a `Case` whose

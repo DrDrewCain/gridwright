@@ -83,23 +83,67 @@ struct SendPtr<T>(*mut T);
 unsafe impl<T> Send for SendPtr<T> {}
 unsafe impl<T> Sync for SendPtr<T> {}
 
-/// Reimplementation of from_csr_par's phases with all memory pre-faulted,
-/// so page-fault cost is reported separately from compute.
-fn decomposed(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usize, label: &str) {
+#[repr(C)]
+struct Timeval {
+    tv_sec: i64,
+    tv_usec: i32,
+    _pad: i32,
+}
+#[repr(C)]
+struct Rusage {
+    ru_utime: Timeval,
+    ru_stime: Timeval,
+    ru_rest: [i64; 14],
+}
+unsafe extern "C" {
+    fn getrusage(who: i32, usage: *mut Rusage) -> i32;
+}
+fn minflt() -> i64 {
+    let mut r = Rusage {
+        ru_utime: Timeval { tv_sec: 0, tv_usec: 0, _pad: 0 },
+        ru_stime: Timeval { tv_sec: 0, tv_usec: 0, _pad: 0 },
+        ru_rest: [0; 14],
+    };
+    unsafe { getrusage(0, &mut r) };
+    r.ru_rest[4] // ru_minflt on macOS
+}
+
+/// Reimplementation of from_csr_par's phases. With `pre_touch` all memory is
+/// pre-faulted so page-fault cost is reported separately from compute; without
+/// it, phases fault their pages as the shipped code does. Reports minor page
+/// faults per phase either way.
+fn decomposed(
+    row_starts: &[u32],
+    cols: &[u32],
+    vals: &[f64],
+    n_cols: usize,
+    label: &str,
+    pre_touch: bool,
+) {
     let n_rows = row_starts.len() - 1;
     let nnz = cols.len();
     let threads = rayon::current_num_threads().max(1);
     let chunk_rows = n_rows.div_ceil(threads).max(4096);
     let n_chunks = n_rows.div_ceil(chunk_rows).max(1);
 
-    println!("-- decomposed ({label}), {threads} threads, {n_chunks} chunks --");
+    println!(
+        "-- decomposed ({label}, pre_touch={pre_touch}), {threads} threads, {n_chunks} chunks --"
+    );
+    let mut lap_f = minflt();
+    let mut lap = |name: &str, dt: std::time::Duration, lap_f: &mut i64| {
+        let f = minflt();
+        println!("  {name:22} {dt:>12.3?}   (+{} minflt)", f - *lap_f);
+        *lap_f = f;
+    };
 
     let t = Instant::now();
     let mut counts_raw = vec![0u32; n_cols];
-    let alloc_counts = t.elapsed();
-    let t = Instant::now();
-    touch_u32(&mut counts_raw);
-    let fault_counts = t.elapsed();
+    lap("alloc counts (mmap)", t.elapsed(), &mut lap_f);
+    if pre_touch {
+        let t = Instant::now();
+        touch_u32(&mut counts_raw);
+        lap("fault counts (65MB)", t.elapsed(), &mut lap_f);
+    }
     let counts: Vec<AtomicU32> =
         unsafe { std::mem::transmute::<Vec<u32>, Vec<AtomicU32>>(counts_raw) };
 
@@ -107,11 +151,12 @@ fn decomposed(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usize, lab
     cols.par_iter().for_each(|&c| {
         counts[c as usize].fetch_add(1, Ordering::Relaxed);
     });
-    let count = t.elapsed();
+    lap("count", t.elapsed(), &mut lap_f);
 
     // Parallel scan, identical structure to the shipped code.
     let t = Instant::now();
     let scan_chunk = n_cols.div_ceil(threads).max(1 << 16);
+    #[allow(clippy::needless_range_loop)]
     let n_scan = n_cols.div_ceil(scan_chunk).max(1);
     let mut chunk_total = vec![0u32; n_scan];
     chunk_total.par_iter_mut().enumerate().for_each(|(chunk, total)| {
@@ -131,7 +176,9 @@ fn decomposed(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usize, lab
     }
     assert_eq!(running as usize, nnz);
     let mut starts = vec![0u32; n_cols + 1];
-    touch_u32(&mut starts);
+    if pre_touch {
+        touch_u32(&mut starts);
+    }
     starts[n_cols] = running;
     starts[..n_cols]
         .par_chunks_mut(scan_chunk)
@@ -148,16 +195,18 @@ fn decomposed(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usize, lab
         .par_iter()
         .enumerate()
         .for_each(|(j, slot)| slot.store(starts[j], Ordering::Relaxed));
-    let scan = t.elapsed();
+    lap("scan+reset", t.elapsed(), &mut lap_f);
 
     let t = Instant::now();
     let mut out_rows = vec![0u32; nnz];
     let mut out_vals = vec![0.0f64; nnz];
-    let alloc_out = t.elapsed();
-    let t = Instant::now();
-    touch_u32(&mut out_rows);
-    touch_f64(&mut out_vals);
-    let fault_out = t.elapsed();
+    lap("alloc out (mmap)", t.elapsed(), &mut lap_f);
+    if pre_touch {
+        let t = Instant::now();
+        touch_u32(&mut out_rows);
+        touch_f64(&mut out_vals);
+        lap("fault out (350MB)", t.elapsed(), &mut lap_f);
+    }
 
     let t = Instant::now();
     {
@@ -183,7 +232,7 @@ fn decomposed(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usize, lab
             }
         });
     }
-    let scatter = t.elapsed();
+    lap("scatter", t.elapsed(), &mut lap_f);
 
     let t = Instant::now();
     {
@@ -215,19 +264,32 @@ fn decomposed(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usize, lab
             }
         });
     }
-    let sort = t.elapsed();
-
-    println!("  alloc counts (mmap)   {alloc_counts:?}");
-    println!("  fault counts (65MB)   {fault_counts:?}");
-    println!("  count (warm)          {count:?}");
-    println!("  scan+reset (warm)     {scan:?}");
-    println!("  alloc out (mmap)      {alloc_out:?}");
-    println!("  fault out (350MB)     {fault_out:?}");
-    println!("  scatter (warm)        {scatter:?}");
-    println!("  sort (warm)           {sort:?}");
-    let total = alloc_counts + fault_counts + count + scan + alloc_out + fault_out + scatter + sort;
-    println!("  TOTAL                 {total:?}");
+    lap("sort", t.elapsed(), &mut lap_f);
     std::hint::black_box((&out_rows, &out_vals, &starts));
+}
+
+/// How fast can this machine fault fresh zero-fill pages, serial vs parallel?
+fn fault_rate_probe() {
+    let n = 29_013_120usize; // 233 MB of f64
+    let mut a = vec![0.0f64; n];
+    let mut b = vec![0.0f64; n];
+    let t = Instant::now();
+    for i in (0..n).step_by(2048) {
+        unsafe { std::ptr::write_volatile(a.as_mut_ptr().add(i), 1.0) };
+    }
+    let serial = t.elapsed();
+    std::hint::black_box(&a);
+    let t = Instant::now();
+    b.par_chunks_mut(1 << 16).for_each(|c| {
+        for i in (0..c.len()).step_by(2048) {
+            unsafe { std::ptr::write_volatile(c.as_mut_ptr().add(i), 1.0) };
+        }
+    });
+    let par = t.elapsed();
+    println!(
+        "-- fault probe, 233MB fresh, one write per 16KB page: serial {serial:?}, 14-thread {par:?} --"
+    );
+    std::hint::black_box(&b);
 }
 
 fn bw_reference() {
@@ -266,7 +328,15 @@ fn phase_bench() {
         rayon::current_num_threads()
     );
 
-    bw_reference();
+    if std::env::var_os("GW_BW_FIRST").is_some() {
+        bw_reference();
+    }
+    if std::env::var_os("GW_SKIP_PRE").is_none() {
+        // Truly fresh pages: nothing large freed yet in this process.
+        decomposed(row_starts, cols, vals, *n_cols, "blocked, first call", false);
+        // Steady state: allocator now holds the just-freed regions.
+        decomposed(row_starts, cols, vals, *n_cols, "blocked, steady", false);
+    }
 
     println!("== from_csr_par, blocked (realistic) columns ==");
     for i in 0..4 {
@@ -276,7 +346,9 @@ fn phase_bench() {
         std::hint::black_box(&csc);
     }
 
-    decomposed(row_starts, cols, vals, *n_cols, "blocked");
+    decomposed(row_starts, cols, vals, *n_cols, "blocked", true);
+    fault_rate_probe();
+    bw_reference();
 
     let uniform = gen_uniform(&blocked);
     println!("== from_csr_par, uniform random columns ==");
@@ -286,5 +358,6 @@ fn phase_bench() {
         println!("iter {i}: total {:?}", t.elapsed());
         std::hint::black_box(&csc);
     }
-    decomposed(&uniform.0, &uniform.1, &uniform.2, uniform.3, "uniform");
+    decomposed(&uniform.0, &uniform.1, &uniform.2, uniform.3, "uniform, steady", false);
+    decomposed(&uniform.0, &uniform.1, &uniform.2, uniform.3, "uniform", true);
 }
