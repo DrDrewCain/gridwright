@@ -22,7 +22,7 @@ parquet-zstd = ["parquet", "parquet/zstd"]
 # Spreadsheets, which is how a great deal of national statistics is published.
 excel = ["dep:calamine"]
 # ENTSO-E CGMES, the European grid exchange standard.
-cgmes = ["dep:quick-xml"]
+cgmes = ["dep:quick-xml", "dep:zip", "dep:flate2"]
 # PyPSA writes netCDF4, which is HDF5 underneath. The reader is pure Rust, so
 # this does not cost the WebAssembly target a C toolchain.
 netcdf = ["dep:hdf5-pure"]
@@ -44,4 +44,6 @@ arrow-cast = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 calamine = { workspace = true, optional = true }
 quick-xml = { workspace = true, optional = true }
+zip = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
 hdf5-pure = { workspace = true, optional = true }

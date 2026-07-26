@@ -182,3 +182,78 @@ fn a_model_reads_the_same_way_twice() {
 fn something_that_is_not_a_cim_model_is_refused() {
     assert!(cgmes::load_model(path("examples/pglib/case14_ieee.m")).is_err());
 }
+
+// --- The steady state hypothesis, and the form models are published in. ---
+
+/// The same network with a steady state hypothesis added, in its own
+/// directory so that the tests above keep describing the equipment merge
+/// rather than the operating state.
+fn operated() -> gridwright_io::Case {
+    cgmes::load_model(path("examples/cgmes_operated")).unwrap()
+}
+
+#[test]
+fn the_steady_state_hypothesis_supplies_the_demand() {
+    // The equipment profile describes plant; the SSH says what it is doing. A
+    // reader that stops at equipment produces a network with correct topology
+    // and no load in it, which will solve and mean nothing.
+    let with_ssh = operated();
+    let load = with_ssh
+        .network
+        .loads
+        .iter()
+        .find(|l| l.name == "CITY LOAD")
+        .expect("the load is missing");
+    assert!(
+        (load.p_set - 750.0).abs() < 1e-9,
+        "the SSH says 750 MW and the equipment profile said 600: got {}",
+        load.p_set
+    );
+    assert!((load.q_set - 120.0).abs() < 1e-9);
+}
+
+#[test]
+fn equipment_the_hypothesis_switched_off_is_left_out() {
+    // A model built as designed rather than as operated is a different and
+    // usually more capable network.
+    let c = operated();
+    assert!(
+        c.network.lines.iter().all(|l| l.name != "NORTH-SOUTH 1"),
+        "an out-of-service line was included: {:?}",
+        c.network.lines.iter().map(|l| &l.name).collect::<Vec<_>>()
+    );
+    assert!(
+        c.notes.join("\n").contains("switched off"),
+        "{:?}",
+        c.notes
+    );
+}
+
+#[test]
+fn a_zip_archive_reads_as_the_unpacked_directory_does() {
+    // The form ENTSO-E actually publishes. Requiring someone to unpack first
+    // is a small tax on exactly the people this exists for.
+    let zipped = cgmes::load_model(path("examples/cgmes/mini_model.zip")).unwrap();
+    // The archive holds the equipment and topology profiles only, so it should
+    // read exactly as that directory does.
+    let unpacked = model();
+    assert_eq!(zipped.network.lines.len(), unpacked.network.lines.len());
+    assert_eq!(zipped.network.buses.len(), 3);
+    let line = zipped
+        .network
+        .lines
+        .iter()
+        .find(|l| l.name == "NORTH-SOUTH 1")
+        .unwrap();
+    assert!((line.reactance - 0.0125).abs() < 1e-12);
+}
+
+#[test]
+fn an_archive_that_holds_no_xml_is_refused() {
+    let dir = std::env::temp_dir().join("gridwright-cgmes-empty");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("empty.zip");
+    // A minimal empty archive.
+    std::fs::write(&path, b"PK\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00").unwrap();
+    assert!(cgmes::load_model(&path).is_err());
+}

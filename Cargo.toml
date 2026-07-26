@@ -43,6 +43,12 @@ arrow-cast = "59"
 bytes = "1"
 calamine = "0.36"
 quick-xml = "0.41"
+# Pure Rust, and its deflate backend is the same one Parquet uses, so a CGMES
+# archive opens on WebAssembly like everything else here.
+zip = { version = "6", default-features = false, features = ["deflate-flate2"] }
+# The zip crate pulls flate2 without choosing a backend, and turning off its
+# defaults turns off the choice too, so the Rust one is named explicitly.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 hdf5-pure = "0.24"
 
 [profile.release]

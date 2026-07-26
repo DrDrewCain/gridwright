@@ -191,3 +191,38 @@ fn a_format_this_build_cannot_read_says_which_feature_it_needs() {
         assert!(message.contains("feature"), "{message}");
     }
 }
+
+#[test]
+#[cfg(all(feature = "cgmes", feature = "excel"))]
+fn two_formats_that_are_both_zips_are_told_apart_by_their_contents() {
+    // A spreadsheet and a published CGMES model are both zip archives, and a
+    // CGMES archive is as likely to be named for its operator as for its
+    // contents, so the extension settles nothing.
+    assert_eq!(
+        sniff(path("examples/cgmes/mini_model.zip")).unwrap(),
+        Format::Cgmes
+    );
+    assert_eq!(
+        sniff(path("examples/excel/case14_ieee.xlsx")).unwrap(),
+        Format::Excel
+    );
+
+    // And from bytes, where there is no extension at all to fall back on.
+    let cgmes = std::fs::read(path("examples/cgmes/mini_model.zip")).unwrap();
+    assert_eq!(gridwright_io::sniff_bytes(None, &cgmes).unwrap(), Format::Cgmes);
+    let book = std::fs::read(path("examples/excel/case14_ieee.xlsx")).unwrap();
+    assert_eq!(gridwright_io::sniff_bytes(None, &book).unwrap(), Format::Excel);
+}
+
+#[test]
+#[cfg(feature = "cgmes")]
+fn a_cgmes_archive_loads_through_one_call_and_through_bytes() {
+    let from_path = load_any(path("examples/cgmes/mini_model.zip")).unwrap();
+    assert_eq!(from_path.network.buses.len(), 3);
+    assert!(from_path.notes[0].contains("CIM"), "{:?}", from_path.notes);
+
+    let bytes = std::fs::read(path("examples/cgmes/mini_model.zip")).unwrap();
+    let from_memory = gridwright_io::load_bytes(Some("model.zip"), &bytes).unwrap();
+    assert_eq!(from_memory.network.buses.len(), from_path.network.buses.len());
+    assert_eq!(from_memory.network.lines.len(), from_path.network.lines.len());
+}

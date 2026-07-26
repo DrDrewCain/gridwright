@@ -85,6 +85,23 @@ fn local(name: &str) -> &str {
     after_ns.rsplit('.').next().unwrap_or(after_ns)
 }
 
+/// Whether the steady-state hypothesis left this equipment in service.
+///
+/// The SSH profile is where a published model says what is actually running,
+/// and it says so by adding `Equipment.inService` to objects the equipment
+/// profile already defined. A reader that ignores it builds the network as
+/// designed rather than as operated, which is a different network and usually a
+/// more capable one.
+///
+/// Absent means in service, since a model with no SSH profile has not switched
+/// anything off.
+fn in_service(obj: &Object) -> bool {
+    match obj.text("inService").or_else(|| obj.text("connected")) {
+        Some(v) => !v.trim().eq_ignore_ascii_case("false"),
+        None => true,
+    }
+}
+
 fn class_of(name: &str) -> &str {
     name.rsplit(':').next().unwrap_or(name)
 }
@@ -404,11 +421,16 @@ pub fn parse_model(
 
     let mut no_voltage = 0;
     let mut dangling = 0;
+    let mut out_of_service = 0;
     let mut zero_reactance = 0;
 
     for (key, obj) in &ordered {
         match obj.class.as_str() {
             "ACLineSegment" => {
+                if !in_service(obj) {
+                    out_of_service += 1;
+                    continue;
+                }
                 let Some((bus0, bus1)) = ends(key) else {
                     dangling += 1;
                     continue;
@@ -547,6 +569,10 @@ pub fn parse_model(
                 if obj.class != "SynchronousMachine" {
                     continue;
                 }
+                if !in_service(obj) {
+                    out_of_service += 1;
+                    continue;
+                }
                 let Some(bus) = model
                     .nodes_of
                     .get(*key)
@@ -589,6 +615,10 @@ pub fn parse_model(
                 });
             }
             "EnergyConsumer" | "ConformLoad" | "NonConformLoad" => {
+                if !in_service(obj) {
+                    out_of_service += 1;
+                    continue;
+                }
                 let Some(bus) = model
                     .nodes_of
                     .get(*key)
@@ -634,6 +664,12 @@ pub fn parse_model(
              already per unit"
         ));
     }
+    if out_of_service > 0 {
+        notes.push(format!(
+            "{out_of_service} pieces of equipment were switched off by the steady \
+             state hypothesis and left out"
+        ));
+    }
     if dangling > 0 {
         notes.push(format!(
             "{dangling} pieces of equipment had too few terminals reaching a node \
@@ -658,14 +694,76 @@ pub fn parse_model(
     })
 }
 
-/// Read a CIM model from a file, or from a directory of profile files.
+/// Read every XML document out of a zip archive.
+///
+/// The form a CGMES model is actually published in. ENTSO-E distributes each
+/// profile as its own file inside one archive, and often nests an archive per
+/// operator inside another, so this recurses one level: an archive holding
+/// archives is exactly what a pan-European model looks like.
+#[cfg(feature = "cgmes")]
+pub fn documents_from_zip(bytes: Vec<u8>, label: &str) -> Result<Vec<(String, String)>, CgmesError> {
+    fn read(bytes: Vec<u8>, label: &str, depth: usize, into: &mut Vec<(String, String)>) {
+        use std::io::Read;
+        let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
+            return;
+        };
+        // Sorted, so a model assembled from an archive is assembled the same
+        // way twice. Zip ordering is whatever the writer chose.
+        let mut names: Vec<String> = (0..archive.len())
+            .filter_map(|i| archive.by_index(i).ok().map(|f| f.name().to_string()))
+            .collect();
+        names.sort();
+        for name in names {
+            let Ok(mut entry) = archive.by_name(&name) else {
+                continue;
+            };
+            let lower = name.to_ascii_lowercase();
+            if lower.ends_with(".xml") {
+                let mut text = String::new();
+                if entry.read_to_string(&mut text).is_ok() {
+                    into.push((format!("{label}!{name}"), text));
+                }
+            } else if lower.ends_with(".zip") && depth < 2 {
+                let mut inner = Vec::new();
+                if entry.read_to_end(&mut inner).is_ok() {
+                    read(inner, &format!("{label}!{name}"), depth + 1, into);
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    read(bytes, label, 0, &mut out);
+    if out.is_empty() {
+        return Err(CgmesError::NoNodes {
+            file: label.to_string(),
+        });
+    }
+    Ok(out)
+}
+
+/// Read a CIM model from a file, a zip archive, or a directory of profiles.
 ///
 /// A published CGMES model is several XML documents that cross-reference each
-/// other, so pointing at the directory is the normal case and pointing at one
-/// file only works when that file is self-contained.
+/// other, usually inside one archive. Pointing at the archive or at the
+/// unpacked directory both work; pointing at a single file only works when that
+/// file is self-contained.
 pub fn load_model(path: impl AsRef<Path>) -> Result<Case, crate::IoError> {
     let path = path.as_ref();
     let mut documents = Vec::new();
+
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+        let bytes = std::fs::read(path).map_err(|source| crate::IoError::Read {
+            path: path.display().to_string(),
+            source,
+        })?;
+        let name = path
+            .file_stem()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| "model".into());
+        let docs = documents_from_zip(bytes, &name).map_err(crate::IoError::Cgmes)?;
+        return parse_model(&docs, name).map_err(crate::IoError::Cgmes);
+    }
 
     let read_one = |p: &Path| -> Result<(String, String), crate::IoError> {
         let text = std::fs::read_to_string(p).map_err(|source| crate::IoError::Read {

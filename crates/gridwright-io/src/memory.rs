@@ -152,7 +152,19 @@ pub fn sniff_bytes(name: Option<&str>, bytes: &[u8]) -> Result<Format, DetectErr
         return Ok(Format::ParquetDirectory);
     }
     if bytes.starts_with(ZIP_MAGIC) {
-        return Ok(Format::Excel);
+        // A spreadsheet and a published CGMES model are both zips, and are
+        // told apart by what is inside rather than by the extension.
+        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
+        return Ok(
+            if head.contains("[Content_Types].xml")
+                || head.contains("xl/")
+                || head.contains("mimetype")
+            {
+                Format::Excel
+            } else {
+                Format::Cgmes
+            },
+        );
     }
 
     let ext = name
@@ -193,7 +205,13 @@ pub fn load_bytes(name: Option<&str>, bytes: &[u8]) -> Result<Case, IoError> {
         Format::Cgmes => {
             #[cfg(feature = "cgmes")]
             {
-                crate::cgmes::parse_model(&[(label.to_string(), text())], stem)?
+                // An archive holds the profiles; a bare document is one of them.
+                if bytes.starts_with(ZIP_MAGIC) {
+                    let docs = crate::cgmes::documents_from_zip(bytes.to_vec(), label)?;
+                    crate::cgmes::parse_model(&docs, stem)?
+                } else {
+                    crate::cgmes::parse_model(&[(label.to_string(), text())], stem)?
+                }
             }
             #[cfg(not(feature = "cgmes"))]
             return Err(missing(label, format, "cgmes"));

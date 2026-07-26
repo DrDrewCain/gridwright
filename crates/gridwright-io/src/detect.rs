@@ -147,6 +147,17 @@ fn looks_like_psse(text: &str) -> bool {
     ic_ok && base_ok && rev_ok
 }
 
+/// Whether a zip is a spreadsheet rather than some other archive.
+///
+/// Both `.xlsx` and `.ods` name their parts predictably: the first is an OPC
+/// package with an `xl/` directory, the second an ODF package whose mimetype
+/// entry comes first by specification.
+fn looks_like_spreadsheet(path: &Path) -> bool {
+    let head = head(path, 4096);
+    let text = String::from_utf8_lossy(&head);
+    text.contains("[Content_Types].xml") || text.contains("xl/") || text.contains("mimetype")
+}
+
 fn looks_like_matpower(text: &str) -> bool {
     text.contains("mpc.bus") || text.contains("function mpc")
 }
@@ -196,9 +207,16 @@ pub fn sniff(path: impl AsRef<Path>) -> Result<Format, DetectError> {
         return Ok(Format::ParquetDirectory);
     }
     if magic.starts_with(ZIP_MAGIC) {
-        // Every modern spreadsheet is a zip; so are several things that are
-        // not, but nothing else here is.
-        return Ok(Format::Excel);
+        // Two formats here are zips: a modern spreadsheet, and a published
+        // CGMES model. They are told apart by what is inside — a spreadsheet
+        // always carries `xl/` or `content.xml` near the front of its
+        // directory — rather than by the extension, since a CGMES archive is
+        // as likely to be named for its operator as for its contents.
+        return Ok(if looks_like_spreadsheet(path) {
+            Format::Excel
+        } else {
+            Format::Cgmes
+        });
     }
 
     let ext = path

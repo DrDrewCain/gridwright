@@ -204,13 +204,21 @@ a format does not have to work out which they have.
 
 Still missing:
 
-- [ ] **CGMES in its published form**, which is a zip of profile files rather
-      than a directory. Unzipping first works today; reading the zip directly
-      does not.
-- [ ] **The SSH and SV profiles** of a CGMES model. Equipment and topology are
-      read; the steady-state hypothesis carries the actual load and generation
-      set points, and without it a published model arrives with correct topology
-      and no demand.
+- [x] ~~**CGMES in its published form**, a zip of profile files.~~ **Done**, and
+      it recurses one level, since a pan-European model is an archive of
+      archives. Both formats that are zips — a spreadsheet and a CGMES model —
+      are told apart by what is inside rather than by the extension, because a
+      CGMES archive is as likely to be named for its operator as for its
+      contents.
+- [x] ~~**The SSH profile** of a CGMES model.~~ **Done.** The equipment profile
+      describes plant and the hypothesis says what it is doing, so a reader that
+      stops at equipment produces a network with correct topology and no load in
+      it, which solves and means nothing. Set points and in-service flags are
+      both honoured, and a model built as designed rather than as operated is a
+      different and usually more capable network.
+- [ ] **The SV profile**, which carries a solved state: voltages, angles and
+      flows. Not needed to build a model and extremely useful to validate one
+      against, since it is the answer the operator's own tools produced.
 - [ ] **PSS/E `.rawx`**, the JSON reformulation of RAW that v35 introduced. The
       content is the same and the encoding is not.
 - [ ] **UCTE-DEF and IEEE Common Data Format.** Both are fixed-width text, both

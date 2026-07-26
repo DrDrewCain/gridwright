@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+  <!-- The steady state hypothesis: what is actually running, and at what. -->
+  <cim:EnergyConsumer rdf:about="#_load1">
+    <cim:EnergyConsumer.p>750</cim:EnergyConsumer.p>
+    <cim:EnergyConsumer.q>120</cim:EnergyConsumer.q>
+    <cim:Equipment.inService>true</cim:Equipment.inService>
+  </cim:EnergyConsumer>
+  <cim:ACLineSegment rdf:about="#_line1">
+    <cim:Equipment.inService>false</cim:Equipment.inService>
+  </cim:ACLineSegment>
+</rdf:RDF>
