@@ -42,7 +42,7 @@ and that is what this engine is not. The numbers are in
 
 ## What that actually buys, and what it does not
 
-On the same model, this builds in 0.104 s on 1.50 GB where linopy takes 1.55 s
+On the same model, this builds in 0.089 s on 1.50 GB where linopy takes 1.54 s
 on 3.45 GB and JuMP takes 10.34 s on 5.08 GB. That is fifteen times faster than
 linopy and a hundred times faster than JuMP, which is worth having and is less
 than this section used to claim: the earlier figure of two thousand times came
@@ -73,7 +73,7 @@ rather than how fast:
   matters. A rolling horizon over a year takes 122 builds, a scenario sweep
   takes hundreds, and an interactive edit takes one per change. At 1.55 s each,
   122 windows come to **just over three minutes of pure assembly** before any
-  solving happens; at 0.104 s each they come to 13 seconds. Three minutes is
+  solving happens; at 0.089 s each they come to 11 seconds. Three minutes is
   not a crisis, which is the honest way to put it. It is the difference between
   an edit that redraws and an edit you wait for.
 - **It runs where a Python stack cannot.** The whole engine, the format layer
@@ -669,7 +669,7 @@ resolution. Only construction is timed, to a matrix a solver could read.
 | --- | --- | --- | --- | --- |
 | Variables | 16,258,560 | 16,258,560 | 16,258,560 | matched |
 | Nonzeros | 29,153,280 | 29,153,216 | 29,153,280 | matched |
-| Construction | **0.104 s** | **1.55 s** | 10.34 s | 10.39 s |
+| Construction | **0.089 s** | **1.54 s** | 10.34 s | 10.39 s |
 | Peak memory | **1.50 GB** | **3.45 GB** | 5.08 GB | 12.13 GB |
 
 Against linopy used properly that is **about 15 times faster on roughly half
@@ -728,9 +728,9 @@ hourly demand and renewable output attached:
 
 | case | columns | real network | matched ring | |
 | --- | --- | --- | --- | --- |
-| IEEE 14 | 543,120 | 7.9 s | 6.2 s | 1.3× |
-| IEEE 57 | 2,049,840 | 307.1 s | 44.0 s | **7.0×** |
-| IEEE 118 | 4,826,760 | 832.3 s | 206.5 s | **4.0×** |
+| IEEE 14 | 543,120 | 7.2 s | 5.7 s | 1.3× |
+| IEEE 57 | 2,049,840 | 303.9 s | 41.8 s | **7.3×** |
+| IEEE 118 | 4,826,760 | 788.8 s | 191.0 s | **4.1×** |
 
 So every solve time in this section should be read as **four to seven times
 optimistic** for a real network of the same size. The ratio is not monotone, so
@@ -740,41 +740,41 @@ rather than a story about one afternoon.
 
 Construction is unaffected: it is linear in what is written either way.
 
-These three rows were measured while the machine was busy and are being re-run
-under `benchmarks/measure.sh`. The three real-case solve times were stable to
-within 6% across runs; one ring row varied by 29% and is the least trustworthy
-number in the table.
+These rows have been re-measured on an idle machine and reproduced closely: the
+ratios were 1.28, 6.99 and 4.03 then, and are 1.28, 7.27 and 4.13 now, with
+solve spreads of 0 to 3%. This is the one measurement in the project that the
+machine's state did not distort, which is worth saying because it is the one
+carrying the most weight.
 
 A full year at hourly resolution, solved whole, every rung run to completion.
 Best of two runs, on an idle machine:
 
 | Buses | Columns | Build | Solve | Growth |
 | --- | --- | --- | --- | --- |
-| 8 | 402,960 | 4.5 ms | 3.5 s | |
-| 16 | 805,920 | 4.7 ms | 10.3 s | 2.9× |
-| 32 | 1,611,840 | 8.5 ms | 31.0 s | 3.0× |
-| 64 | 3,223,680 | 15.0 ms | **110.7 s** | 3.6× |
-| 128 | 6,447,360 | 50.4 ms | **561.8 s** | 5.1× |
+| 8 | 402,960 | 3.9 ms | 3.2 s | |
+| 16 | 805,920 | 4.8 ms | 9.5 s | 3.0× |
+| 32 | 1,611,840 | 7.3 ms | 28.3 s | 3.0× |
+| 64 | 3,223,680 | 12.8 ms | 101.1 s | 3.6× |
+| 128 | 6,447,360 | 23.1 ms | 314.6 s | 3.1× |
 
-**This table replaces an earlier one that was wrong in every row, and the
-correction is larger than the row that prompted it.** The 64-bus case was
-published as "did not finish in seven minutes". It solves in under two minutes.
-The 128-bus case, never attempted, solves in nine and a half.
+**This table has been wrong twice, and both times because it was measured on a
+busy machine.** The first version reported the 64-bus case as "did not finish in
+seven minutes"; it takes 101 seconds. The second version, measured while six
+agents were running, put 128 buses at 561.8 s; on an idle machine it is
+314.6 s, so that row alone was 79% high.
 
-Re-running moved everything else too: 16 buses was published as 20 s and is
-10.3 s, 32 as 194 s and is 31.0 s, and the variable counts were about a quarter
-high. Growth was published as a flat 9.5× per doubling; it is 3× at the small
-end rising to 5× at the large one, which is a different shape as well as a
-different number.
+What an idle machine buys is visible in the spread. These figures repeat to
+within **1.4%** run to run: 314.6 against 318.9, and 101.1 against 102.5. The
+busy-machine version of the same measurement varied by 16%. Every number here is
+the best of two runs taken through `benchmarks/measure.sh`, which refuses to
+start while anything else of ours is running and records the load before and
+after each run.
 
-The rolling-horizon table below re-measured to within 6% of its published
-values, so the fault was specific to this table rather than general.
-The most likely cause is machine load, which has now corrupted a measurement in this project
-three separate times. That is why every timing here is best-of-N on an idle
-machine, and why the run-to-run spread is worth stating: the two 64-bus runs
-differed by 16%.
+Growth is about 3× per doubling and roughly flat, not the 5× rising at the top
+that the previous version showed; that apparent acceleration was the busy 128
+row. It was originally published as a flat 9.5×.
 
-Construction is 0.009% of runtime at 128 buses. **At full resolution the fast
+Construction is 0.007% of runtime at 128 buses. **At full resolution the fast
 build still buys almost nothing**, and that conclusion is untouched by the correction:
 it never rested on the solve being intractable.
 
@@ -799,8 +799,8 @@ tractable, and it is a claim about decomposition rather than about this
 builder.
 
 On a real topology the advantage is **larger** than the ring suggests, not
-smaller: 16.4× and 10.6× on IEEE 57 and 118 with a real year attached, against
-3.9× and 4.7× for rings of the same size. Decomposition partly cancels the bad
+smaller: 16.7× and 10.6× on IEEE 57 and 118 with a real year attached, against
+3.8× and 4.7× for rings of the same size. Decomposition partly cancels the bad
 news above, which is the one place where the ring was pessimistic rather than
 optimistic.
 
