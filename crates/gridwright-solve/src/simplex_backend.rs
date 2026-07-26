@@ -18,9 +18,24 @@ use gridwright_simplex::{Options, Problem, Status as SxStatus, solve};
 use crate::{SolveError, Solution, Solver, Status};
 
 /// Solve with the built-in simplex.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SimplexSolver {
     pub options: Options,
+    /// Ceiling on branch-and-bound nodes for an integer model.
+    ///
+    /// Only consulted when the model has integers in it. Set low for an
+    /// interactive setting, where an answer that arrives is worth more than one
+    /// that is proved, and the status says which was obtained.
+    pub max_nodes: usize,
+}
+
+impl Default for SimplexSolver {
+    fn default() -> Self {
+        Self {
+            options: Options::default(),
+            max_nodes: 5_000,
+        }
+    }
 }
 
 fn status_from(s: SxStatus) -> Status {
@@ -36,10 +51,6 @@ fn status_from(s: SxStatus) -> Status {
 impl Solver for SimplexSolver {
     fn solve(&self, lopf: &Lopf) -> Result<Solution, SolveError> {
         let model = &lopf.model;
-        if model.is_mip() {
-            return Err(SolveError::IntegerNotSupported(model.num_integer()));
-        }
-
         let csc = model.to_csc();
         let cols = model.columns();
         let (row_lower, row_upper) = model.row_bounds();
@@ -66,12 +77,47 @@ impl Solver for SimplexSolver {
             row_upper,
         };
 
-        let s = solve(problem, self.options).map_err(|e| SolveError::Rejected(match e {
-            gridwright_simplex::SolveError::BadColumnStarts(_) => -2,
-            gridwright_simplex::SolveError::BadBounds => -3,
-            gridwright_simplex::SolveError::RowOutOfRange { .. } => -4,
-            gridwright_simplex::SolveError::Basis(_) => -5,
-        }))?;
+        let reject = |e| {
+            SolveError::Rejected(match e {
+                gridwright_simplex::SolveError::BadColumnStarts(_) => -2,
+                gridwright_simplex::SolveError::BadBounds => -3,
+                gridwright_simplex::SolveError::RowOutOfRange { .. } => -4,
+                gridwright_simplex::SolveError::Basis(_) => -5,
+            })
+        };
+
+        // An integer model goes through branch and bound over the same
+        // relaxation. It used to be refused outright, which was honest and left
+        // the browser build unable to run unit commitment at all, since a page
+        // cannot call HiGHS.
+        let s = if model.is_mip() {
+            let r = gridwright_simplex::solve_mip(
+                problem,
+                &cols.integer,
+                gridwright_simplex::MipOptions {
+                    max_nodes: self.max_nodes,
+                    lp: self.options,
+                    ..Default::default()
+                },
+            )
+            .map_err(reject)?;
+            gridwright_simplex::Solution {
+                // A search stopped on its node budget has found something
+                // achievable but has not proved it optimal, and reporting
+                // `Optimal` would be a claim the search did not make.
+                status: if r.status == gridwright_simplex::Status::Optimal && !r.proved {
+                    gridwright_simplex::Status::IterationLimit
+                } else {
+                    r.status
+                },
+                objective: r.objective,
+                col_value: r.col_value,
+                row_dual: r.row_dual,
+                iterations: r.nodes,
+            }
+        } else {
+            solve(problem, self.options).map_err(reject)?
+        };
 
         Ok(Solution {
             status: status_from(s.status),

@@ -206,23 +206,116 @@ fn both_solvers_agree_that_an_unservable_system_sheds() {
     assert!(ours.total_shed(&lopf.vars) > 1.0, "this system should be short");
 }
 
-#[test]
-fn the_pure_rust_backend_refuses_integer_problems_rather_than_relaxing_them() {
-    // A commitment answer with fractional on/off states is not an answer, so
-    // the limitation is reported instead of quietly returning the relaxation.
-    let mut net = mixed_network(3);
-    net.generators[0].committable = true;
-    net.generators[0].p_min_pu = 0.4;
+/// A commitment problem whose relaxation is genuinely fractional.
+///
+/// Worth constructing deliberately, because many commitment relaxations come
+/// out integral on their own and a test built on one of those exercises the
+/// branching not at all.
+///
+/// The unit has a minimum stable output of half its rating, and the demand
+/// sits below that. The relaxation escapes by turning the unit part-on — a
+/// status of 0.6 running at 30 MW satisfies `p >= p_min · status` — which is
+/// not a state a machine can be in. The integer answer must either run it at
+/// its floor or not at all.
+fn fractional_commitment() -> Network {
+    let mut net = Network::new(Snapshots::hourly(2));
+    let b = net.add_bus("B", "AA");
+    net.add_generator(Generator {
+        name: "thermal".into(),
+        bus: b,
+        p_nom: 100.0,
+        p_min_pu: 0.5,
+        marginal_cost: 20.0,
+        committable: true,
+        start_up_cost: 300.0,
+        ..Default::default()
+    });
+    net.add_generator(Generator {
+        name: "peaker".into(),
+        bus: b,
+        p_nom: 100.0,
+        marginal_cost: 90.0,
+        ..Default::default()
+    });
+    net.add_load(Load {
+        name: "l".into(),
+        bus: b,
+        p_set: 30.0,
+        ..Default::default()
+    });
+    net
+}
 
+#[test]
+fn the_commitment_relaxation_really_is_fractional() {
+    // The premise of the two tests below, checked rather than assumed.
+    let net = fractional_commitment();
     let lopf = build_lopf(&net).unwrap();
     assert!(lopf.model.is_mip());
+
+    let mut relaxed = lopf.clone();
+    relaxed.model.clear_integrality();
+    let s = HighsSolver::default().solve(&relaxed).unwrap();
+    let status = lopf.vars.status[0].expect("the unit is committable");
+    let values = s.trajectory(status);
     assert!(
-        SimplexSolver::default().solve(&lopf).is_err(),
-        "the simplex backend must decline a MIP"
+        values.iter().any(|v| (v - v.round()).abs() > 1e-6),
+        "the relaxation came out integral, so branching is untested: {values:?}"
     );
-    // HiGHS still handles it.
-    assert_eq!(
-        HighsSolver::default().solve(&lopf).unwrap().status,
-        Status::Optimal
+}
+
+#[test]
+fn both_solvers_agree_on_a_unit_commitment_answer() {
+    // The pure-Rust backend used to decline integer models outright, which was
+    // honest and left a browser build unable to run commitment at all. It now
+    // branches, so the question is no longer whether it refuses but whether it
+    // reaches the same answer as a solver that does this for a living.
+    let net = fractional_commitment();
+    let lopf = build_lopf(&net).unwrap();
+
+    let ours = SimplexSolver::default().solve(&lopf).unwrap();
+    let theirs = HighsSolver::default().solve(&lopf).unwrap();
+    assert_eq!(ours.status, Status::Optimal, "ours did not prove an answer");
+    assert_eq!(theirs.status, Status::Optimal);
+    agree(ours.objective, theirs.objective, 1e-6, "commitment objective");
+
+    // And the states are whole numbers, which is what the relaxation could not
+    // deliver and the entire reason for branching.
+    let status = lopf.vars.status[0].expect("the unit is committable");
+    for (t, v) in ours.trajectory(status).iter().enumerate() {
+        assert!(
+            (v - v.round()).abs() < 1e-6,
+            "unit is {v} on at snapshot {t}, which is not a state"
+        );
+    }
+}
+
+#[test]
+fn a_search_stopped_early_does_not_claim_to_be_optimal() {
+    // Anytime behaviour has to be visible in the status, or a caller cannot
+    // tell a proved answer from a partial one. One node is the root alone, and
+    // the relaxation there is fractional, so nothing can have been proved.
+    let lopf = build_lopf(&fractional_commitment()).unwrap();
+    let s = SimplexSolver {
+        max_nodes: 1,
+        ..Default::default()
+    }
+    .solve(&lopf)
+    .unwrap();
+    assert_ne!(
+        s.status,
+        Status::Optimal,
+        "a single-node search claimed an optimum it cannot have proved"
     );
+    // And crucially not infeasible either: running out of budget is a
+    // different thing from having searched everything, and confusing the two
+    // turns a feasible model into a reported impossibility.
+    assert_ne!(
+        s.status,
+        Status::Infeasible,
+        "a feasible model was called infeasible because the budget ran out"
+    );
+
+    let full = SimplexSolver::default().solve(&lopf).unwrap();
+    assert_eq!(full.status, Status::Optimal);
 }

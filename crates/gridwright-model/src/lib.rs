@@ -267,6 +267,15 @@ impl Model {
 
     /// Mark a block as integral. Binary variables are this plus bounds of
     /// zero and one, which is how commitment status is represented.
+    /// Drop every integrality requirement, leaving the relaxation.
+    ///
+    /// The relaxation is a genuine object rather than a debugging convenience:
+    /// it is the bound branch and bound searches against, and comparing the two
+    /// is how you tell whether an integer answer cost anything.
+    pub fn clear_integrality(&mut self) {
+        self.cols.integer.iter_mut().for_each(|f| *f = false);
+    }
+
     pub fn set_integer(&mut self, block: VarBlock) {
         let s = block.start as usize;
         self.cols.integer[s..s + block.len as usize].fill(true);

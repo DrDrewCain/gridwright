@@ -40,9 +40,25 @@ concrete in the way, named.
       ascending nonzero count, which is a cheap stand-in for the symbolic
       analysis a production code performs. On a banded matrix the factors stay
       within four times the input nonzeros; on an unstructured one they do not.
-- [ ] Branch and bound, so the pure-Rust backend can do unit commitment. It
-      currently declines MIPs rather than returning a relaxation, which is the
-      right behaviour but a real limitation.
+- [x] ~~Branch and bound, so the pure-Rust backend can do unit commitment.~~
+      **Done.** The relaxation is the same program with integrality dropped, and
+      branching is by bounds alone, so a node is a pair of vectors and a
+      re-solve with no change to the solver. Depth first, taking the branch
+      nearer the relaxation's own choice first, because in an interactive
+      setting an answer that arrives beats one that is proved. Returns the
+      incumbent and the bound separately and says whether they met.
+
+      Verified against HiGHS on a commitment problem constructed so its
+      relaxation is provably fractional — many commitment relaxations come out
+      integral on their own, and a test built on one of those exercises the
+      branching not at all.
+- [ ] Better branching than most-fractional. Pseudo-cost branching uses the
+      history of how much each variable's bound actually moved the objective,
+      which most-fractional ignores entirely. The difference shows on problems
+      larger than a page will run, which is why it was not done first.
+- [ ] Cuts. Nothing is added at a node beyond the branching bounds, so the
+      search explores territory that a Gomory or cover cut would have removed
+      outright.
 - [ ] Consider upstreaming a `row_duals()` accessor to microlp regardless. They
       already compute `y = B⁻ᵀc_B` in `recalc_obj_coeffs` and discard it, and the
       whole ecosystem would benefit.

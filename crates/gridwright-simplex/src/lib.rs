@@ -55,6 +55,9 @@
 
 mod basis;
 pub mod lu;
+pub mod mip;
+
+pub use mip::{MipOptions, MipSolution, solve_mip};
 
 pub use basis::{Basis, BasisError};
 
