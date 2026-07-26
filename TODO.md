@@ -225,6 +225,91 @@ concrete in the way, named.
       a five-row knapsack and made it three to four times slower at *unchanged
       node count*. Unchanged nodes with worse time is the signature of paying
       for rows rather than of bad cuts, which is what the diagnosis turned on.
+- [x] ~~Find where the search stops being usable, and whether cuts move it.~~
+      **Done.** `tests/cuts_at_scale.rs`, five commitment rungs against a
+      5,000-node budget, ten cells run concurrently, one pass:
+
+      | Units × periods | Binaries | Rows | Cuts off | Gomory |
+      | --- | --- | --- | --- | --- |
+      | 12 × 12 | 144 | 444 | 91 nodes, 0.45 s | 50, 0.48 s |
+      | 16 × 24 | 384 | 1,176 | 204, 6.6 s | 298, 15.1 s |
+      | 24 × 24 | 576 | 1,752 | 615, 41.7 s | 193, 23.2 s |
+      | 20 × 48 | 960 | 2,928 | **5,000, OPEN** | 1,466, 421 s |
+      | 30 × 48 | 1,440 | 4,368 | **5,000, OPEN** | **5,000, OPEN** |
+
+      **Cuts move the ceiling by exactly one rung.** Without them the search
+      proves to 576 binaries and gives up at 960; with them it proves at 960 and
+      gives up at 1,440. That is the answer the test was built for and it is a
+      modest one: cuts buy about 1.7× in problem size, not an order of
+      magnitude. A day-ahead commitment of thirty units over forty-eight periods
+      is past what this search can prove either way.
+
+      **And cuts lose at 16 × 24** — 298 nodes against 204 and 15.1 s against
+      6.6, so more nodes *and* more time. Worth keeping beside the knapsack
+      result, because the story until now was that Gomory cuts help on
+      commitment and lose on knapsacks. They also lose on some commitment rungs,
+      and nothing in the root-gap figures says which.
+
+      Times are taken with every cell running at once and are upper bounds by
+      about 1.3 to 1.7×, rising with model size; node counts are deterministic
+      and unaffected. Peak memory for the whole concurrent ladder is 56.5 MB,
+      which is the measurement that refused the node-representation change
+      below.
+- [ ] **A dual simplex, and the warm start it unlocks.** The largest single win
+      available to the search, and it is arithmetic rather than taste.
+
+      Branch and bound re-solves a slightly changed relaxation at every node,
+      and this solver has no warm start at all: `solve` builds a tableau,
+      crashes a basis, runs phase one and then phase two, every time. Phase one
+      is about three quarters of the iterations of a solve — 33,670 of 45,205
+      at 20,736 rows — and for a child node it is entirely wasted, because the
+      parent's basis was already feasible for everything except the one bound
+      that changed.
+
+      The reason it is missing is structural rather than an oversight.
+      Tightening a bound leaves the parent basis dual feasible and primal
+      infeasible, and recovering from that cheaply is precisely what a dual
+      simplex does. This solver is primal only, and `Solution` does not return
+      the basis, so a warm start is not reachable through the API as it stands.
+
+      What its absence costs, from the node costs `MipOptions` already records:
+      a node is a whole cold solve, so node cost follows the LP's own
+      `rows^1.8`. At 4,368 rows that is about 248 ms, where a warm-started
+      re-solve is a handful of dual pivots. That is the difference between a
+      ladder that finishes in minutes and the one that had to be killed after
+      three hours in July 2026 with a projected finish of over a day.
+
+      It would also reopen strong branching, which `MipOptions` rejects for
+      exactly this reason: a probe costs a full node solve here, so
+      shortlisting ten candidates spends twenty node-solves to save one.
+- [x] ~~**Stop copying both bound vectors into every open node.**~~ **Measured
+      and rejected**, and the reasoning that proposed it was wrong.
+
+      `mip.rs`'s `Node` does hold `lower: Vec<f64>` and `upper: Vec<f64>` in
+      full, which is `2 * n_cols * 8` bytes per open node — 70 KB at the 4,368
+      columns of a 30 x 48 commitment. The argument for replacing that with a
+      `(col, bound, direction)` path was that depth-first pops one node and
+      pushes two, so the open set grows with the search and a few thousand open
+      nodes would be gigabytes.
+
+      **It does not grow like that.** The whole ten-cell ladder, five rungs
+      against two cut settings running concurrently to a 5,000-node budget,
+      peaks at **56.5 MB resident** — a 47.4 MB footprint. Not gigabytes, and
+      not a problem.
+
+      The flaw in the argument is that pushing two children only happens for a
+      node that branches. A node that is pruned by the incumbent, found
+      integral, or found infeasible pushes nothing, and in a depth-first search
+      with a working incumbent that is most of them. So the open set tracks the
+      *depth* of the tree rather than the number of nodes explored, which is
+      tens of entries rather than thousands. 70 KB times tens of entries times
+      ten concurrent cells is the 56 MB observed.
+
+      Worth keeping as a record of the shape of the mistake: the per-node cost
+      was right, the multiplier was assumed, and assuming a multiplier is how
+      you get an answer three orders of magnitude out. It would become real if
+      the search ever went best-first, where the open set genuinely is O(nodes),
+      so the arithmetic above is the thing to re-run if the strategy changes.
 - [ ] Cuts at nodes rather than only at the root, and the families neither
       Gomory nor cover touches. Commitment models are dominated by rows pairing
       a continuous dispatch variable with a binary status, which is exactly
@@ -649,16 +734,28 @@ Full year at hourly resolution, synthetic ring, solved whole:
 
 | Buses | Columns | Build | Solve | Growth |
 | --- | --- | --- | --- | --- |
-| 8 | 402,960 | 3.9 ms | 3.2 s | |
-| 16 | 805,920 | 4.8 ms | 9.5 s | 3.0× |
-| 32 | 1,611,840 | 7.3 ms | 28.3 s | 3.0× |
-| 64 | 3,223,680 | 12.8 ms | 101.1 s | 3.6× |
-| 128 | 6,447,360 | 23.1 ms | 314.6 s | 3.1× |
+| 8 | 402,960 | 4.4 ms | 3.2 s | |
+| 16 | 805,920 | 4.9 ms | 9.5 s | 3.0× |
+| 32 | 1,611,840 | 8.2 ms | 28.4 s | 3.0× |
+| 64 | 3,223,680 | 14.0 ms | 103.8 s | 3.7× |
+| 128 | 6,447,360 | 26.1 ms | 318.0 s | 3.1× |
 
 Re-measured on an idle machine through `benchmarks/measure.sh`. The busy-machine
 version of this table put 128 buses at 561.8 s, which was 79% high, and made
 growth look like it accelerated to 5× at the top when it is flat at about 3×.
-Run-to-run spread is now 1.4% against 16% before.
+
+Re-measured a third time on 26 July 2026, best of two, gate opening at a load
+between 1.2 and 3.8 — the quietest this table has ever been taken at. Every row
+reproduced to within 3%, so the shape and the numbers above are now settled.
+
+**The run-to-run spread claim was wrong and is corrected here.** It said 1.4%.
+Measured across the whole ladder it is **3 to 7%**, and that is not load: the
+machine was quieter than when 1.4% was recorded. The variance is in the solve
+itself. Worth knowing that it is not uniform, because the reason is
+informative — the rolling ladder below repeated to within **0.05 to 0.2%** on
+the same machine in the same session. One enormous factorisation varies; a
+hundred and twenty-two small ones average out. So a single monolithic timing
+needs more repetitions to trust than a decomposed one does.
 
 **Re-measured to completion, best of two runs, and the previous version of this
 table was wrong in every row.** It reported 64 buses as "did not finish in seven
@@ -685,19 +782,34 @@ The same year through a rolling horizon of 96-hour windows keeping 72:
 
 | Buses | Windows | Rolling | Solved whole | |
 | --- | --- | --- | --- | --- |
-| 16 | 122 | 4.0 s | 10.3 s | 2.6× |
-| 32 | 122 | 8.7 s | 31.0 s | 3.6× |
-| 64 | 122 | 23.6 s | 110.7 s | 4.7× |
-| 128 | 122 | 76.3 s | 561.8 s | 7.4× |
+| 16 | 122 | 3.87 s | 9.5 s | 2.5× |
+| 32 | 122 | 8.06 s | 28.4 s | 3.5× |
+| 64 | 122 | 21.7 s | 103.8 s | 4.8× |
+| 128 | 122 | 68.0 s | 318.0 s | 4.7× |
 
 The previous claim, 23× at 32 buses and that rolling "finishes at 64 and 128
 where the monolithic solve does not", was an artefact of the bad table above.
-It is 3.6× at 32 buses, and the monolithic solve finishes at every size tried.
+It is 3.5× at 32 buses, and the monolithic solve finishes at every size tried.
 
-What is true, and is the better argument, is that the advantage **compounds**:
-2.6× at 16 buses and 7.4× at 128, because the whole-horizon solve grows
-superlinearly while the rolling one grows nearly linearly in the number of
-windows. That is a claim about decomposition rather than about this builder.
+**The claim that replaced it was also wrong, and in the same way.** This table
+read 7.4× at 128 buses against a "solved whole" column of 561.8 s — the exact
+figure the table above it identifies as 79% high and discards. Two tables on one
+page contradicted each other, and the headline ratio was taken from the
+discredited one. Both columns now come from the same session on the same idle
+machine.
+
+What survives is weaker than what was claimed. The advantage **compounds to 64
+buses and then flattens**: 2.5×, 3.5×, 4.8×, 4.7×. It does not reach 7.4× and
+nothing here suggests it keeps climbing. Rolling still wins by nearly five times
+at the top, which is the honest version, and it is still a claim about
+decomposition rather than about this builder.
+
+Worth recording why this one is different in kind. It is not a fifth bad
+measurement; it is a **bad measurement that had already been caught**. The
+561.8 s was identified, labelled and superseded twelve lines higher up, and the
+ratio derived from it was left standing. Discrediting a figure does not
+discredit what was computed from it, and nothing in this document was checking
+for that.
 
 
 
@@ -717,9 +829,47 @@ narrower claim than "construction is the bottleneck".
       cores simply take fewer chunks. Recorded because it is a plausible
       optimisation that measurement refuses, and adding the knob anyway would
       have been a knob nobody needs.
-- [ ] Re-run these on real networks rather than a synthetic ring once a large
-      case with a full year of time series is assembled, since the ring's
-      regular topology may flatter the solve.
+- [x] ~~Re-run these on real networks rather than a synthetic ring, since the
+      ring's regular topology may flatter the solve.~~ **Done, and it does.**
+
+      Real PGLib topologies carrying 2019 hourly demand and weather from the
+      four German control zones, each against a synthetic ring sized to the same
+      column count and measured in the same process minutes apart, so the pair
+      differs in what is modelled rather than in what the machine was doing.
+
+      | Case | Columns | Real solve | Ring solve | Ratio | nnz/col real | nnz/col ring |
+      | --- | --- | --- | --- | --- | --- | --- |
+      | case14_ieee | 543,120 | 7.2 s | 5.7 s | 1.27× | 2.21 | 1.66 |
+      | case57_ieee | 2,049,840 | 305.3 s | 42.0 s | **7.27×** | 2.26 | 1.65 |
+      | case118_ieee | 4,826,760 | 787.3 s | 191.6 s | **4.11×** | 2.27 | 1.65 |
+
+      So the ring has been flattering the solve by between 1.3 and 7 times at
+      matched column counts, and the visible structural difference is density:
+      a real network carries about 2.25 nonzeros per column against the ring's
+      1.65. A ring has degree two everywhere; a transmission network has hubs,
+      spurs and parallel circuits, and its bases fill in.
+
+      The ratio is not monotonic, and two rows carry a caveat the test raises
+      itself. It records the highest one-minute load seen per row, and flags
+      anything above two as an upper bound rather than a measurement: the
+      `ring 40` row ran at 6.8 and `case118_ieee` at 4.9, both self-inflicted by
+      the solve. So 7.27× may understate and 4.11× may overstate, and the safe
+      reading is "several times", not a curve.
+
+      **The more useful finding is what it does to the decomposition argument.**
+      The rolling horizon's advantage is far larger on real topologies than the
+      ring ever suggested:
+
+      | Case | Real rolling | Real whole | Advantage | Ring rolling | Ring whole | Advantage |
+      | --- | --- | --- | --- | --- | --- | --- |
+      | case14_ieee | 2.8 s | 7.2 s | 2.55× | 2.5 s | 5.7 s | 2.31× |
+      | case57_ieee | 18.2 s | 305.3 s | **16.73×** | 11.0 s | 42.0 s | 3.80× |
+      | case118_ieee | 74.7 s | 787.3 s | **10.53×** | 41.6 s | 191.6 s | 4.61× |
+
+      Decomposition is worth two to five times on a ring and ten to seventeen on
+      a real network. Every rolling-horizon number this project published from
+      ring measurements therefore **understated** the case, which is the more
+      pleasant direction for a correction to run.
 - [x] ~~Measure where the rolling horizon's window length stops paying.~~
       **Done**, and the answer is a cliff rather than a curve.
 
@@ -830,10 +980,19 @@ narrower claim than "construction is the bottleneck".
       | case | buses | rows | cols | nonzeros | build | solve |
       | --- | --- | --- | --- | --- | --- | --- |
       | case1354_pegase | 1,354 | 3,345 | 4,959 | 11,569 | 1.6 ms | 51 ms |
-      | case2869_pegase | 2,869 | 7,451 | 10,830 | 26,289 | 2.2 ms | 0.26 s |
-      | case6470_rte | 6,470 | 15,395 | 22,706 | 52,016 | 3.4 ms | 0.97 s |
+      | case2869_pegase | 2,869 | 7,451 | 10,830 | 26,289 | 4.0 ms | 0.24 s |
+      | case6470_rte | 6,470 | 15,395 | 22,706 | 52,016 | 3.8 ms | 0.73 s |
       | case9241_pegase | 9,241 | 25,274 | 35,976 | 90,883 | 4.2 ms | see below |
-      | case13659_pegase | 13,659 | 34,110 | 51,877 | 120,038 | 5.1 ms | 6.9 s |
+      | case13659_pegase | 13,659 | 34,110 | 51,877 | 120,038 | 5.5 ms | 6.5 s |
+
+      Every row but the first was re-measured on 26 July 2026, best of two on an
+      idle machine; `case1354_pegase` is carried over and is the one figure here
+      not taken that way. The solve column moved down slightly and the build
+      column up, which is what millisecond timings do — the ring-versus-real test
+      in the same session recorded build spreads as wide as 214% on figures this
+      small. So read the build column as "a few milliseconds" rather than as
+      three significant figures. The solve column earns its digits: it repeated
+      to within 1%.
 
       **HiGHS 1.15.0 cannot solve case9241_pegase, and the from-scratch simplex
       can.** `Highs_run` returns an error after three to nine seconds with model
@@ -854,13 +1013,29 @@ narrower claim than "construction is the bottleneck".
       below suspected and this settles. The simplex runs at about `rows^2.5` on
       real topologies against the `rows^1.9` the ring gives. HiGHS runs the same
       ladder at about `rows^2.1`, so it is partly the problem and partly us.
-- [ ] **Re-run the large-case simplex ladder on an idle machine.** The
-      exponents above are sound but the absolute seconds are upper bounds: the
-      measurement ran while other agents were benchmarking, and the long rungs
-      drifted between passes (23.5 s to 42 s, 197 s to 230 s) while the short
-      one repeated exactly. That is the same fault that has now corrupted four
-      measurements in this project, so the numbers are marked rather than
-      quoted.
+- [x] ~~**Re-run the large-case simplex ladder on an idle machine.**~~ **Done**,
+      and the drift was entirely load. Best of two, gate opening at load 3.09,
+      run-to-run spread under 0.5% on every rung:
+
+      | Case | Rows | Ours | HiGHS | Ours, spread | Was |
+      | --- | --- | --- | --- | --- | --- |
+      | case2869_pegase | 7,451 | 2.7 s | 236.5 ms | 0% | 2.89 / 2.9 s |
+      | case6470_rte | 15,395 | 23.0 s | 732.8 ms | 0.4% | 23.5 / **42** s |
+      | case13659_pegase | 34,110 | 167.5 s | 6.5 s | 0.06% | 197 / **230** s |
+
+      The two contaminated passes read 42 s and 230 s; both are junk. The
+      *better* of the two earlier passes was also high — 197 s against 167.5, so
+      **18% over** — which is the part worth remembering. The instinct on seeing
+      two disagreeing passes is to trust the faster one, and here the faster one
+      was still wrong by a fifth. Only a genuinely idle machine settled it, and
+      the sub-0.5% spread is what says so.
+
+      The exponent survives and moves slightly. Over these three rungs the
+      from-scratch solver runs at `rows^2.5` to `rows^2.9`, against the `rows^2.5`
+      claimed above from the contaminated ladder; HiGHS runs the same rungs at
+      about `rows^2.1`, unchanged. The conclusion is unchanged with it: the
+      difficulty is partly the problem and partly us, and three points still
+      cannot settle how it divides.
 - [ ] **The `area` column blocked more than the GOC cases, and may still be
       blocking something.** Reading MATPOWER's control areas as synchronous
       areas is fixed, but the same question applies to every other reader that
