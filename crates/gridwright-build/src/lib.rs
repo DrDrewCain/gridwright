@@ -647,7 +647,6 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     all.extend(build_head(net, &vars, t));
     all.extend(build_head_conversion(net, &vars, t));
     all.extend(build_losses(net, &vars, t));
-    all.extend(build_cascades(net, &vars, t));
     // Carbon, water and land: one row each, over the same variables.
     for batch in [
         build_co2(net, &vars, t),
@@ -841,6 +840,24 @@ fn build_dc_flow(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
 /// free energy and quietly makes every result too cheap.
 fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
     let weights = net.snapshots.weights();
+    // Which units release into which, so a cascade's water can be part of the
+    // downstream reservoir's balance rather than a constraint bolted beside it.
+    //
+    // This used to be its own family of rows, `soc_downstream[arrival] >=
+    // released`, and that is not the same statement. The balance below is an
+    // equality, so it already pins `soc` exactly; a separate row can only
+    // demand the downstream reservoir be *fuller* than its own dynamics make
+    // it, and the only way it can comply is by charging from the grid. An
+    // upstream release therefore made the system buy energy instead of
+    // receiving water — the exact opposite of a cascade. Arriving water has to
+    // relax this equality, which means being a term in it.
+    let mut feeders: Vec<Vec<(usize, usize)>> = vec![Vec::new(); net.storage.len()];
+    for (src, unit) in net.storage.iter().enumerate() {
+        if let Some(down) = unit.downstream {
+            feeders[down].push((src, unit.travel_time));
+        }
+    }
+
     net.storage
         .par_iter()
         .enumerate()
@@ -887,7 +904,26 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                 // taking more water than it can hold makes the model infeasible
                 // in exactly the weeks a hydro model exists to study.
                 let inflow = net.storage_inflow.at(s, step).unwrap_or(0.0) * w;
-                let mut terms: Vec<(u32, f64)> = Vec::with_capacity(5);
+                // Water released upstream `travel_time` snapshots ago arrives
+                // now, through the turbines or over the spillway alike. It
+                // enters exactly as natural inflow does, except that it is a
+                // decision rather than a constant and so stays on the left.
+                // Releases whose arrival falls past the horizon simply leave
+                // the system, which is what the last snapshot does with
+                // everything else.
+                let arrivals = |terms: &mut Vec<(u32, f64)>| {
+                    for &(src, travel) in &feeders[s] {
+                        let Some(sent) = step.checked_sub(travel) else {
+                            continue;
+                        };
+                        let si = sent as u32;
+                        terms.push((vars.discharge[src].at(si), -w));
+                        if let Some(sp) = vars.spill[src] {
+                            terms.push((sp.at(si), -w));
+                        }
+                    }
+                };
+                let mut terms: Vec<(u32, f64)> = Vec::with_capacity(5 + 2 * feeders[s].len());
                 terms.push((soc.at(ti), 1.0));
                 if step == 0 && let Some(start_level) = unit.soc_initial {
                     // A stated starting level is a constant, so it moves to the
@@ -899,6 +935,7 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                     if let Some(sp) = spill {
                         terms.push((sp.at(ti), w));
                     }
+                    arrivals(&mut terms);
                     batch.push_eq(terms, inflow + start_level);
                     continue;
                 }
@@ -923,6 +960,7 @@ fn build_storage(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                 if let Some(sp) = spill {
                     terms.push((sp.at(ti), w));
                 }
+                arrivals(&mut terms);
                 batch.push_eq(terms, inflow);
             }
             batch
@@ -1621,52 +1659,6 @@ fn build_losses(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
                 batch.push_ge([(loss.at(ti), 1.0), (f.at(ti), line.loss)], 0.0);
             }
             Some(batch)
-        })
-        .collect()
-}
-
-/// Hydro cascades: an upstream release becomes a downstream inflow.
-///
-/// Modelling reservoirs on one river independently counts the same water twice,
-/// which flatters the system's flexibility exactly when it is scarce. The delay
-/// is in snapshots rather than hours because that is the resolution the model
-/// has; a travel time shorter than one snapshot is simply immediate.
-fn build_cascades(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
-    let weights = net.snapshots.weights();
-    net.storage
-        .par_iter()
-        .enumerate()
-        .filter_map(|(s, unit)| {
-            let down = unit.downstream?;
-            let soc_d = vars.soc[down];
-            let mut batch = RowBatch::with_capacity(t, 5 * t);
-            let mut terms: Vec<(u32, f64)> = Vec::with_capacity(5);
-
-            for step in 0..t {
-                // Water released now arrives downstream after the travel time.
-                // Releases that would arrive past the horizon simply leave the
-                // system, which is the same thing the last snapshot does with
-                // everything else.
-                let arrival = step + unit.travel_time;
-                if arrival >= t {
-                    continue;
-                }
-                let ai = arrival as u32;
-                let w = weights[arrival];
-                terms.clear();
-                // The downstream store gains what the upstream one let go, both
-                // through its turbines and over its spillway.
-                terms.push((soc_d.at(ai), 1.0));
-                terms.push((vars.discharge[s].at(step as u32), -w));
-                if let Some(sp) = vars.spill[s] {
-                    terms.push((sp.at(step as u32), -w));
-                }
-                // Expressed as an addition to the downstream balance rather
-                // than as a rewrite of it, so the two constraint families stay
-                // independent and either can change without the other.
-                batch.push_ge(terms.iter().copied(), 0.0);
-            }
-            (!batch.is_empty()).then_some(batch)
         })
         .collect()
 }

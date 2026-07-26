@@ -335,9 +335,22 @@ fn an_upstream_release_becomes_downstream_water() {
 
 #[test]
 fn a_cascade_without_a_downstream_link_does_not_share_water() {
-    // The same two reservoirs, unlinked. The lower one has no inflow and cannot
-    // serve anything, so the diesel has to run and the cost is far higher. If
-    // this matched the linked case the cascade constraint would be inert.
+    // The same two reservoirs, linked and not, checked only for solvability.
+    //
+    // This comment used to claim that unlinked "the diesel has to run and the
+    // cost is far higher", which is an assertion that was described and never
+    // written — and it is false for this fixture anyway, where the upper
+    // reservoir alone covers the load either way and both cases cost nothing.
+    // Believing it hid a real bug for a long time: the cascade row was a
+    // one-sided bound sitting beside the downstream reservoir's own balance
+    // equality, so an upstream release could not deliver water and instead
+    // forced the lower reservoir to charge from the grid. Linking a cascade
+    // made the system more expensive, not less.
+    //
+    // The economics now live in `differential_families.rs`, on a fixture where
+    // the cascade actually decides something and both solvers have to agree
+    // that it made the system cheaper. What is left here is the narrow claim
+    // this fixture can support.
     let build = |linked: bool| {
         let mut net = Network::new(Snapshots::hourly(4));
         let b = net.add_bus("B", "XX");
