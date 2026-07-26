@@ -17,6 +17,14 @@
 //! model, and the generator costs are the linear term of a quadratic, so the
 //! numbers are not comparable and pretending otherwise would be worse than
 //! saying so.
+//!
+//! The ladder continues in `large_networks.rs`, which carries PEGASE 2869 and
+//! 13659, PEGASE 9241 and RTE 6470, and asserts the same properties on them.
+//! They are kept apart from this file rather than appended to `CASES` for a
+//! reason worth stating: every test below re-solves every case, which is right
+//! when the largest solve costs 50 ms and wrong when it costs seven seconds.
+//! There each network is solved once and every property checked against that
+//! one solution.
 
 use std::path::PathBuf;
 
