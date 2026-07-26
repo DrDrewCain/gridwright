@@ -8,3 +8,8 @@
 # explicit than the CC-BY 4.0 the PGLib cases in examples/ carry. Run the
 # script once and real_scale.rs finds it here.
 /benchmarks/.cache/
+
+# Python bytecode from the benchmark scripts. Generated on every run and
+# tracked here by accident until 26 July 2026.
+__pycache__/
+*.pyc
