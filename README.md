@@ -500,6 +500,42 @@ wherever they appear. The reason is time series rather than topology: real
 networks of this size are published, and a real network *with a year of hourly
 data attached* in one file is not.
 
+## The comparison this project was founded on
+
+The premise was a quotable claim from the energy modelling literature: that
+Python is "non-competitive" at *building* optimisation problems. Quoting it is
+not measuring it, and it went unmeasured here for a long time.
+
+Same model, same machine, same session. A synthetic 256-bus ring over a year at
+hourly resolution, built in `linopy` 0.9.0 the way linopy is meant to be used —
+vectorised over xarray dimensions with incidence arrays, not Python loops — and
+in gridwright. Only construction is timed; both hand the result to the same
+solver afterwards and that part is not in dispute.
+
+| | gridwright | linopy 0.9.0 |
+| --- | --- | --- |
+| Variables | 16,258,560 | 16,258,560 |
+| Constraints | 6,167,040 | 6,167,040 |
+| Nonzeros | 29,153,280 | 29,153,216 |
+| Construction, to a matrix | **0.096 s** | **200.8 s** |
+| Peak memory | **1.95 GB** | **22.4 GB** |
+
+About two thousand times faster, on eleven times less memory. The script is
+[`benchmarks/linopy_build.py`](benchmarks/linopy_build.py) and the fairness
+notes are at the top of it.
+
+**The memory number matters more than the speed one.** Two hundred seconds is an
+annoyance; 22 GB is where a laptop stops and the model does not get run at all.
+That is the same conclusion the [Scale](#scale) section reaches from the other
+direction: the fast build does not make the *solve* tractable, and what it
+actually buys is that the model fits, that it can be rebuilt interactively, and
+that a scenario sweep assembling it hundreds of times is not absurd.
+
+Caveats, since the number is flattering. This is linopy 0.9.0 and a later
+version may differ. linopy also does more than construct: it keeps a symbolic
+model you can inspect and modify afterwards, which gridwright deliberately does
+not. And the topology is synthetic, for the reason given below.
+
 ## Scale
 
 Measured, on synthetic topologies, and labelled as such wherever it appears.

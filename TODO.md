@@ -456,10 +456,21 @@ narrower claim than "construction is the bottleneck".
 
 ## Benchmarks and validation
 
-- [ ] **The linopy head-to-head.** Still unmeasured, still the thing that
-      decides whether the performance claim survives contact with the
-      incumbent. The README says so plainly and should keep saying so until it
-      is done.
+- [x] ~~**The linopy head-to-head.**~~ **Measured**, at last, and it is the
+      founding claim so it should have been measured first.
+
+      Same model, same machine, same session, 256 buses over 8,760 snapshots.
+      linopy 0.9.0 used idiomatically — vectorised over xarray dimensions with
+      incidence arrays, not Python loops — reaching the same 16.3M variables and
+      29.2M nonzeros. Construction to a matrix: **0.096 s against 200.8 s**, on
+      **1.95 GB against 22.4 GB**.
+
+      The memory figure is the important one. Two hundred seconds is an
+      annoyance; 22 GB is where a laptop stops and the model is not run at all.
+      That agrees with what the scaling section says from the other direction —
+      the fast build does not make the solve tractable, and what it buys is that
+      the model fits, rebuilds interactively, and can be swept over.
+
 - [ ] Extend the differential harness to every constraint family. It caught the
       phase-one bug immediately and is the highest-value test infrastructure in
       the repository.
