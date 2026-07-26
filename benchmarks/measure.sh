@@ -32,6 +32,20 @@
 #   GW_RUNS        repetitions (3)
 #   GW_WARMUP      run once and discard before timing (off; see below)
 #
+# On reporting. Every run's output is printed in full and nothing here reduces
+# them to one number, which is deliberate. This project spent a while quoting
+# best-of-N, and best-of-N is the wrong summary for the question people actually
+# ask of these tables. It is the right statistic for comparing two
+# implementations, because taking the fastest observation of each strips noise
+# that belongs to neither. It is the wrong one for "what will this cost me",
+# because the fastest run is a floor: measured across five runs the whole-year
+# ladder sits 2 to 4% above its own best, and a single rung was 7% above.
+#
+# So a table built from this script should quote every observation and say how
+# many there were, rather than a best with the spread mentioned in prose
+# afterwards. A reader can compute whatever summary they want from n values and
+# cannot recover anything from one.
+#
 # On the threshold. The first version of this refused above a load of 2.0 and
 # then never ran, because an interactive desktop does not go that quiet: a
 # browser, the window server and the editor together hold a steady 4 to 5 on a
@@ -101,6 +115,20 @@ done
 # It is also redundant whenever RUNS is greater than one, since taking the best
 # of several runs already discards a slow first one, which is the whole thing
 # the warm-up was for.
+#
+# That reasoning was first written down more broadly than the evidence
+# supported, so here is the evidence. A first-run penalty is real, it is in
+# *construction* rather than in solving, and it scales with the model: building
+# case2869_pegase, 68 M rows and 13 GB, takes 1.5 s on the first run against a
+# 421 ms median of the four after it. Solves show no such bias at any size
+# measured, down to 3.9 ms, so this is page-faulting freshly allocated matrices
+# rather than process warm-up in general.
+#
+# The consequence is about which summary you take, not about the warm-up.
+# A median is robust to one slow observation by construction; a *mean* is not,
+# and would read 51% high on that row. So: leave the warm-up off, take n >= 5,
+# and quote the median. Turn GW_WARMUP on when n is small and construction
+# milliseconds are the measurement.
 if [ "${GW_WARMUP:-0}" != "0" ]; then
   printf 'warm-up (discarded)\n'
   "$@" >/dev/null 2>&1
