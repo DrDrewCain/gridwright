@@ -323,10 +323,15 @@ pub fn parse_cdf(text: &str, name: impl Into<String>) -> Result<Case, CdfError> 
         let limit_lo = r.num("minimum limit", 99, 106)?;
         let limits_given = r.present(91, 98) || r.present(99, 106);
 
-        // The area code is the closest thing the format has to a country, and
-        // it is how a multi-area archive case distinguishes its regions. Taken
-        // the same way the MATPOWER reader takes `area`, so the same network
-        // read from either encoding comes out labelled identically.
+        // The area code is a loss or control area, which is the closest thing
+        // the format has to a country and is emphatically not a synchronous
+        // area: a control area is a market or operator zone and AC branches
+        // cross it freely. It is kept as the country for that reason, and the
+        // synchronous areas are derived from AC connectivity once the branches
+        // are known, exactly as the MATPOWER reader does. Reading this column
+        // as synchronous is a real bug with a real cost: it made that reader
+        // refuse the 2000-bus Texas case, whose three control areas are one
+        // grid joined by sixty-one AC branches.
         let idx = net.add_bus_in_area(bus_name, format!("area{area}"), format!("a{area}"));
         net.buses[idx].v_nom = base_kv;
         // Shunt G and B are already per unit on the system base. MATPOWER
@@ -505,6 +510,10 @@ pub fn parse_cdf(text: &str, name: impl Into<String>) -> Result<Case, CdfError> 
          bus record is taken as the capacity, which is a set point rather than a rating"
             .to_string(),
     );
+
+    // Synchronous areas follow from which branches carry susceptance, not from
+    // the area column. See the note where buses are added.
+    net.derive_synchronous_areas();
 
     net.validate()?;
     Ok(Case {
