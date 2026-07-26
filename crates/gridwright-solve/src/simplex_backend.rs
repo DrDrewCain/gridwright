@@ -51,7 +51,7 @@ fn status_from(s: SxStatus) -> Status {
 impl Solver for SimplexSolver {
     fn solve(&self, lopf: &Lopf) -> Result<Solution, SolveError> {
         let model = &lopf.model;
-        let csc = model.to_csc();
+        let csc = model.matrix();
         let cols = model.columns();
         let (row_lower, row_upper) = model.row_bounds();
 

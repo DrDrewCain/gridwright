@@ -11,9 +11,12 @@
 //! each thread owns exclusively, and the only global operation is a merge that
 //! knows every batch's size in advance and therefore allocates exactly once.
 //!
-//! The one genuinely interesting kernel is [`Model::to_csc`], which transposes
-//! CSR to the column major form solvers expect. It is a counting sort, which
-//! means it is two linear passes and no comparisons.
+//! The one genuinely interesting kernel is [`Model::absorb_all`], which
+//! transposes those batches into the column major form solvers expect. It is a
+//! counting sort, which means it is two linear passes and no comparisons, and
+//! it reads the batches directly: the merged row major matrix that would
+//! otherwise sit between them and the transpose is never built, because nothing
+//! downstream would read it.
 
 use std::ops::Range;
 
@@ -202,11 +205,20 @@ impl RowBatch {
 }
 
 /// A linear model: columns, rows, and an objective sense.
+///
+/// The constraint matrix is held column wise and only column wise. Rows arrive
+/// row wise, because that is how constraints are written, but they are
+/// transposed as they are absorbed rather than accumulated into a row major
+/// matrix first. Nothing downstream reads the row major form — both solver
+/// backends and the simplex take compressed sparse columns — so keeping one
+/// would be 375 MB of a large model spent on a representation with no reader.
 #[derive(Debug, Clone)]
 pub struct Model {
     pub sense: Sense,
     cols: Columns,
-    rows: RowBatch,
+    matrix: Csc,
+    row_lower: Vec<f64>,
+    row_upper: Vec<f64>,
 }
 
 impl Default for Model {
@@ -220,7 +232,13 @@ impl Model {
         Self {
             sense: Sense::Minimize,
             cols: Columns::default(),
-            rows: RowBatch::new(),
+            // A matrix of no columns still has one offset, its zero.
+            matrix: Csc {
+                starts: vec![0],
+                ..Csc::default()
+            },
+            row_lower: Vec::new(),
+            row_upper: Vec::new(),
         }
     }
 
@@ -231,12 +249,12 @@ impl Model {
 
     #[inline]
     pub fn num_rows(&self) -> usize {
-        self.rows.rows()
+        self.row_lower.len()
     }
 
     #[inline]
     pub fn nnz(&self) -> usize {
-        self.rows.nnz()
+        self.matrix.rows.len()
     }
 
     #[inline]
@@ -250,6 +268,21 @@ impl Model {
         self.cols.upper.reserve(n);
         self.cols.obj.reserve(n);
         self.cols.integer.reserve(n);
+        self.matrix.starts.reserve(n);
+    }
+
+    /// Extend the column offsets to cover columns allocated since the last
+    /// absorb.
+    ///
+    /// A column added after its matrix exists is an empty one at the right hand
+    /// end, so its offset is the current entry count. Doing this on every
+    /// allocation is what lets the model be a valid CSC at all times, rather
+    /// than only after some finalisation step a caller has to remember.
+    #[inline]
+    fn sync_cols(&mut self) {
+        let nnz = self.matrix.rows.len() as u32;
+        self.matrix.starts.resize(self.cols.len() + 1, nnz);
+        self.matrix.n_cols = self.cols.len();
     }
 
     /// Whether any column is integral, which is what makes this a MILP rather
@@ -293,6 +326,7 @@ impl Model {
         self.cols.upper.resize(new_len, upper);
         self.cols.obj.resize(new_len, obj);
         self.cols.integer.resize(new_len, false);
+        self.sync_cols();
         VarBlock { start, len: n }
     }
 
@@ -322,6 +356,7 @@ impl Model {
         self.cols.upper.extend_from_slice(upper);
         self.cols.obj.resize(self.cols.len(), obj);
         self.cols.integer.resize(self.cols.len(), false);
+        self.sync_cols();
         Ok(VarBlock {
             start,
             len: lower.len() as u32,
@@ -369,75 +404,52 @@ impl Model {
         Ok(())
     }
 
-    /// Merge a batch of rows built elsewhere.
-    ///
-    /// This is the only place per-thread work rejoins the model. Because the
-    /// batch carries its own length, the destination is reserved exactly once
-    /// and the copy is three `extend_from_slice` calls plus an offset shift on
-    /// the row starts. Nothing is reparsed and nothing is rehashed.
-    pub fn absorb(&mut self, batch: &RowBatch) {
-        let shift = self.rows.cols.len() as u32;
-        self.rows.cols.extend_from_slice(&batch.cols);
-        self.rows.vals.extend_from_slice(&batch.vals);
-        self.rows.lower.extend_from_slice(&batch.lower);
-        self.rows.upper.extend_from_slice(&batch.upper);
-        // The batch's first start is its own zero, which is already
-        // represented by the tail of ours, so it is skipped.
-        self.rows
-            .starts
-            .extend(batch.starts[1..].iter().map(|&s| s + shift));
+    /// Absorb one batch of rows built elsewhere.
+    pub fn absorb(&mut self, batch: RowBatch) {
+        self.absorb_all(vec![batch]);
     }
 
-    /// Merge many batches, reserving for all of them first and releasing each
-    /// as it is taken.
+    /// Absorb many batches, transposing them into the model's column major
+    /// matrix as they are taken.
     ///
-    /// Taking ownership rather than borrowing is what keeps the peak down, and
-    /// the reason is worth stating because it is not obvious. Reserving the
-    /// whole destination up front costs one allocation and no copying, and
-    /// freshly reserved capacity is not *resident* until something writes to
-    /// it. So as each batch is copied in and dropped, the pages it held are
-    /// released while the pages it filled become resident, and the two roughly
-    /// cancel.
+    /// This is the only place per-thread work rejoins the model, and it is the
+    /// one operation whose cost is not linear in what the caller wrote. It is a
+    /// counting sort: two linear passes over the entries and one over the
+    /// columns, no comparisons. See [`csc::from_batches`].
     ///
-    /// Borrowing instead keeps every batch alive until the merge finishes, so
-    /// the whole constraint matrix exists twice at once.
-    ///
-    /// Whether that shows up in peak resident memory is a separate question,
-    /// and measured here it does not: 1,471 MB either way on a 16-million
-    /// variable model. The allocator holds freed pages rather than returning
-    /// them to the operating system, so resident memory records the high-water
-    /// mark of what was *allocated* rather than of what was live. The change is
-    /// kept because the memory does become available for reuse, which is real
-    /// even where this metric cannot see it.
+    /// The batches are consumed rather than borrowed, so each is released as it
+    /// is scattered instead of the whole set staying alive until the end.
     pub fn absorb_all(&mut self, batches: Vec<RowBatch>) {
         let rows: usize = batches.iter().map(RowBatch::rows).sum();
-        let nnz: usize = batches.iter().map(RowBatch::nnz).sum();
-        self.rows.cols.reserve(nnz);
-        self.rows.vals.reserve(nnz);
-        self.rows.lower.reserve(rows);
-        self.rows.upper.reserve(rows);
-        self.rows.starts.reserve(rows);
-        for b in batches {
-            self.absorb(&b);
-            // `b` is dropped here, before the next one is copied.
+        self.row_lower.reserve(rows);
+        self.row_upper.reserve(rows);
+        let offset = self.row_lower.len() as u32;
+        for b in &batches {
+            self.row_lower.extend_from_slice(&b.lower);
+            self.row_upper.extend_from_slice(&b.upper);
+        }
+
+        let n_cols = self.cols.len();
+        if self.matrix.rows.is_empty() {
+            // The overwhelmingly common case: rows arrive once, so the column
+            // offsets are rebuilt in the allocation the empty ones already
+            // occupy.
+            let scratch = std::mem::take(&mut self.matrix.starts);
+            self.matrix = csc::from_batches(batches, n_cols, offset, scratch);
+        } else {
+            let added = csc::from_batches(batches, n_cols, offset, Vec::new());
+            csc::append(&mut self.matrix, added);
         }
     }
 
     pub fn row_bounds(&self) -> (&[f64], &[f64]) {
-        (&self.rows.lower, &self.rows.upper)
+        (&self.row_lower, &self.row_upper)
     }
 
-    /// Transpose the constraint matrix into the column major form solvers take.
-    ///
-    /// See [`csc::from_csr`]. This is the one operation whose cost is not
-    /// linear in what the caller wrote, so it is the one worth measuring.
-    pub fn to_csc(&self) -> Csc {
-        csc::from_csr(
-            &self.rows.starts,
-            &self.rows.cols,
-            &self.rows.vals,
-            self.num_cols(),
-        )
+    /// The constraint matrix, column wise, as solvers take it.
+    #[inline]
+    pub fn matrix(&self) -> &Csc {
+        &self.matrix
     }
 }
 
@@ -543,8 +555,63 @@ mod tests {
         let (lo, up) = m.row_bounds();
         assert_eq!(lo, &[0.0, f64::NEG_INFINITY, 1.0]);
         assert_eq!(up, &[0.0, 5.0, f64::INFINITY]);
-        // Row starts must be cumulative across the batch boundary, not restart.
-        assert_eq!(m.rows.starts, vec![0, 2, 3, 5]);
+        // Row numbering must continue across the batch boundary, not restart:
+        // the second batch's rows are 1 and 2.
+        m.matrix().validate().unwrap();
+        assert_eq!(
+            m.matrix().column(0).collect::<Vec<_>>(),
+            vec![(0, 1.0), (2, 1.0)]
+        );
+        assert_eq!(
+            m.matrix().column(1).collect::<Vec<_>>(),
+            vec![(0, -1.0), (1, 2.0), (2, 1.0)]
+        );
+    }
+
+    #[test]
+    fn rows_absorbed_in_two_calls_land_where_one_call_puts_them() {
+        // Nothing in this workspace absorbs twice, so the merge path would
+        // otherwise never be exercised until the day something did.
+        let build = |split: bool| {
+            let mut one = RowBatch::new();
+            one.push_eq([(0, 1.0), (1, -1.0)], 0.0);
+            let mut two = RowBatch::new();
+            two.push_le([(1, 2.0)], 5.0);
+            two.push_ge([(0, 1.0), (1, 1.0)], 1.0);
+
+            let mut m = Model::new();
+            m.add_block(2, 0.0, 10.0, 1.0);
+            if split {
+                m.absorb(one);
+                m.absorb(two);
+            } else {
+                m.absorb_all(vec![one, two]);
+            }
+            m
+        };
+        let split = build(true);
+        split.matrix().validate().unwrap();
+        assert_eq!(split.matrix(), build(false).matrix());
+        assert_eq!(split.num_rows(), 3);
+        assert_eq!(split.nnz(), 5);
+    }
+
+    #[test]
+    fn columns_allocated_after_the_rows_are_still_columns() {
+        // The matrix is built when rows are absorbed, so a column allocated
+        // afterwards has to be given an offset or the matrix stops describing
+        // the model it belongs to.
+        let mut m = Model::new();
+        m.add_block(2, 0.0, 1.0, 1.0);
+        let mut b = RowBatch::new();
+        b.push_eq([(0, 1.0), (1, 1.0)], 1.0);
+        m.absorb_all(vec![b]);
+        m.add_block(3, 0.0, 1.0, 0.0);
+
+        assert_eq!(m.num_cols(), 5);
+        m.matrix().validate().unwrap();
+        assert_eq!(m.matrix().n_cols, 5);
+        assert_eq!(m.matrix().column(4).count(), 0);
     }
 
     #[test]
@@ -554,7 +621,8 @@ mod tests {
         m.absorb_all(vec![RowBatch::new(), RowBatch::new()]);
         assert_eq!(m.num_rows(), 0);
         assert_eq!(m.nnz(), 0);
-        assert_eq!(m.rows.starts, vec![0]);
+        m.matrix().validate().unwrap();
+        assert_eq!(m.matrix().starts, vec![0, 0, 0]);
     }
 
     #[test]

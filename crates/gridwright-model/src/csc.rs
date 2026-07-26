@@ -10,13 +10,19 @@
 //! each column, prefix sum the counts into offsets, then scatter each entry to
 //! its column's cursor. Two linear passes over the data, one over the columns.
 //!
-//! The parallel version splits the count across threads into private
-//! histograms and then does a two dimensional scan, so that each thread knows
-//! not only where its column starts but where *its own* slice of that column
-//! starts. That makes the scatter write-disjoint, so it needs no atomics and
-//! no locking, which is what makes it worth doing at all.
+//! The parallel version shares one counter array behind atomics rather than
+//! giving each thread a private histogram. The private histograms are faster in
+//! principle and identical in measurement, and they cost fourteen times the
+//! counter memory; [`zeroed_counts`] records that in full. What the atomics cost
+//! is ordering, which [`sort_columns`] puts back.
+//!
+//! [`from_batches`] is the entry point that matters in practice: it transposes
+//! the constraint builders' row batches directly, so the merged row major matrix
+//! that used to sit in between — 375 MB on a large model, and read by nothing —
+//! is never built at all.
 
 use rayon::prelude::*;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 /// A matrix in compressed sparse column form.
 ///
@@ -184,95 +190,11 @@ pub fn from_csr_par(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usiz
         return from_csr(row_starts, cols, vals, n_cols);
     }
 
-    // One shared counter array, incremented atomically, rather than a private
-    // dense histogram per thread.
-    //
-    // The reasoning and the measurement disagreed, and the measurement is
-    // recorded here because the reasoning was persuasive. This matrix has 16.3
-    // million columns and 29 million nonzeros — under two entries per column —
-    // so a `threads × n_cols` histogram is 910 MB of counters to count 29
-    // million items, plus a 65 MB cursor copy per thread. That looks obviously
-    // wasteful and it is, in address space. It is **not** wasteful in resident
-    // memory or in time: peak RSS is 1.951 GB either way, to within 60 KB, and
-    // the transpose takes about 88 ms either way. Most of those 910 MB are
-    // never written, because a chunk only touches the columns its own rows
-    // reach, and pages nobody writes are never faulted in.
-    //
-    // Kept anyway, for the reason that survives: 65 MB of allocation against
-    // 1.8 GB. Address space is not free everywhere, and the WebAssembly target
-    // has 4 GB of it in total.
-    //
-    // What it costs is ordering. `fetch_add` hands out slots in whatever order
-    // threads arrive, so rows within a column come out unsorted and have to be
-    // sorted afterwards. That is nearly free at this density and it is not
-    // optional: an unsorted column would make the transpose depend on thread
-    // timing, and two runs of the same model would produce different files.
-    use std::sync::atomic::{AtomicU32, Ordering};
-
-    // Zeroed in one allocation rather than built element by element:
-    // `AtomicU32` has the same layout and representation as `u32`, and an
-    // all-zero `u32` is an `AtomicU32` holding zero. Sixteen million
-    // constructor calls is not a small thing when the whole operation is
-    // supposed to take a tenth of a second.
-    let counts: Vec<AtomicU32> = {
-        let zeros = vec![0u32; n_cols];
-        // SAFETY: `AtomicU32` is `#[repr(C)]` over `u32`, same size and
-        // alignment, and every bit pattern valid for one is valid for the
-        // other.
-        unsafe { std::mem::transmute::<Vec<u32>, Vec<AtomicU32>>(zeros) }
-    };
+    let counts = zeroed_counts(n_cols);
     cols.par_iter().for_each(|&c| {
         counts[c as usize].fetch_add(1, Ordering::Relaxed);
     });
-
-    // The prefix sum is over sixteen million columns and was the largest single
-    // cost here, being sequential while everything around it was not. Done in
-    // three parallel passes instead: each chunk totals itself, the chunk totals
-    // are scanned (there are only as many as there are threads), and each chunk
-    // then fills its own range from its own base.
-    let scan_chunk = n_cols.div_ceil(threads).max(1 << 16);
-    let n_scan = n_cols.div_ceil(scan_chunk).max(1);
-    let mut chunk_total = vec![0u32; n_scan];
-    chunk_total
-        .par_iter_mut()
-        .enumerate()
-        .for_each(|(chunk, total)| {
-            let c0 = chunk * scan_chunk;
-            let c1 = ((chunk + 1) * scan_chunk).min(n_cols);
-            *total = counts[c0..c1]
-                .iter()
-                .map(|c| c.load(Ordering::Relaxed))
-                .sum();
-        });
-    let mut base = Vec::with_capacity(n_scan);
-    let mut running = 0u32;
-    for &t in &chunk_total {
-        base.push(running);
-        running += t;
-    }
-    debug_assert_eq!(running as usize, nnz);
-
-    let mut starts = vec![0u32; n_cols + 1];
-    starts[n_cols] = running;
-    starts[..n_cols]
-        .par_chunks_mut(scan_chunk)
-        .enumerate()
-        .for_each(|(chunk, out)| {
-            let c0 = chunk * scan_chunk;
-            let mut running = base[chunk];
-            for (k, slot) in out.iter_mut().enumerate() {
-                *slot = running;
-                running += counts[c0 + k].load(Ordering::Relaxed);
-            }
-        });
-
-    // The counters become the write cursors, each starting where its column
-    // does. Filling them in parallel from `starts` costs one more pass and
-    // saves the sequential one it replaces.
-    counts
-        .par_iter()
-        .enumerate()
-        .for_each(|(j, slot)| slot.store(starts[j], Ordering::Relaxed));
+    let starts = scan_into_starts(&counts, vec![0u32; n_cols + 1]);
 
     let mut out_rows = vec![0u32; nnz];
     let mut out_vals = vec![0.0f64; nnz];
@@ -294,60 +216,14 @@ pub fn from_csr_par(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usiz
                 for k in s..e {
                     let c = cols[k] as usize;
                     let dst = counts[c].fetch_add(1, Ordering::Relaxed) as usize;
-                    // SAFETY: every slot between `starts[c]` and `starts[c+1]`
-                    // is handed out exactly once, because the counter for `c`
-                    // begins at `starts[c]` and is only ever incremented, and
-                    // the number of increments equals the count phase one took.
-                    // No two threads can receive the same `dst`.
-                    unsafe {
-                        *rows_ptr.0.add(dst) = r as u32;
-                        *vals_ptr.0.add(dst) = vals[k];
-                    }
+                    // SAFETY: see `scatter_entry`.
+                    unsafe { scatter_entry(rows_ptr, vals_ptr, dst, r as u32, vals[k]) };
                 }
             }
         });
     }
 
-    // Restore row order within each column. Two entries per column on average,
-    // so this is a handful of comparisons rather than a sort in any meaningful
-    // sense, and it is what makes the result independent of how the threads
-    // happened to interleave.
-    {
-        let rows_ptr = SendPtr(out_rows.as_mut_ptr());
-        let vals_ptr = SendPtr(out_vals.as_mut_ptr());
-        let starts_ref = &starts;
-        (0..n_cols)
-            .into_par_iter()
-            .with_min_len(4096)
-            .for_each(|j| {
-                let s = starts_ref[j] as usize;
-                let e = starts_ref[j + 1] as usize;
-                if e <= s + 1 {
-                    return;
-                }
-                let rows_ptr = &rows_ptr;
-                let vals_ptr = &vals_ptr;
-                // SAFETY: `s..e` is column `j`'s exclusive range, and no other
-                // parallel item touches it.
-                unsafe {
-                    let r = std::slice::from_raw_parts_mut(rows_ptr.0.add(s), e - s);
-                    let v = std::slice::from_raw_parts_mut(vals_ptr.0.add(s), e - s);
-                    // Insertion sort, moving both arrays together. At this
-                    // length it beats anything cleverer and allocates nothing.
-                    for i in 1..r.len() {
-                        let (ri, vi) = (r[i], v[i]);
-                        let mut k = i;
-                        while k > 0 && r[k - 1] > ri {
-                            r[k] = r[k - 1];
-                            v[k] = v[k - 1];
-                            k -= 1;
-                        }
-                        r[k] = ri;
-                        v[k] = vi;
-                    }
-                }
-            });
-    }
+    sort_columns(&starts, &mut out_rows, &mut out_vals);
 
     Csc {
         starts,
@@ -358,6 +234,359 @@ pub fn from_csr_par(row_starts: &[u32], cols: &[u32], vals: &[f64], n_cols: usiz
     }
 }
 
+/// One zeroed counter per column, in a single allocation.
+///
+/// One shared counter array incremented atomically, rather than a private dense
+/// histogram per thread.
+///
+/// The reasoning and the measurement disagreed, and the measurement is recorded
+/// here because the reasoning was persuasive. This matrix has 16.3 million
+/// columns and 29 million nonzeros — under two entries per column — so a
+/// `threads x n_cols` histogram is 910 MB of counters to count 29 million
+/// items, plus a 65 MB cursor copy per thread. That looks obviously wasteful and
+/// it is, in address space. It is **not** wasteful in resident memory or in
+/// time: peak RSS was identical to within 60 KB, and the transpose took about
+/// the same either way. Most of those 910 MB are never written, because a chunk
+/// only touches the columns its own rows reach, and pages nobody writes are
+/// never faulted in.
+///
+/// Kept anyway, for the reason that survives: 65 MB of allocation against 1.8
+/// GB. Address space is not free everywhere, and the WebAssembly target has 4 GB
+/// of it in total.
+///
+/// What it costs is ordering. `fetch_add` hands out slots in whatever order
+/// threads arrive, so rows within a column come out unsorted and have to be
+/// sorted afterwards by [`sort_columns`]. That is nearly free at this density
+/// and it is not optional: an unsorted column would make the transpose depend on
+/// thread timing, and two runs of the same model would produce different files.
+fn zeroed_counts(n_cols: usize) -> Vec<AtomicU32> {
+    // Zeroed in one allocation rather than built element by element:
+    // `AtomicU32` has the same layout and representation as `u32`, and an
+    // all-zero `u32` is an `AtomicU32` holding zero. Sixteen million constructor
+    // calls is not a small thing when the whole operation is supposed to take a
+    // tenth of a second.
+    let zeros = vec![0u32; n_cols];
+    // SAFETY: `AtomicU32` is `#[repr(C)]` over `u32`, same size and alignment,
+    // and every bit pattern valid for one is valid for the other.
+    unsafe { std::mem::transmute::<Vec<u32>, Vec<AtomicU32>>(zeros) }
+}
+
+/// Prefix sum the per-column counts into offsets, and leave every counter
+/// holding the write cursor for its own column.
+///
+/// The prefix sum is over sixteen million columns and was the largest single
+/// cost here, being sequential while everything around it was not. Done in three
+/// parallel passes instead: each chunk totals itself, the chunk totals are
+/// scanned (there are only as many as there are threads), and each chunk then
+/// fills its own range from its own base.
+///
+/// `scratch` is reused for the output, so a caller that already holds an offsets
+/// array does not allocate a second one.
+fn scan_into_starts(counts: &[AtomicU32], scratch: Vec<u32>) -> Vec<u32> {
+    let n_cols = counts.len();
+    let threads = rayon::current_num_threads().max(1);
+    let scan_chunk = n_cols.div_ceil(threads).max(1 << 16);
+    let n_scan = n_cols.div_ceil(scan_chunk).max(1);
+
+    let mut chunk_total = vec![0u32; n_scan];
+    chunk_total
+        .par_iter_mut()
+        .enumerate()
+        .for_each(|(chunk, total)| {
+            let c0 = chunk * scan_chunk;
+            let c1 = ((chunk + 1) * scan_chunk).min(n_cols);
+            *total = counts[c0..c1]
+                .iter()
+                .map(|c| c.load(Ordering::Relaxed))
+                .sum();
+        });
+    let mut base = Vec::with_capacity(n_scan);
+    let mut running = 0u32;
+    for &t in &chunk_total {
+        base.push(running);
+        running += t;
+    }
+
+    let mut starts = scratch;
+    starts.clear();
+    starts.resize(n_cols + 1, 0);
+    starts[n_cols] = running;
+    starts[..n_cols]
+        .par_chunks_mut(scan_chunk)
+        .enumerate()
+        .for_each(|(chunk, out)| {
+            let c0 = chunk * scan_chunk;
+            let mut running = base[chunk];
+            for (k, slot) in out.iter_mut().enumerate() {
+                *slot = running;
+                running += counts[c0 + k].load(Ordering::Relaxed);
+            }
+        });
+
+    // The counters become the write cursors, each starting where its column
+    // does. Filling them in parallel from `starts` costs one more pass and saves
+    // the sequential one it replaces.
+    counts
+        .par_iter()
+        .enumerate()
+        .for_each(|(j, slot)| slot.store(starts[j], Ordering::Relaxed));
+
+    starts
+}
+
+/// Place one entry at the slot a column's cursor hands out.
+///
+/// # Safety
+///
+/// Every slot between `starts[c]` and `starts[c + 1]` is handed out exactly
+/// once, because the counter for `c` begins at `starts[c]`, is only ever
+/// incremented, and is incremented exactly as many times as the count phase saw
+/// entries in that column. No two threads can therefore receive the same `dst`,
+/// and `dst` always lies within the arrays the pointers refer to.
+#[inline]
+unsafe fn scatter_entry(rows: &SendPtr<u32>, vals: &SendPtr<f64>, dst: usize, row: u32, val: f64) {
+    unsafe {
+        *rows.0.add(dst) = row;
+        *vals.0.add(dst) = val;
+    }
+}
+
+/// Restore ascending row order within every column.
+///
+/// Two entries per column on average, so this is a handful of comparisons rather
+/// than a sort in any meaningful sense, and it is what makes the result
+/// independent of how the threads happened to interleave.
+fn sort_columns(starts: &[u32], out_rows: &mut [u32], out_vals: &mut [f64]) {
+    let n_cols = starts.len().saturating_sub(1);
+    let rows_ptr = SendPtr(out_rows.as_mut_ptr());
+    let vals_ptr = SendPtr(out_vals.as_mut_ptr());
+    (0..n_cols)
+        .into_par_iter()
+        .with_min_len(4096)
+        .for_each(|j| {
+            let s = starts[j] as usize;
+            let e = starts[j + 1] as usize;
+            if e <= s + 1 {
+                return;
+            }
+            let rows_ptr = &rows_ptr;
+            let vals_ptr = &vals_ptr;
+            // SAFETY: `s..e` is column `j`'s exclusive range, and no other
+            // parallel item touches it.
+            unsafe {
+                let r = std::slice::from_raw_parts_mut(rows_ptr.0.add(s), e - s);
+                let v = std::slice::from_raw_parts_mut(vals_ptr.0.add(s), e - s);
+                // Insertion sort, moving both arrays together. At this length it
+                // beats anything cleverer and allocates nothing.
+                for i in 1..r.len() {
+                    let (ri, vi) = (r[i], v[i]);
+                    let mut k = i;
+                    while k > 0 && r[k - 1] > ri {
+                        r[k] = r[k - 1];
+                        v[k] = v[k - 1];
+                        k -= 1;
+                    }
+                    r[k] = ri;
+                    v[k] = vi;
+                }
+            }
+        });
+}
+
+/// Build column major form directly from a set of row batches.
+///
+/// This is [`from_csr`]'s counting sort reading a different input. The batches
+/// are exactly what the constraint builders produced, so the merged row major
+/// matrix that used to sit between them and this transpose never has to exist.
+/// On a sixteen million variable model that matrix is 375 MB, and nothing
+/// downstream ever reads it: both solver backends take compressed sparse
+/// columns, and so does the simplex.
+///
+/// `scratch` is the caller's previous `starts` array, reused rather than
+/// reallocated. `row_offset` is where this set of batches begins in the row
+/// numbering, which is nonzero only when rows are absorbed in more than one
+/// call.
+///
+/// Batches are consumed as they are scattered, so the source memory is released
+/// during the second pass rather than all at the end.
+///
+/// Threaded when there is more than one batch and enough work to pay for it.
+/// The batches are the natural unit of parallelism here — they are already what
+/// the builders produced one per thread — so no chunking has to be invented.
+pub(crate) fn from_batches(
+    batches: Vec<crate::RowBatch>,
+    n_cols: usize,
+    row_offset: u32,
+    scratch: Vec<u32>,
+) -> Csc {
+    let nnz: usize = batches.iter().map(crate::RowBatch::nnz).sum();
+    if batches.len() > 1 && nnz >= PAR_THRESHOLD {
+        return from_batches_par(batches, n_cols, row_offset, scratch, nnz);
+    }
+    from_batches_serial(batches, n_cols, row_offset, scratch, nnz)
+}
+
+/// Serial reference implementation, and the path taken for small models.
+///
+/// The parallel version is checked against it, because a transpose that is fast
+/// and wrong is worthless and the failure mode is silent.
+fn from_batches_serial(
+    batches: Vec<crate::RowBatch>,
+    n_cols: usize,
+    row_offset: u32,
+    scratch: Vec<u32>,
+    nnz: usize,
+) -> Csc {
+    let n_rows: usize = batches.iter().map(crate::RowBatch::rows).sum();
+
+    // Pass one: how many entries in each column, across every batch.
+    let mut starts = scratch;
+    starts.clear();
+    starts.resize(n_cols + 1, 0);
+    for b in &batches {
+        for &c in &b.cols {
+            starts[c as usize + 1] += 1;
+        }
+    }
+    for j in 0..n_cols {
+        starts[j + 1] += starts[j];
+    }
+
+    let mut out_rows = vec![0u32; nnz];
+    let mut out_vals = vec![0.0f64; nnz];
+    let mut cursor = starts.clone();
+
+    // Pass two: scatter. Batches are walked in order and rows within a batch in
+    // order, so each column ends up in ascending row order without a sort.
+    let mut r = row_offset;
+    for b in batches {
+        for w in b.starts.windows(2) {
+            for k in w[0] as usize..w[1] as usize {
+                let c = b.cols[k] as usize;
+                let dst = cursor[c] as usize;
+                out_rows[dst] = r;
+                out_vals[dst] = b.vals[k];
+                cursor[c] += 1;
+            }
+            r += 1;
+        }
+        // `b` is dropped here, before the next batch is read.
+    }
+
+    Csc {
+        starts,
+        rows: out_rows,
+        vals: out_vals,
+        n_cols,
+        n_rows: row_offset as usize + n_rows,
+    }
+}
+
+/// Threaded transpose straight from the batches.
+///
+/// Same three phases as [`from_csr_par`] — count, scan, scatter — reading
+/// batches instead of one merged array. Each batch knows how many rows it has,
+/// so the row number every batch starts at is a prefix sum over a list as long
+/// as the thread count rather than as long as the matrix.
+fn from_batches_par(
+    batches: Vec<crate::RowBatch>,
+    n_cols: usize,
+    row_offset: u32,
+    scratch: Vec<u32>,
+    nnz: usize,
+) -> Csc {
+    let n_rows: usize = batches.iter().map(crate::RowBatch::rows).sum();
+
+    let counts = zeroed_counts(n_cols);
+    batches.par_iter().for_each(|b| {
+        for &c in &b.cols {
+            counts[c as usize].fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    let starts = scan_into_starts(&counts, scratch);
+    debug_assert_eq!(*starts.last().unwrap() as usize, nnz);
+
+    // Where each batch's rows begin, so the scatter does not have to be walked
+    // in order to know its own row numbers.
+    let mut base = Vec::with_capacity(batches.len());
+    let mut r = row_offset;
+    for b in &batches {
+        base.push(r);
+        r += b.rows() as u32;
+    }
+
+    let mut out_rows = vec![0u32; nnz];
+    let mut out_vals = vec![0.0f64; nnz];
+    {
+        let rows_ptr = SendPtr(out_rows.as_mut_ptr());
+        let vals_ptr = SendPtr(out_vals.as_mut_ptr());
+        let counts = &counts;
+        let base = &base;
+        // `into_par_iter` rather than `par_iter`: each batch is dropped as soon
+        // as it has been scattered, so the source memory comes back during the
+        // pass rather than all of it at the end.
+        batches.into_par_iter().enumerate().for_each(|(i, b)| {
+            let rows_ptr = &rows_ptr;
+            let vals_ptr = &vals_ptr;
+            for (r, w) in (base[i]..).zip(b.starts.windows(2)) {
+                for k in w[0] as usize..w[1] as usize {
+                    let c = b.cols[k] as usize;
+                    let dst = counts[c].fetch_add(1, Ordering::Relaxed) as usize;
+                    // SAFETY: see `scatter_entry`.
+                    unsafe { scatter_entry(rows_ptr, vals_ptr, dst, r, b.vals[k]) };
+                }
+            }
+        });
+    }
+
+    sort_columns(&starts, &mut out_rows, &mut out_vals);
+
+    Csc {
+        starts,
+        rows: out_rows,
+        vals: out_vals,
+        n_cols,
+        n_rows: row_offset as usize + n_rows,
+    }
+}
+
+/// Concatenate `b`'s rows below `a`'s, both already in column major form.
+///
+/// Only reached when rows arrive in more than one call, which no caller in this
+/// workspace does. It exists so that the single call case can be the fast path
+/// without the API quietly acquiring a restriction that is not checked.
+/// `b`'s row indices must already be offset past `a`'s rows.
+pub(crate) fn append(a: &mut Csc, b: Csc) {
+    debug_assert!(b.n_rows >= a.n_rows);
+    let n_cols = a.n_cols.max(b.n_cols);
+    let span = |s: &[u32], j: usize| -> (usize, usize) {
+        if j + 1 < s.len() {
+            (s[j] as usize, s[j + 1] as usize)
+        } else {
+            (0, 0)
+        }
+    };
+
+    let mut starts = Vec::with_capacity(n_cols + 1);
+    let mut rows = Vec::with_capacity(a.rows.len() + b.rows.len());
+    let mut vals = Vec::with_capacity(a.vals.len() + b.vals.len());
+    starts.push(0);
+    for j in 0..n_cols {
+        let (s, e) = span(&a.starts, j);
+        rows.extend_from_slice(&a.rows[s..e]);
+        vals.extend_from_slice(&a.vals[s..e]);
+        let (s, e) = span(&b.starts, j);
+        rows.extend_from_slice(&b.rows[s..e]);
+        vals.extend_from_slice(&b.vals[s..e]);
+        starts.push(rows.len() as u32);
+    }
+
+    a.starts = starts;
+    a.rows = rows;
+    a.vals = vals;
+    a.n_cols = n_cols;
+    a.n_rows = b.n_rows;
+}
 
 /// A raw pointer that may cross into worker threads.
 ///
@@ -454,6 +683,93 @@ mod tests {
         assert_eq!(a.starts, b.starts);
         assert_eq!(a.rows, b.rows, "row order diverged between implementations");
         assert_eq!(a.vals, b.vals);
+    }
+
+    /// Uneven batches, of the shape the constraint builders actually produce:
+    /// a few hundred large ones from the per-bus and per-line work, and a
+    /// handful holding a single row.
+    fn uneven_batches() -> Vec<crate::RowBatch> {
+        let n_cols = 800usize;
+        let mut state = 99_991u64;
+        let mut next = move || {
+            state = state.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1);
+            state
+        };
+        let mut batches = Vec::new();
+        for b in 0..40 {
+            let rows = if b % 9 == 0 { 1 } else { 500 + b * 7 };
+            let mut batch = crate::RowBatch::new();
+            for r in 0..rows {
+                let per = 1 + (r % 5);
+                let terms: Vec<(u32, f64)> = (0..per)
+                    .map(|_| {
+                        let s = next();
+                        ((((s >> 33) as usize) % n_cols) as u32, (s & 0xff) as f64)
+                    })
+                    .collect();
+                batch.push_eq(terms, r as f64);
+            }
+            batches.push(batch);
+        }
+        batches
+    }
+
+    #[test]
+    fn batch_transpose_matches_its_serial_reference() {
+        let batches = uneven_batches();
+        let n_cols = 800;
+        let nnz: usize = batches.iter().map(crate::RowBatch::nnz).sum();
+        assert!(nnz > 4 * PAR_THRESHOLD, "test data would take the serial path");
+
+        let a = from_batches_serial(batches.clone(), n_cols, 0, Vec::new(), nnz);
+        let b = from_batches_par(batches, n_cols, 0, Vec::new(), nnz);
+        a.validate().unwrap();
+        b.validate().unwrap();
+        assert_eq!(a.starts, b.starts);
+        assert_eq!(a.rows, b.rows, "row order diverged between implementations");
+        assert_eq!(a.vals, b.vals);
+    }
+
+    #[test]
+    fn transposing_batches_agrees_with_transposing_their_concatenation() {
+        // The two ways of getting to the same matrix: scatter the batches
+        // directly, or merge them into one row major matrix first and transpose
+        // that. The second is what this code replaced, so it is the standard the
+        // first has to meet.
+        let batches = uneven_batches();
+        let n_cols = 800;
+        let nnz: usize = batches.iter().map(crate::RowBatch::nnz).sum();
+
+        let mut row_starts = vec![0u32];
+        let mut cols = Vec::new();
+        let mut vals = Vec::new();
+        for b in &batches {
+            for w in b.starts.windows(2) {
+                for k in w[0] as usize..w[1] as usize {
+                    cols.push(b.cols[k]);
+                    vals.push(b.vals[k]);
+                }
+                row_starts.push(cols.len() as u32);
+            }
+        }
+        let merged = from_csr(&row_starts, &cols, &vals, n_cols);
+        let direct = from_batches(batches, n_cols, 0, Vec::new());
+
+        assert_eq!(merged.n_rows, direct.n_rows);
+        assert_eq!(merged.nnz(), nnz);
+        assert_eq!(merged.starts, direct.starts);
+        assert_eq!(merged.rows, direct.rows);
+        assert_eq!(merged.vals, direct.vals);
+    }
+
+    #[test]
+    fn a_row_offset_numbers_rows_from_where_it_says() {
+        let mut b = crate::RowBatch::new();
+        b.push_eq([(0, 1.0)], 0.0);
+        b.push_eq([(0, 2.0)], 0.0);
+        let csc = from_batches(vec![b], 1, 10, Vec::new());
+        assert_eq!(csc.column(0).collect::<Vec<_>>(), vec![(10, 1.0), (11, 2.0)]);
+        assert_eq!(csc.n_rows, 12);
     }
 
     #[test]

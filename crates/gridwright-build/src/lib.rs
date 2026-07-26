@@ -1928,7 +1928,7 @@ mod tests {
             ..Default::default()
         });
         let lopf = build_lopf(&net).unwrap();
-        let csc = lopf.model.to_csc();
+        let csc = lopf.model.matrix();
         csc.validate().unwrap();
         // The last SOC column must appear in a row other than its own
         // snapshot's, which is the wrap term.
@@ -1953,7 +1953,7 @@ mod tests {
             ..Default::default()
         });
         let lopf = build_lopf(&net).unwrap();
-        let csc = lopf.model.to_csc();
+        let csc = lopf.model.matrix();
         // Final SOC appears only in its own balance row when not cyclic.
         assert_eq!(csc.column(lopf.vars.soc[0].at(3) as usize).count(), 1);
     }
@@ -1973,7 +1973,7 @@ mod tests {
             ..Default::default()
         });
         let lopf = build_lopf(&net).unwrap();
-        let csc = lopf.model.to_csc();
+        let csc = lopf.model.matrix();
         csc.validate().unwrap();
         assert_eq!(csc.n_cols, lopf.model.num_cols());
         assert_eq!(csc.n_rows, lopf.model.num_rows());
@@ -1994,8 +1994,8 @@ mod tests {
     fn assembly_is_deterministic_across_runs() {
         let mut net = two_bus(50);
         net.lines[0].susceptance = 8.0;
-        let a = build_lopf(&net).unwrap().model.to_csc();
-        let b = build_lopf(&net).unwrap().model.to_csc();
-        assert_eq!(a, b);
+        let a = build_lopf(&net).unwrap();
+        let b = build_lopf(&net).unwrap();
+        assert_eq!(a.model.matrix(), b.model.matrix());
     }
 }

@@ -225,7 +225,7 @@ fn solving_a_real_network_twice_gives_the_same_answer() {
     let case = load_case(case_path("case300_ieee")).unwrap();
     let a = build_lopf(&case.network).unwrap();
     let b = build_lopf(&case.network).unwrap();
-    assert_eq!(a.model.to_csc(), b.model.to_csc(), "matrices differ");
+    assert_eq!(a.model.matrix(), b.model.matrix(), "matrices differ");
 
     let sa = HighsSolver::default().solve(&a).unwrap();
     let sb = HighsSolver::default().solve(&b).unwrap();

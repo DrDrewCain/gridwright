@@ -252,13 +252,14 @@ fn bench(n_buses: usize, n_hours: usize, do_solve: bool) {
         build_time.as_secs_f64() * 1e3
     );
 
-    let t2 = Instant::now();
-    let csc = lopf.model.to_csc();
-    let csc_time = t2.elapsed();
+    // The transpose used to be timed here, after construction. It is now inside
+    // it: rows are scattered into column major form as they are absorbed, so
+    // the figure above already includes it and there is no separate step left
+    // to charge for. The line stays to say so, because it was reported for long
+    // enough that its disappearance would look like the work went missing.
     println!(
-        "  csr->csc:     {:>10.3} ms  ({} nonzeros transposed)",
-        csc_time.as_secs_f64() * 1e3,
-        csc.nnz()
+        "  csr->csc:            (in construction, {} nonzeros)",
+        lopf.model.matrix().nnz()
     );
 
     // Throughput is what compares across machines and problem sizes; absolute

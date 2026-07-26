@@ -121,7 +121,7 @@ impl Solver for HighsSolver {
             return Err(SolveError::TooManyRows(n_row));
         }
 
-        let csc = model.to_csc();
+        let csc = model.matrix();
         let nnz = csc.nnz();
         if nnz > i32::MAX as usize {
             return Err(SolveError::TooManyNonzeros(nnz));
