@@ -162,8 +162,14 @@ concrete in the way, named.
       `(R, I)`, so no plain relaxation can distinguish a network with a phase
       shifter from one without. Only the spatial search, narrowing the boxes
       until the cycle envelopes bind, makes the device visible.
-- [ ] Apparent power limits on lines, which are a second-order cone per line
-      rather than the pair of linear bounds a DC model uses.
+- [x] ~~Apparent power limits on lines.~~ **Done**, and the AC model carried no
+      thermal limits *at all* before this: it could route as much as the
+      impedances allowed. A rating bounds `√(P² + Q²)`, a circle in the complex
+      plane, and both components are already linear in the decision variables,
+      so it goes in as a three-dimensional second-order cone with no auxiliary
+      variables. A square limit would have allowed the corner — √2 times the
+      rating — which is what a pair of linear bounds carried over from the DC
+      model would give.
 - [x] ~~N-1 security constraints.~~ **Done.** Formulated through line outage
       distribution factors, so security costs rows rather than columns: the
       naive approach duplicates every flow variable per contingency, while LODF

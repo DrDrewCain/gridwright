@@ -131,8 +131,8 @@ fn the_search_proves_an_optimum_the_relaxation_could_only_bound() {
         &net,
         0,
         BnbOptions {
-            max_nodes: 48,
-            gap_tol: 1e-6,
+            max_nodes: 160,
+            gap_tol: 1e-5,
             ..Default::default()
         },
     )

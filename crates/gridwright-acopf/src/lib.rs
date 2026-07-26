@@ -556,6 +556,62 @@ pub fn solve_in_domain(
         cone_dims.push(4usize);
     }
 
+    // --- Thermal limits, as the cone they actually are. ---
+    //
+    // A line's rating bounds its *apparent* power, `√(P² + Q²) ≤ S`, which is a
+    // circle in the complex plane. A DC model has no reactive power and bounds
+    // the real part alone with a pair of linear inequalities, and carrying that
+    // over here would be wrong in the direction that matters: a line at its
+    // rating on reactive power alone would read as entirely unloaded.
+    //
+    // Both `P` and `Q` are already linear in the decision variables, so the
+    // constraint goes in directly as a three-dimensional second-order cone with
+    // the rating as its bound, and needs no auxiliary variables at all.
+    //
+    // Written at the `bus0` end. The far end differs by the losses, which for a
+    // line near its limit is a fraction of a percent; bounding both ends would
+    // double the cones for a distinction the ratings themselves do not carry.
+    for (l, line) in net.lines.iter().enumerate() {
+        let rating = line.s_nom / base;
+        // No rating, or one large enough to mean unlimited. A NaN falls through
+        // the first test and is excluded, which is the safe direction: a cone
+        // built on one would poison the whole solve.
+        if !rating.is_finite() || rating <= 0.0 || rating >= 1e4 {
+            continue;
+        }
+        let (g_ij, b_ij) = y[l];
+        let (cos, sin) = (line.phase_shift.cos(), line.phase_shift.sin());
+        let (g0, b0) = (g_ij * cos - b_ij * sin, b_ij * cos + g_ij * sin);
+        let tau = if line.tap_ratio > 0.0 { line.tap_ratio } else { 1.0 };
+        let (t2, t1) = (tau * tau, tau);
+        let half_shunt = line.shunt_susceptance / 2.0;
+        let ui = lay.u(line.bus0);
+
+        // The bound comes first, then the two components, in clarabel's
+        // `s = b − Ax` form: a zero row with the rating on the right, then each
+        // expression negated.
+        cone.push(&[], rating);
+        //  P = g·u/τ² − (g'R + b'I)/τ
+        cone.push(
+            &[
+                (ui, g_ij / t2),
+                (lay.r(l), -g0 / t1),
+                (lay.i(l), -b0 / t1),
+            ],
+            0.0,
+        );
+        //  Q = −(b + b_sh/2)·u/τ² + (b'R − g'I)/τ
+        cone.push(
+            &[
+                (ui, -(b_ij + half_shunt) / t2),
+                (lay.r(l), b0 / t1),
+                (lay.i(l), -g0 / t1),
+            ],
+            0.0,
+        );
+        cone_dims.push(3usize);
+    }
+
     // --- Assemble. Clarabel stacks the cones in order: zero, nonnegative, SOC.
     let mut entries: Vec<(usize, usize, f64)> = Vec::new();
     let mut b_vec: Vec<f64> = Vec::new();
