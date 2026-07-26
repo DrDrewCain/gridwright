@@ -30,6 +30,7 @@
 #                  (default: half the core count)
 #   GW_WAIT_MINS   how long to wait for the machine to go quiet (120)
 #   GW_RUNS        repetitions (3)
+#   GW_WARMUP      run once and discard before timing (off; see below)
 #
 # On the threshold. The first version of this refused above a load of 2.0 and
 # then never ran, because an interactive desktop does not go that quiet: a
@@ -89,10 +90,21 @@ while :; do
   waited=$((waited + 1))
 done
 
-# Warm once and discard. The first run in a fresh process takes its page faults,
-# which is a real cost for a one-shot CLI and noise for everything else.
-printf 'warm-up (discarded)\n'
-"$@" >/dev/null 2>&1
+# Warm-up is off by default, which is a correction rather than a preference.
+#
+# It was on, reasoning that a first run in a fresh process pays its page faults
+# and that cost is noise. True of a benchmark measured in milliseconds. For a
+# long one it simply doubles the bill: a ladder here that takes twenty-five
+# minutes spent the first twenty-five inside a warm-up whose output was thrown
+# away.
+#
+# It is also redundant whenever RUNS is greater than one, since taking the best
+# of several runs already discards a slow first one, which is the whole thing
+# the warm-up was for.
+if [ "${GW_WARMUP:-0}" != "0" ]; then
+  printf 'warm-up (discarded)\n'
+  "$@" >/dev/null 2>&1
+fi
 
 for i in $(seq 1 "$RUNS"); do
   before="$(one_minute_load)"
