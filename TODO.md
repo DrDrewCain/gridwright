@@ -649,11 +649,16 @@ Full year at hourly resolution, synthetic ring, solved whole:
 
 | Buses | Columns | Build | Solve | Growth |
 | --- | --- | --- | --- | --- |
-| 8 | 402,960 | 4.5 ms | 3.5 s | |
-| 16 | 805,920 | 4.7 ms | 10.3 s | 2.9× |
-| 32 | 1,611,840 | 8.5 ms | 31.0 s | 3.0× |
-| 64 | 3,223,680 | 15.0 ms | 110.7 s | 3.6× |
-| 128 | 6,447,360 | 50.4 ms | 561.8 s | 5.1× |
+| 8 | 402,960 | 3.9 ms | 3.2 s | |
+| 16 | 805,920 | 4.8 ms | 9.5 s | 3.0× |
+| 32 | 1,611,840 | 7.3 ms | 28.3 s | 3.0× |
+| 64 | 3,223,680 | 12.8 ms | 101.1 s | 3.6× |
+| 128 | 6,447,360 | 23.1 ms | 314.6 s | 3.1× |
+
+Re-measured on an idle machine through `benchmarks/measure.sh`. The busy-machine
+version of this table put 128 buses at 561.8 s, which was 79% high, and made
+growth look like it accelerated to 5× at the top when it is flat at about 3×.
+Run-to-run spread is now 1.4% against 16% before.
 
 **Re-measured to completion, best of two runs, and the previous version of this
 table was wrong in every row.** It reported 64 buses as "did not finish in seven
@@ -715,9 +720,42 @@ narrower claim than "construction is the bottleneck".
 - [ ] Re-run these on real networks rather than a synthetic ring once a large
       case with a full year of time series is assembled, since the ring's
       regular topology may flatter the solve.
-- [ ] Measure where the rolling horizon's window length stops paying: shorter
-      windows solve faster and lose more foresight, and nobody has established
-      the trade on a case with storage that matters.
+- [x] ~~Measure where the rolling horizon's window length stops paying.~~
+      **Done**, and the answer is a cliff rather than a curve.
+
+      Measured on a system whose storage genuinely couples distant snapshots:
+      wind arriving in multi-day spells against a reservoir holding a week, so
+      that a window shorter than a calm spell cannot see across one. The
+      reference is the same horizon solved whole, so every penalty is against a
+      true optimum rather than against another approximation.
+
+      | Window | Kept | Cost penalty |
+      | --- | --- | --- |
+      | 24 h | 12 | 189% |
+      | 48 h | 24 | 148% |
+      | 72 h | 36 | 110% |
+      | 96 h | 48 | 92% |
+      | **120 h** | 60 | **0%** |
+      | 168 h | 84 | 0.7% |
+      | 240 h | 120 | 0% |
+
+      Nothing between 92% and zero. The fixture's calms last five days, and a
+      window of 120 hours is the first that spans one: below it the horizon
+      commits to buying through a drought it cannot see, and above it there is
+      nothing left to learn. So the rule is not "longer is better" but **the
+      window must span the longest event the storage is there to ride out**, and
+      past that point extra window length buys nothing at all.
+
+      The other axis, which the `Horizon::new` convention fixes without
+      justification, behaves the same way. At a fixed window of 168, keeping
+      anything up to 120 costs nothing, and keeping 144 costs 91%: what matters
+      is that the lookahead is long enough, not that it is half.
+
+      One honest note on the timings: at this size the rolling solve is 1.6 to
+      2.8 times *slower* than solving whole, because 504 snapshots is small
+      enough to solve outright and decomposition is pure overhead there. The
+      penalties above are about foresight and are the transferable part; the
+      timings are not.
 
 ## Benchmarks and validation
 
