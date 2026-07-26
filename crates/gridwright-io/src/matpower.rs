@@ -133,9 +133,18 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
         let id = num(row, 0, "bus", r, 13)? as i64;
         let pd = num(row, 2, "bus", r, 13)?;
         let area = num(row, 6, "bus", r, 13)? as i64;
-        // MATPOWER's `area` is the closest thing the format has to a
-        // synchronous area, and using it means a multi-area case such as a US
-        // interconnection model is read correctly rather than fused into one.
+        // MATPOWER's `area` is a *control* area, a market or operator zone,
+        // which is not the same thing as a synchronous area and must not be
+        // read as one. Real cases route AC branches across it freely: Texas has
+        // three areas with sixty-one AC branches crossing them, and the Polish
+        // and SDET cases do the same. Reading it as synchronous rejected every
+        // one of those networks as physically impossible when they are nothing
+        // of the kind.
+        //
+        // So it is kept as the country, which is what it behaves like, and the
+        // synchronous areas are derived from AC connectivity once the branches
+        // have been read. That is the definition of the term rather than a
+        // heuristic, and it cannot disagree with the data.
         let idx = net.add_bus_in_area(format!("bus{id}"), format!("area{area}"), format!("a{area}"));
         // Voltage limits are columns 12 and 11, and matter only to the AC model.
         if let (Ok(vmax), Ok(vmin)) = (num(row, 11, "bus", r, 13), num(row, 12, "bus", r, 13))
@@ -303,6 +312,20 @@ pub fn parse_case(text: &str, name: impl Into<String>) -> Result<Case, MatpowerE
          are read and used by the AC formulation, and ignored by the DC one"
     ));
 
+    // Once every branch is known, the synchronous areas follow from which of
+    // them carry susceptance. This has to happen before validation, because
+    // validation is what refuses an AC line spanning two of them, and with the
+    // areas derived that can no longer be contradicted by the file.
+    net.derive_synchronous_areas();
+    let areas = net.synchronous_areas().len();
+    if areas > 1 {
+        notes.push(format!(
+            "{areas} synchronous areas, derived from AC connectivity rather than \
+             from the area column, which in MATPOWER is a control area and \
+             routinely has AC branches crossing it"
+        ));
+    }
+
     net.validate()?;
     Ok(Case {
         name,
@@ -425,11 +448,66 @@ mpc.gencost = [
     }
 
     #[test]
-    fn matpower_areas_become_synchronous_areas() {
+    fn the_area_column_is_a_country_and_not_a_synchronous_area() {
+        // This test used to assert the opposite, and the opposite was a bug.
+        // MATPOWER's area column is a control area: a market or operator zone,
+        // which AC branches cross all the time. Reading it as a synchronous
+        // area made the reader refuse real networks as physically impossible,
+        // among them the 2000-bus Texas case, whose three areas are one
+        // synchronous grid with sixty-one AC branches between them.
         let c = parse_case(TINY, "tiny").unwrap();
+        assert_eq!(c.network.buses[0].country, "area1", "the column is a zone");
         assert_eq!(c.network.synchronous_areas().len(), 1);
-        assert_eq!(c.network.buses[0].synchronous_area, "a1");
     }
+
+    #[test]
+    fn synchronous_areas_come_from_which_branches_carry_susceptance() {
+        // Two buses joined by an AC line turn together whatever any column
+        // says, and two joined only by a controllable tie do not. That is the
+        // definition of a synchronous area, so it is what the reader applies.
+        //
+        // Both cases below declare the two buses in *different* area columns,
+        // which is precisely the situation that used to be refused.
+        let with_ac = TWO_AREAS.replace("__B__", "10.0");
+        let c = parse_case(&with_ac, "ac").unwrap();
+        assert_eq!(
+            c.network.synchronous_areas().len(),
+            1,
+            "an AC branch makes its two ends synchronous whatever the file says"
+        );
+
+        let with_tie = TWO_AREAS.replace("__B__", "0.0");
+        let c = parse_case(&with_tie, "tie").unwrap();
+        assert_eq!(
+            c.network.synchronous_areas().len(),
+            2,
+            "a tie with no susceptance leaves the two ends free of one another"
+        );
+        assert!(
+            c.notes.iter().any(|n| n.contains("synchronous areas")),
+            "more than one area should be stated: {:?}",
+            c.notes
+        );
+    }
+
+    /// Two buses in different *declared* areas, joined by one branch whose
+    /// reactance the test substitutes. Column seven is the area.
+    const TWO_AREAS: &str = "\
+mpc.baseMVA = 100;
+mpc.bus = [
+\t1\t3\t0\t0\t0\t0\t1\t1\t0\t345\t1\t1.1\t0.9;
+\t2\t1\t50\t0\t0\t0\t2\t1\t0\t345\t1\t1.1\t0.9;
+];
+mpc.gen = [
+\t1\t60\t0\t100\t-100\t1\t100\t1\t100\t0;
+];
+mpc.branch = [
+\t1\t2\t0\t__B__\t0\t250\t250\t250\t0\t0\t1\t-360\t360;
+];
+mpc.gencost = [
+\t2\t0\t0\t2\t20\t0;
+];
+";
 
     #[test]
     fn a_case_without_a_bus_section_is_rejected() {

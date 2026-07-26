@@ -979,6 +979,62 @@ impl Network {
         seen
     }
 
+    /// Assign synchronous areas from AC connectivity, replacing whatever the
+    /// buses currently carry.
+    ///
+    /// A synchronous area is not a label a data file gets to choose: it is the
+    /// set of buses that turn together, which is exactly a connected component
+    /// of the AC network. Two buses joined by a line with susceptance are
+    /// synchronous whether or not anyone wrote that down, and only a
+    /// controllable tie with no susceptance can join grids that are not.
+    ///
+    /// This exists because several formats carry an `area` field that means
+    /// something else. MATPOWER's is a *control* area, a market or operator
+    /// zone, and real cases route AC branches across it freely: Texas has three
+    /// such areas with sixty-one AC branches crossing them, and the Polish and
+    /// SDET cases the same. Reading that field as a synchronous area rejects
+    /// those networks as physically impossible when they are nothing of the
+    /// kind.
+    ///
+    /// An isolated bus becomes its own area, which is right rather than a
+    /// degenerate case: an island with nothing attached has a free angle and
+    /// needs its own reference.
+    ///
+    /// Areas are numbered by the lowest bus index they contain, so the result
+    /// does not depend on the order the lines happened to be listed in.
+    pub fn derive_synchronous_areas(&mut self) {
+        let n = self.buses.len();
+        // Union-find with path halving. A component labelling could be a search
+        // instead, but this is a few lines and needs no queue.
+        let mut parent: Vec<usize> = (0..n).collect();
+        fn find(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        for l in &self.lines {
+            if l.is_transport() {
+                // A controllable tie carries no susceptance, so the two ends
+                // need not turn together. This is the one case where a boundary
+                // is real.
+                continue;
+            }
+            let (a, b) = (find(&mut parent, l.bus0), find(&mut parent, l.bus1));
+            if a != b {
+                // Attach to the lower index so the representative of a
+                // component is always its lowest member.
+                let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+                parent[hi] = lo;
+            }
+        }
+        for i in 0..n {
+            let root = find(&mut parent, i);
+            self.buses[i].synchronous_area = format!("sync{root}");
+        }
+    }
+
     pub fn add_generator(&mut self, g: Generator) -> usize {
         self.generators.push(g);
         self.generators.len() - 1
