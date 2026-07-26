@@ -101,6 +101,40 @@ impl Tri {
     }
 }
 
+/// A fill-reducing column order: sparsest first.
+///
+/// Nothing cleverer, and that is an answer to an experiment rather than the
+/// first thing tried.
+///
+/// The obvious improvement is greedy minimum degree, which maintains the counts
+/// as elimination proceeds: retiring a pivot row shortens every column through
+/// it, and on a basis full of slack columns that turns neighbours into
+/// singletons in turn, peeling the triangular part off before any general
+/// elimination starts. A static sort cannot see that cascade.
+///
+/// It works, and it does not pay. Measured on an LP-shaped basis it **halves
+/// the fill**, 1,241 nonzeros against 2,450. Measured on the actual solver, end
+/// to end across the whole size ladder, it is **15 to 30% slower**: 26.5 s at
+/// 20,736 rows against 21.7 s. Implemented twice, once with a vector per row
+/// and once with flat arrays and linked buckets; the second was faster than the
+/// first and still lost.
+///
+/// The reason is where the saving lands. The ordering runs on every
+/// refactorisation, while the fill it saves only shortens the triangular
+/// solves, and on these matrices the factors are small either way — halving a
+/// small number saves less than the ordering costs to compute. COLAMD would
+/// face the same arithmetic.
+///
+/// This flips on a denser basis, where the factors are large enough for their
+/// size to dominate. If [`Lu::nonzeros`] ever grows to a large multiple of the
+/// input, the experiment is worth repeating and the implementation is in the
+/// history.
+fn order_columns(m: usize, cols: &[Vec<(usize, f64)>]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..m).collect();
+    order.sort_by_key(|&j| cols[j].len());
+    order
+}
+
 /// `P B = L U`, with the factors held sparsely.
 #[derive(Debug, Clone)]
 pub struct Lu {
@@ -162,13 +196,7 @@ impl Lu {
             });
         }
 
-        // Columns are eliminated sparsest first. A column with two entries can
-        // only fill in two rows, so taking it early keeps the active submatrix
-        // small for longer. This is a heuristic standing in for a symbolic
-        // ordering, and it is cheap enough to be worth doing every
-        // refactorisation.
-        let mut col_order: Vec<usize> = (0..m).collect();
-        col_order.sort_by_key(|&j| cols[j].len());
+        let col_order = order_columns(m, cols);
 
         // The active submatrix, as sparse columns that shrink as rows are
         // eliminated.
@@ -677,5 +705,94 @@ mod tests {
             Lu::factor(3, &[vec![(0usize, 1.0)]]),
             Err(LuError::WrongSize { want: 3, got: 1 })
         ));
+    }
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::*;
+
+    /// A basis in the shape a linear program actually produces: a core of
+    /// structural columns and a great many slacks, which are single entries.
+    fn lp_basis(m: usize, slack_fraction: f64) -> Vec<Vec<(usize, f64)>> {
+        let n_slack = (m as f64 * slack_fraction) as usize;
+        let mut state = 0x243F6A8885A308D3u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        (0..m)
+            .map(|j| {
+                if j < n_slack {
+                    // A slack: one entry, and eliminating it costs nothing.
+                    vec![(j, 1.0)]
+                } else {
+                    // A structural column touching a few nearby rows, which is
+                    // what local network connectivity looks like.
+                    let mut col = vec![(j, 3.0 + (next() % 3) as f64)];
+                    for _ in 0..3 {
+                        let span = (next() % 20) as usize;
+                        let r = (j + span) % m;
+                        if r != j {
+                            col.push((r, -0.5));
+                        }
+                    }
+                    col.sort_by_key(|&(r, _)| r);
+                    col.dedup_by_key(|e| e.0);
+                    col
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn fill_on_a_basis_shaped_like_a_linear_program_stays_within_twice_the_input() {
+        // What the current ordering achieves, pinned so that a change to it is
+        // visible rather than silent.
+        //
+        // Greedy minimum degree gets this to exactly the input size by
+        // following the singleton cascade, and costs more in ordering than it
+        // saves in solving. See `order_columns` for the numbers. If this
+        // assertion starts failing upward, that trade is worth recomputing.
+        let m = 600;
+        let cols = lp_basis(m, 0.6);
+        let input: usize = cols.iter().map(Vec::len).sum();
+        let got = Lu::factor(m, &cols).unwrap().nonzeros();
+        assert!(
+            got <= 2 * input,
+            "{got} nonzeros from an input of {input}, which is more fill than \
+             this ordering used to produce"
+        );
+    }
+
+    #[test]
+    fn a_wholly_triangular_basis_costs_no_fill_at_all() {
+        // The limit case, and the one that says the singleton cascade is
+        // working: an identity has nothing to fill in, and neither does any
+        // permutation of one.
+        let m = 300;
+        let cols: Vec<Vec<(usize, f64)>> =
+            (0..m).map(|j| vec![((j * 7 + 3) % m, 1.0)]).collect();
+        let lu = Lu::factor(m, &cols).unwrap();
+        assert_eq!(lu.nonzeros(), m, "a permutation should factor to itself");
+    }
+
+    #[test]
+    fn the_order_is_a_permutation_and_nothing_is_lost() {
+        // A reordering bug that dropped or repeated a column would show up as
+        // a wrong answer much later, so it is worth checking directly.
+        for m in [1usize, 5, 40, 200] {
+            let cols = lp_basis(m, 0.5);
+            let order = order_columns(m, &cols);
+            assert_eq!(order.len(), m, "m = {m}");
+            let mut seen = vec![false; m];
+            for &j in &order {
+                assert!(!seen[j], "column {j} appears twice for m = {m}");
+                seen[j] = true;
+            }
+            assert!(seen.iter().all(|&s| s), "a column was dropped for m = {m}");
+        }
     }
 }

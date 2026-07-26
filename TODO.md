@@ -36,10 +36,20 @@ concrete in the way, named.
       since the last refactorisation, which is visible in the scaling degrading
       from `m^1.9` at 3,000 rows to about `m^2.5` at 14,000. Forrest-Tomlin is
       the standard remedy.
-- [ ] **A fill-reducing ordering.** Columns are currently pre-ordered by
-      ascending nonzero count, which is a cheap stand-in for the symbolic
-      analysis a production code performs. On a banded matrix the factors stay
-      within four times the input nonzeros; on an unstructured one they do not.
+- [x] ~~**A fill-reducing ordering.**~~ **Measured and rejected**, twice.
+      Greedy minimum degree maintains the column counts as elimination proceeds
+      and follows the singleton cascade an LP basis is full of. It **halves the
+      fill**: 1,241 nonzeros against 2,450 on an LP-shaped basis. It is also
+      **15 to 30% slower end to end**, 26.5 s at 20,736 rows against 21.7 s,
+      because the ordering runs on every refactorisation while the fill it saves
+      only shortens the triangular solves, and on these matrices the factors are
+      small enough either way that halving them saves less than the ordering
+      costs. Implemented once with a vector per row and once with flat arrays
+      and linked buckets; the second beat the first and still lost. COLAMD would
+      face the same arithmetic.
+
+      Worth revisiting only if the factors grow: the test pins the current fill,
+      and if it starts rising the trade changes.
 - [x] ~~Branch and bound, so the pure-Rust backend can do unit commitment.~~
       **Done.** The relaxation is the same program with integrality dropped, and
       branching is by bounds alone, so a node is a pair of vectors and a
