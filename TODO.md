@@ -151,12 +151,22 @@ concrete in the way, named.
       angles closing around a loop, so a cycle-inconsistent point could be
       reported as optimal. Cycle consistency is now measured from the solution
       and folded into the status.
-- [ ] **Cycle constraints for fundamental cycles longer than three.** Same
-      identity, more factors: the imaginary part of a product around a loop
-      still has to vanish, but the envelope tower grows with the cycle length
-      and the auxiliary variables multiply faster than the tightening repays.
-      Triangles are done, and now that the search can narrow the boxes those
-      envelopes are drawn over, longer cycles are worth revisiting.
+- [x] ~~**Cycle constraints for fundamental cycles longer than three.**~~
+      **Done**, and the objection that stopped it turned out to be an artefact
+      of how it was written rather than of the maths.
+
+      Writing the identity out is what does not scale: the imaginary part of a
+      product of `k` complex numbers has `2^(k-1)` terms. Building the product
+      one factor at a time costs six auxiliary variables per step and `k − 1`
+      steps, so the cost grows *linearly* in the length.
+
+      It matters more than it sounds. A five-bus ring is meshed, has exactly one
+      cycle, and a triangle-only formulation constrains nothing in it at all.
+      IEEE 14 has seven independent cycles and only a few are triangles.
+
+      Cycles come from a spanning forest, so they are a basis of the cycle
+      space: constraining them constrains every cycle, since any other is a
+      combination and the identity is additive around combinations.
 - [x] ~~Bus shunt admittances.~~ **Done.** A conductance draws real power that
       somebody has to generate — case300 carries over a megawatt of it — and a
       susceptance injects the reactive power capacitor banks exist to supply.

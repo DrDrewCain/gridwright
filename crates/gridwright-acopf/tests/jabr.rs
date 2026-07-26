@@ -178,13 +178,15 @@ fn cycle_constraints_are_only_built_where_there_are_cycles() {
     let radial = two_bus(0.01, 0.1, 1.0, 10.0);
     let s = solve_acopf_with(&radial, 0, AcOptions {
         cycle_constraints: true, max_triangles: 100,
-    }).unwrap();
+            max_cycle_length: 3,
+        }).unwrap();
     assert_eq!(s.triangles_constrained, 0, "a two-bus line has no cycle");
 
     let meshed = case("case14_ieee");
     let m = solve_acopf_with(&meshed, 0, AcOptions {
         cycle_constraints: true, max_triangles: 100,
-    }).unwrap();
+            max_cycle_length: 3,
+        }).unwrap();
     assert!(m.triangles_constrained > 0, "IEEE 14 is meshed and should have triangles");
 }
 
@@ -199,6 +201,7 @@ fn cycle_constraints_do_not_loosen_the_bound() {
         let plain = solve_acopf(&net, 0).unwrap();
         let tight = solve_acopf_with(&net, 0, AcOptions {
             cycle_constraints: true, max_triangles: 200,
+            max_cycle_length: 3,
         }).unwrap();
 
         assert!(matches!(tight.status, Status::Optimal | Status::OptimalRelaxed),
@@ -216,7 +219,8 @@ fn a_constrained_solve_still_respects_the_physical_limits() {
     let net = case("case14_ieee");
     let s = solve_acopf_with(&net, 0, AcOptions {
         cycle_constraints: true, max_triangles: 200,
-    }).unwrap();
+            max_cycle_length: 3,
+        }).unwrap();
     for (b, &v) in s.voltage.iter().enumerate() {
         let bus = &net.buses[b];
         assert!(v >= bus.v_min - 1e-3 && v <= bus.v_max + 1e-3,
@@ -232,6 +236,7 @@ fn the_triangle_budget_is_respected() {
     let net = case("case30_ieee");
     let s = solve_acopf_with(&net, 0, AcOptions {
         cycle_constraints: true, max_triangles: 2,
-    }).unwrap();
+            max_cycle_length: 3,
+        }).unwrap();
     assert!(s.triangles_constrained <= 2, "budget ignored: {}", s.triangles_constrained);
 }

@@ -71,6 +71,164 @@ pub struct Triangle {
     pub buses: [usize; 3],
 }
 
+/// A fundamental cycle of any length, as line indices with orientation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Cycle {
+    pub lines: Vec<usize>,
+    /// Whether each line runs with the cycle or against it. Traversing a line
+    /// backwards conjugates its `W`, which flips the sign of its imaginary
+    /// part.
+    pub forward: Vec<bool>,
+    pub buses: Vec<usize>,
+}
+
+impl Cycle {
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
+/// Fundamental cycles, up to a given length.
+///
+/// A spanning forest is grown over the AC lines; every line it does not use
+/// closes exactly one cycle, made of that line and the tree path between its
+/// ends. Those cycles are a basis of the cycle space, so constraining them
+/// constrains every cycle: any other is a combination of these, and the angle
+/// identity is additive around combinations.
+///
+/// That basis property is what makes this worth doing rather than enumerating
+/// cycles, of which a meshed network has exponentially many.
+pub fn find_cycles(net: &Network, max_len: usize, limit: usize) -> Vec<Cycle> {
+    let n = net.buses.len();
+    let mut adj: Vec<Vec<(usize, usize)>> = vec![Vec::new(); n];
+    for (l, line) in net.lines.iter().enumerate() {
+        if line.is_transport() || line.bus0 == line.bus1 {
+            continue;
+        }
+        if net.buses[line.bus0].synchronous_area != net.buses[line.bus1].synchronous_area {
+            continue;
+        }
+        adj[line.bus0].push((line.bus1, l));
+        adj[line.bus1].push((line.bus0, l));
+    }
+
+    // Breadth-first, so the tree paths are shortest and the cycles it finds are
+    // the shortest available through each closing line. A depth-first tree
+    // would produce a valid basis of much longer cycles, and length is what
+    // costs variables here.
+    let mut parent: Vec<Option<(usize, usize)>> = vec![None; n];
+    let mut depth = vec![0usize; n];
+    let mut seen = vec![false; n];
+    let mut tree_line = vec![false; net.lines.len()];
+    let mut order = Vec::with_capacity(n);
+    for root in 0..n {
+        if seen[root] || adj[root].is_empty() {
+            continue;
+        }
+        seen[root] = true;
+        let mut queue = std::collections::VecDeque::from([root]);
+        while let Some(b) = queue.pop_front() {
+            order.push(b);
+            for &(next, l) in &adj[b] {
+                if !seen[next] {
+                    seen[next] = true;
+                    parent[next] = Some((b, l));
+                    depth[next] = depth[b] + 1;
+                    tree_line[l] = true;
+                    queue.push_back(next);
+                }
+            }
+        }
+    }
+
+    let mut out = Vec::new();
+    for (l, line) in net.lines.iter().enumerate() {
+        if tree_line[l] || line.is_transport() || line.bus0 == line.bus1 {
+            continue;
+        }
+        if net.buses[line.bus0].synchronous_area != net.buses[line.bus1].synchronous_area {
+            continue;
+        }
+        if !seen[line.bus0] || !seen[line.bus1] {
+            continue;
+        }
+        let Some(cycle) = close(net, line.bus0, line.bus1, l, &parent, &depth, max_len) else {
+            continue;
+        };
+        out.push(cycle);
+        if out.len() >= limit {
+            break;
+        }
+    }
+    out
+}
+
+/// Walk both ends up to their common ancestor and join them with the closing
+/// line.
+fn close(
+    net: &Network,
+    a: usize,
+    b: usize,
+    closing: usize,
+    parent: &[Option<(usize, usize)>],
+    depth: &[usize],
+    max_len: usize,
+) -> Option<Cycle> {
+    let (mut x, mut y) = (a, b);
+    let mut up: Vec<(usize, usize)> = Vec::new();
+    let mut down: Vec<(usize, usize)> = Vec::new();
+    while depth[x] > depth[y] {
+        let (p, l) = parent[x]?;
+        up.push((x, l));
+        x = p;
+    }
+    while depth[y] > depth[x] {
+        let (p, l) = parent[y]?;
+        down.push((y, l));
+        y = p;
+    }
+    while x != y {
+        let (px, lx) = parent[x]?;
+        let (py, ly) = parent[y]?;
+        up.push((x, lx));
+        down.push((y, ly));
+        x = px;
+        y = py;
+    }
+    // The path is a -> … -> meet -> … -> b, then the closing line back to a.
+    let mut buses = vec![a];
+    let mut lines = Vec::new();
+    for &(node, l) in &up {
+        let _ = node;
+        lines.push(l);
+        let (p, _) = parent[if buses.is_empty() { a } else { *buses.last().unwrap() }]?;
+        buses.push(p);
+    }
+    for &(node, l) in down.iter().rev() {
+        lines.push(l);
+        buses.push(node);
+    }
+    lines.push(closing);
+    if lines.len() < 3 || lines.len() > max_len {
+        return None;
+    }
+    // Orientation: each line runs with the cycle when its `bus0` is the node
+    // the cycle arrives from.
+    let forward = lines
+        .iter()
+        .enumerate()
+        .map(|(k, &l)| net.lines[l].bus0 == buses[k])
+        .collect();
+    Some(Cycle {
+        lines,
+        forward,
+        buses,
+    })
+}
+
 /// Find triangles among the AC lines.
 ///
 /// Deliberately not every cycle: see the module note. Parallel lines between
@@ -368,5 +526,131 @@ mod tests {
         let (lo, hi) = ri_bounds(&net, 0);
         assert!((hi - 1.32).abs() < 1e-9, "got {hi}");
         assert!((lo + 1.32).abs() < 1e-9, "got {lo}");
+    }
+}
+
+#[cfg(test)]
+mod cycle_tests {
+    use super::*;
+    use gridwright_net::{Line, Snapshots};
+
+    /// A ring of `n` buses, which has exactly one fundamental cycle however
+    /// long it is.
+    fn ring(n: usize) -> Network {
+        let mut net = Network::new(Snapshots::hourly(1));
+        for i in 0..n {
+            net.add_bus(format!("b{i}"), "X");
+        }
+        for i in 0..n {
+            net.add_line(Line {
+                name: format!("l{i}"),
+                bus0: i,
+                bus1: (i + 1) % n,
+                s_nom: 100.0,
+                susceptance: 10.0,
+                reactance: 0.1,
+                ..Default::default()
+            });
+        }
+        net
+    }
+
+    #[test]
+    fn a_ring_has_exactly_one_fundamental_cycle() {
+        // Whatever its length. A cycle basis has one element per line outside
+        // the spanning tree, and a ring has exactly one.
+        for n in [3usize, 4, 5, 8] {
+            let cycles = find_cycles(&ring(n), 32, 100);
+            assert_eq!(cycles.len(), 1, "ring of {n}: {cycles:?}");
+            assert_eq!(cycles[0].len(), n, "ring of {n} should give a cycle of {n}");
+        }
+    }
+
+    #[test]
+    fn a_tree_has_no_cycles() {
+        let mut net = ring(6);
+        net.lines.pop();
+        assert!(find_cycles(&net, 32, 100).is_empty());
+    }
+
+    #[test]
+    fn the_basis_has_one_cycle_per_line_outside_the_spanning_tree() {
+        // The property that makes constraining a basis enough: `edges - nodes +
+        // components` is the dimension of the cycle space, and every cycle in
+        // the graph is a combination of the basis.
+        let mut net = ring(6);
+        // Two chords, so eight lines over six buses in one component.
+        for (a, b) in [(0usize, 3usize), (1, 4)] {
+            net.add_line(Line {
+                name: format!("chord{a}{b}"),
+                bus0: a,
+                bus1: b,
+                s_nom: 100.0,
+                susceptance: 10.0,
+                reactance: 0.1,
+                ..Default::default()
+            });
+        }
+        let cycles = find_cycles(&net, 32, 100);
+        assert_eq!(cycles.len(), 8 - 6 + 1, "{cycles:?}");
+    }
+
+    #[test]
+    fn a_length_limit_drops_the_cycles_beyond_it() {
+        // Longer cycles cost more variables than the tightening repays, so the
+        // limit is the knob that trades one against the other.
+        assert!(find_cycles(&ring(8), 4, 100).is_empty());
+        assert_eq!(find_cycles(&ring(8), 8, 100).len(), 1);
+    }
+
+    #[test]
+    fn a_cycle_closes_on_itself() {
+        // Each line has to join the bus before it to the bus after it, or the
+        // identity being imposed is about some other loop entirely.
+        for n in [3usize, 5, 7] {
+            let net = ring(n);
+            let c = &find_cycles(&net, 32, 100)[0];
+            assert_eq!(c.buses.len(), c.lines.len());
+            for k in 0..c.len() {
+                let line = &net.lines[c.lines[k]];
+                let from = c.buses[k];
+                let to = c.buses[(k + 1) % c.len()];
+                let (a, b) = (line.bus0, line.bus1);
+                assert!(
+                    (a == from && b == to) || (b == from && a == to),
+                    "ring of {n}: line {k} joins {a}-{b}, not {from}-{to}"
+                );
+                assert_eq!(c.forward[k], line.bus0 == from, "orientation at {k}");
+            }
+        }
+    }
+
+    #[test]
+    fn transport_corridors_and_separate_areas_are_left_out() {
+        // A corridor carries no angle relationship, and two synchronous areas
+        // have no comparable angles at all, so neither can close a cycle the
+        // identity applies to.
+        let mut net = ring(4);
+        net.lines[0].susceptance = 0.0;
+        net.lines[0].reactance = 0.0;
+        assert!(find_cycles(&net, 32, 100).is_empty());
+
+        let mut net = ring(4);
+        net.buses[2].synchronous_area = "other".into();
+        assert!(find_cycles(&net, 32, 100).is_empty());
+    }
+
+    #[test]
+    fn a_real_meshed_network_gives_the_expected_number() {
+        // IEEE 14 has 20 branches over 14 buses in one component, so its cycle
+        // space has dimension seven.
+        let net = gridwright_io::matpower::load_case(
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../examples/pglib/case14_ieee.m"),
+        )
+        .unwrap()
+        .network;
+        let cycles = find_cycles(&net, 64, 1000);
+        assert_eq!(cycles.len(), 20 - 14 + 1, "{} found", cycles.len());
     }
 }

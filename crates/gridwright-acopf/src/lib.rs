@@ -228,7 +228,15 @@ pub struct AcOptions {
     /// envelopes. Tightens the relaxation on meshed networks at the cost of
     /// auxiliary variables; see [`cycles`].
     pub cycle_constraints: bool,
-    /// Cap on how many triangles to constrain. Each costs variables and rows,
+    /// Longest cycle to constrain.
+    ///
+    /// Three keeps the old behaviour. Longer cycles are where the relaxation is
+    /// loosest on a real meshed network, and each costs six auxiliary variables
+    /// per additional line, so this is the knob trading tightness against size.
+    /// Not a correctness setting: a shorter limit means a looser bound, never a
+    /// wrong one.
+    pub max_cycle_length: usize,
+    /// Cap on how many cycles to constrain. Each costs variables and rows,
     /// and a dense subnetwork has a great many, so this is a budget rather than
     /// a correctness setting: fewer triangles means a looser bound, never a
     /// wrong one.
@@ -240,6 +248,7 @@ impl Default for AcOptions {
         Self {
             cycle_constraints: false,
             max_triangles: 256,
+            max_cycle_length: 3,
         }
     }
 }
@@ -287,16 +296,24 @@ pub fn solve_in_domain(
     };
     // Triangles are chosen before the column count is fixed, since each one
     // brings auxiliary variables with it.
-    let triangles = if opts.cycle_constraints {
-        cycles::find_triangles(net, opts.max_triangles)
+    let cycles_found = if opts.cycle_constraints {
+        cycles::find_cycles(net, opts.max_cycle_length, opts.max_triangles)
     } else {
         Vec::new()
     };
-    // Per triangle: three pairwise products, then four trilinear terms, each of
-    // which is one more product of a pair variable with a third factor.
-    const AUX_PER_TRIANGLE: usize = 6 + 4;
+    // Six auxiliaries per multiplication: four products and the two parts of
+    // the running result. A cycle of length `k` takes `k − 1` of them, so the
+    // cost grows linearly in the length where writing the expansion out grows
+    // exponentially.
+    const AUX_PER_STEP: usize = 6;
+    let mut cycle_offsets = Vec::with_capacity(cycles_found.len());
+    let mut aux_used = 0usize;
+    for c in &cycles_found {
+        cycle_offsets.push(aux_used);
+        aux_used += (c.len() - 1) * AUX_PER_STEP;
+    }
     let aux_base = lay.total();
-    let n = aux_base + triangles.len() * AUX_PER_TRIANGLE;
+    let n = aux_base + aux_used;
 
     // Objective: linear in generation. Clarabel minimises ½xᵀPx + qᵀx, and this
     // problem has no quadratic term.
@@ -471,30 +488,37 @@ pub fn solve_in_domain(
 
     // --- Cycle constraints, if asked for. ---
     //
-    // Im(W1 W2 W3) = 0 expands to R1R2I3 + R1I2R3 + I1R2R3 - I1I2I3 = 0, which
-    // is trilinear. Each product becomes an auxiliary variable held between
-    // McCormick bounds, so what enters the problem is a linear equality over
-    // auxiliaries plus the envelopes that tie them to the factors.
-    for (n_tri, tri) in triangles.iter().enumerate() {
-        let base_col = aux_base + n_tri * AUX_PER_TRIANGLE;
-        // Sign of the imaginary part flips when a line is traversed backwards,
-        // because W_ji is the conjugate of W_ij.
-        let sgn = |k: usize| if tri.forward[k] { 1.0 } else { -1.0 };
-        let rr = |k: usize| lay.r(tri.lines[k]);
-        let ii = |k: usize| lay.i(tri.lines[k]);
+    // Around a closed loop the product of the `W`s telescopes to a real,
+    // non-negative number, so its imaginary part vanishes. That is the algebraic
+    // form of "the angle differences add up", with no arctangents in it.
+    //
+    // For a triangle the expansion is short enough to write out. For anything
+    // longer it is not: the imaginary part of a product of `k` complex numbers
+    // has `2^(k-1)` terms. So the product is built up instead, one factor at a
+    // time:
+    //
+    //     (a + ib)(c + id) = (ac − bd) + i(ad + bc)
+    //
+    // Four bilinear products and two linear combinations per step, `k − 1`
+    // steps, and the imaginary part of the last one is set to zero. That grows
+    // linearly in the cycle length where the expansion grows exponentially,
+    // which is the whole reason cycles longer than three were out of reach.
+    //
+    // Each bilinear product becomes an auxiliary variable between McCormick
+    // bounds, drawn over this node's boxes, so a tighter box gives a tighter
+    // constraint and the spatial search has something to work on.
+    for (n_cyc, cyc) in cycles_found.iter().enumerate() {
+        let k = cyc.len();
+        let base_col = aux_base + cycle_offsets[n_cyc];
 
-        // Drawn over this node's boxes. A child's envelope is strictly
-        // tighter than its parent's, which is the whole mechanism.
-        let bnd: Vec<(f64, f64)> = (0..3)
-            .map(|k| {
-                let b = dom.lines[tri.lines[k]];
+        // Bounds on each factor's real and imaginary parts, from the node's box.
+        let bnd: Vec<(f64, f64)> = (0..k)
+            .map(|q| {
+                let b = dom.lines[cyc.lines[q]];
                 (b.r.0.min(b.i.0), b.r.1.max(b.i.1))
             })
             .collect();
 
-        // Pairwise products of the first two factors, for each term.
-        // p0 = R1R2, p1 = R1I2, p2 = I1R2, p3 = I1I2, and two more for the
-        // third-factor stage.
         let envelope = |rows: &mut Rows, x: usize, y: usize, w: usize,
                             xb: (f64, f64), yb: (f64, f64)| {
             for (a, b, c, rhs) in cycles::mccormick(xb.0, xb.1, yb.0, yb.1) {
@@ -502,43 +526,64 @@ pub fn solve_in_domain(
             }
         };
 
-        let p_rr = base_col;
-        let p_ri = base_col + 1;
-        let p_ir = base_col + 2;
-        let p_ii = base_col + 3;
-        envelope(&mut ineq, rr(0), rr(1), p_rr, bnd[0], bnd[1]);
-        envelope(&mut ineq, rr(0), ii(1), p_ri, bnd[0], bnd[1]);
-        envelope(&mut ineq, ii(0), rr(1), p_ir, bnd[0], bnd[1]);
-        envelope(&mut ineq, ii(0), ii(1), p_ii, bnd[0], bnd[1]);
+        // The running product, as the columns holding its real and imaginary
+        // parts, and the bound on their magnitude.
+        let sgn = |q: usize| if cyc.forward[q] { 1.0 } else { -1.0 };
+        let mut acc_re = lay.r(cyc.lines[0]);
+        let mut acc_im = lay.i(cyc.lines[0]);
+        // Traversing a line backwards conjugates it. Rather than carry a sign
+        // through every product, the first factor's sign is folded into the
+        // accumulator's definition and later ones into their own terms.
+        let mut acc_im_sign = sgn(0);
+        let mut acc_bound = bnd[0].1.abs().max(bnd[0].0.abs());
+        let mut next_aux = base_col;
 
-        // Bounds on a pair product follow from the factors' bounds.
-        let pair_bnd = (
-            -(bnd[0].1 * bnd[1].1).abs(),
-            (bnd[0].1 * bnd[1].1).abs(),
-        );
+        for (q, &fb) in bnd.iter().enumerate().take(k).skip(1) {
+            let (fr, fi) = (lay.r(cyc.lines[q]), lay.i(cyc.lines[q]));
+            let fmag = fb.1.abs().max(fb.0.abs());
+            let ab = (-acc_bound, acc_bound);
 
-        // Trilinear terms: (R1R2)I3, (R1I2)R3, (I1R2)R3, (I1I2)I3.
-        let t_rri = base_col + 4;
-        let t_rir = base_col + 5;
-        let t_irr = base_col + 6;
-        let t_iii = base_col + 7;
-        envelope(&mut ineq, p_rr, ii(2), t_rri, pair_bnd, bnd[2]);
-        envelope(&mut ineq, p_ri, rr(2), t_rir, pair_bnd, bnd[2]);
-        envelope(&mut ineq, p_ir, rr(2), t_irr, pair_bnd, bnd[2]);
-        envelope(&mut ineq, p_ii, ii(2), t_iii, pair_bnd, bnd[2]);
+            // Four products: ac, bd, ad, bc.
+            let (p_ac, p_bd, p_ad, p_bc) =
+                (next_aux, next_aux + 1, next_aux + 2, next_aux + 3);
+            envelope(&mut ineq, acc_re, fr, p_ac, ab, fb);
+            envelope(&mut ineq, acc_im, fi, p_bd, ab, fb);
+            envelope(&mut ineq, acc_re, fi, p_ad, ab, fb);
+            envelope(&mut ineq, acc_im, fr, p_bc, ab, fb);
 
-        // The cycle identity itself, now linear in the auxiliaries. Orientation
-        // signs multiply, since each backwards edge conjugates its factor.
-        let s = sgn(0) * sgn(1) * sgn(2);
-        eq.push(
-            &[
-                (t_rri, s),
-                (t_rir, s),
-                (t_irr, s),
-                (t_iii, -s),
-            ],
-            0.0,
-        );
+            let (new_re, new_im) = (next_aux + 4, next_aux + 5);
+            next_aux += 6;
+
+            // The signs of the two conjugations meet here: `acc_im` carries the
+            // accumulated one and this factor carries its own.
+            let s = sgn(q);
+            //  new_re = ac − bd
+            eq.push(
+                &[
+                    (new_re, 1.0),
+                    (p_ac, -1.0),
+                    (p_bd, acc_im_sign * s),
+                ],
+                0.0,
+            );
+            //  new_im = ad + bc
+            eq.push(
+                &[
+                    (new_im, 1.0),
+                    (p_ad, -s),
+                    (p_bc, -acc_im_sign),
+                ],
+                0.0,
+            );
+
+            acc_re = new_re;
+            acc_im = new_im;
+            acc_im_sign = 1.0;
+            acc_bound *= fmag;
+        }
+
+        // The imaginary part of the whole product is zero.
+        eq.push(&[(acc_im, 1.0)], 0.0);
     }
 
     // --- Cone rows: the relaxation itself. ---
@@ -708,21 +753,24 @@ pub fn solve_in_domain(
     // the point actually satisfies it is a separate matter, and the answer is
     // frequently no.
     let mut cycle_gap: f64 = 0.0;
-    for tri in &triangles {
-        let (mut a, mut b) = ([0.0f64; 3], [0.0f64; 3]);
-        for k in 0..3 {
-            let l = tri.lines[k];
-            a[k] = x[lay.r(l)];
-            b[k] = if tri.forward[k] { 1.0 } else { -1.0 } * x[lay.i(l)];
+    for cyc in &cycles_found {
+        // Multiply the loop out in complex arithmetic, which is the same chain
+        // the constraint builds and the honest way to check it: the imaginary
+        // part of the product is what should have been driven to zero.
+        let (mut re, mut im) = (1.0f64, 0.0f64);
+        let mut scale = 1.0f64;
+        for (q, &l) in cyc.lines.iter().enumerate() {
+            let (a, b) = (
+                x[lay.r(l)],
+                if cyc.forward[q] { 1.0 } else { -1.0 } * x[lay.i(l)],
+            );
+            let (nr, ni) = (re * a - im * b, re * b + im * a);
+            re = nr;
+            im = ni;
+            scale *= u[cyc.buses[q]].abs().max(1e-9);
         }
-        let im = a[0] * a[1] * b[2] + a[0] * b[1] * a[2] + b[0] * a[1] * a[2]
-            - b[0] * b[1] * b[2];
-        // Normalised by the magnitude the product should have, which is the
-        // product of the three voltage-squareds.
-        let scale = (u[tri.buses[0]] * u[tri.buses[1]] * u[tri.buses[2]])
-            .abs()
-            .max(1e-9);
-        cycle_gap = cycle_gap.max(im.abs() / scale);
+        let _ = re;
+        cycle_gap = cycle_gap.max(im.abs() / scale.max(1e-9));
     }
 
     // Tightness decides whether this is an answer or a bound, so it is folded
@@ -743,7 +791,7 @@ pub fn solve_in_domain(
         u,
         line_gap,
         status,
-        triangles_constrained: triangles.len(),
+        triangles_constrained: cycles_found.len(),
         objective,
         voltage,
         p_gen,

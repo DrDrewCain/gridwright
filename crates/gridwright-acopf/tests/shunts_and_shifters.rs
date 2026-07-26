@@ -198,6 +198,7 @@ fn a_phase_shift_bites_once_the_loop_is_actually_enforced() {
         ac: AcOptions {
             cycle_constraints: true,
             max_triangles: 64,
+            max_cycle_length: 3,
         },
         ..Default::default()
     };
@@ -224,7 +225,8 @@ fn without_cycle_constraints_the_same_shift_is_invisible() {
     let opts = AcOptions {
         cycle_constraints: false,
         max_triangles: 0,
-    };
+            max_cycle_length: 3,
+        };
     let base = solve_acopf_with(&triangle(), 0, opts).unwrap();
     let mut shifted = triangle();
     shifted.lines[0].phase_shift = 0.3;
