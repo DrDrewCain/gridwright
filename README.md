@@ -128,9 +128,13 @@ question people run it to ask. Ours returns them, compiles to
 `wasm32-unknown-unknown` with a single dependency, and is checked against HiGHS
 on every IEEE network and on all 118 prices in case118.
 
-It declines integer problems rather than returning the relaxation, so unit
-commitment still needs HiGHS. A commitment answer with fractional on/off states
-is not an answer.
+It used to decline integer problems, which was honest and left a browser build
+unable to run unit commitment at all. It now branches: the same relaxation, with
+branching by bounds alone, returning the incumbent and the bound separately and
+saying whether they met. Verified against HiGHS on a commitment problem
+constructed so its relaxation is provably fractional, because many commitment
+relaxations come out integral on their own and a test built on one of those
+exercises the branching not at all.
 
 **AC power flow.** DC flow is a linearisation, and the things it drops —
 losses, voltage magnitudes, reactive power — are often the binding constraints.
@@ -155,18 +159,58 @@ Jabr constrains each line independently, which is enough on a tree and not on a
 loop: around a cycle the relaxation can pick angle differences that do not add
 up. The exact fix is that those differences sum to zero around every cycle,
 which as written is a sum of arctangents and hopeless. Writing
-`W_ij = R + iI = V_i·conj(V_j)` turns it into `Im(W₁W₂W₃) = 0`, a trilinear
-equality, which McCormick envelopes relax convexly.
+`W_ij = R + iI = V_i·conj(V_j)` turns it into `Im(W₁W₂…W_k) = 0`, which
+McCormick envelopes relax convexly.
+
+Any cycle length, not only triangles. Expanding that identity gives `2^(k-1)`
+terms, which is why triangles were the limit; building the product one factor at
+a time costs six auxiliary variables per additional line, which is linear. It
+matters more than it sounds: a five-bus ring is meshed, has exactly one cycle,
+and a triangle-only formulation constrains nothing in it whatsoever. Cycles come
+from a spanning forest, so they are a basis — constraining them constrains every
+cycle, because any other is a combination and the identity is additive around
+combinations.
 
 The tests check the property that matters: adding the cuts must never *lower*
 the bound. A bound that falls means the cuts are invalid, which would turn a
 rigorous number into a wrong one.
 
-**Hydraulic head.** Power is proportional to the height water falls through, so
-a reservoir near empty cannot reach its rating whatever the gates do. Taken at
-the start of each period rather than the end — using the end level makes the
+**Spatial branch and bound** closes the rest. Over a box, `R² + I²` lies under
+the affine function through the corners and `uᵢuⱼ` lies over its McCormick
+underestimator, so requiring `secant ≥ McCormick` is *implied* by the equality
+Jabr threw away: no feasible point is cut off, and both sides collapse onto the
+truth as the box closes. On IEEE 57 the relaxation is only a bound at the root
+and 33 nodes prove the optimum; on IEEE 118 the cone gap falls twenty-five fold.
+
+One finding worth stating, because it is easy to get wrong in the reassuring
+direction: **a small cone gap does not mean a solution is physical.** The cone is
+a per-branch statement and says nothing about angles closing around a loop. Both
+are measured, and both are folded into the reported status.
+
+**Hydraulic head**, both ways it acts. Power is proportional to the height water
+falls through, so a reservoir near empty cannot reach its rating whatever the
+gates do; that part is linear in the stored level. The other part is not: a full
+reservoir yields more megawatt-hours from the same *volume*, because the volume
+drawn per megawatt-hour goes as `1/head` and head depends on the level.
+
+That bilinear half is modelled two ways. Exactly, over bands of reservoir level
+with a binary picking the band, following Borghetti, D'Ambrosio, Lodi and
+Martello (2008). And approximately, by holding head fixed, solving an ordinary
+linear program, recomputing head from the levels that came out and going round
+again — which gives up the optimality guarantee and is the only one that scales,
+since the exact form is 35,040 binaries for one reservoir over a year.
+
+Both take the level at the *start* of each period. Using the end level makes the
 constraint self-limiting, since discharging lowers the level that permits the
 discharge, and a brim-full reservoir could never reach its rating.
+
+**Demand that can do more than fail.** Load used to be served or shed, and
+shedding is priced at the value of lost load — a number in the thousands chosen
+to mean "never do this". All four ways demand can fail to be served are now
+distinct, because they answer different questions and cost different amounts:
+shed, shifted to another snapshot with the energy conserved, declined on a
+willingness-to-pay curve, or curtailed under an interruptible contract a bounded
+number of times.
 
 **Data.** Someone with a network to model has a file, not a format. `load_any`
 takes a path, works out what it is from its content and its name, and returns a
@@ -369,10 +413,10 @@ assembled in order to rebuild it inside someone else's representation.
 | `gridwright-model` | Sparse LP core. Variable blocks, row batches, CSC transpose. |
 | `gridwright-net` | Network domain: buses, lines, generators, storage, loads. |
 | `gridwright-build` | Parallel LP assembly. |
-| `gridwright-simplex` | Our own bounded-variable simplex. Pure Rust, returns duals, compiles to WASM. |
-| `gridwright-acopf` | AC optimal power flow, via the Jabr second-order-cone relaxation. |
+| `gridwright-simplex` | Our own bounded-variable simplex: sparse LU, branch and bound, duals, compiles to WASM. |
+| `gridwright-acopf` | AC optimal power flow: Jabr relaxation, cycle constraints, spatial branch and bound. |
 | `gridwright-solve` | Solver trait, with HiGHS and pure-Rust backends. |
-| `gridwright-io` | Every data format, and result export. |
+| `gridwright-io` | Every data format, in and out, and result export. |
 | `gridwright-emissions` | Production and consumption carbon accounting, average and marginal. |
 | `gridwright-cli` | The `gw` binary. |
 
@@ -415,29 +459,46 @@ now assert what is actually determinate, and say why in the test itself.
 
 ## Status
 
-Early, but the formulation now covers dispatch, capacity expansion, unit
-commitment, sector coupling, hydro with inflow and spill, multi-period
-investment, emissions budgets and planning reserve.
+Early, and the formulation now covers rather a lot: dispatch, capacity
+expansion, unit commitment over a rolling horizon, sector coupling, hydro with
+inflow and spill, multi-period investment, N-1 security, planning reserve, and
+budgets for carbon, water and land.
 
-Since that list was written: bus shunt admittances and transformer phase shifts
-are in, and so is the spatial branch and bound. The last of those closes the AC
-relaxation gap properly, which is what `TODO.md` said was needed. On IEEE 57 the
-relaxation is only a bound at the root and 33 nodes prove the optimum; on
-IEEE 118 the cone gap falls twenty-five fold.
+Everything the previous version of this section listed as absent is now in.
+Head's effect on energy *conversion* — the bilinear half, where a full
+reservoir yields more megawatt-hours from the same volume — is modelled two
+ways: exactly, over bands of reservoir level with a binary picking the band, and
+approximately, by holding head fixed and iterating to a fixed point, which is
+what scales. Cycle constraints run to any length, since building the product one
+factor at a time costs six variables per additional line where writing the
+identity out costs `2^(k-1)` terms. Apparent-power line limits are second-order
+cones, and the AC model had carried no thermal limits at all before them.
 
-Absent: head's effect on energy *conversion*, as opposed to on available
-capacity which is implemented. A full reservoir yields more megawatt-hours from
-the same volume, and that part is bilinear in flow and volume rather than
-linear.
+Demand is no longer served-or-shed. All four ways it can fail to be served are
+distinct now, and they answer different questions: shed at the value of lost
+load, shifted to another snapshot with the energy conserved, declined on a
+willingness-to-pay curve, or curtailed under an interruptible contract a bounded
+number of times.
 
-Also absent: cycle constraints for fundamental cycles longer than three,
-apparent-power line limits, and demand that can be shifted in time rather than
-only shed.
+**What is absent.** Nothing writes CIM, and a non-conformant CGMES file is worse
+than none. The head-to-head against `linopy` is still unmeasured. Time series
+are read whole into memory rather than streamed.
 
-Scaling benchmarks still use synthetic topologies, because no public dataset is
-conveniently available at 8760 snapshots and hundreds of buses in one file; they
-are labelled as synthetic wherever they appear. Correctness is validated against
-real networks, which is the half that matters.
+**What has been measured and deliberately not built.** Forrest-Tomlin updates,
+which address 2.3% of a solve. A fill-reducing column ordering, which halves the
+fill and costs more than it saves. Partial pricing, which is implemented and
+switched off because a cheaper scan buys a worse entering variable and the two
+cancel. Each is recorded with its numbers in `TODO.md`, so nobody repeats them.
+
+**Validation.** Correctness is checked against networks nobody here designed:
+the IEEE cases from PGLib, and PEGASE 1354, a real European system four times
+the size of the largest of them. The from-scratch simplex agrees with HiGHS on
+every one, including all 118 nodal prices of case118.
+
+Scaling benchmarks still use synthetic topologies, and are labelled as synthetic
+wherever they appear. The reason is time series rather than topology: real
+networks of this size are published, and a real network *with a year of hourly
+data attached* in one file is not.
 
 ## Scale
 
