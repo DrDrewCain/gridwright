@@ -35,7 +35,7 @@
 
 use std::time::Instant;
 
-use gridwright_simplex::{Branching, MipOptions, Problem, Status, solve, solve_mip};
+use gridwright_simplex::{Branching, Cuts, MipOptions, Problem, Status, solve, solve_mip};
 
 // ---------------------------------------------------------------------------
 // A unit commitment problem, as a bare linear program
@@ -323,6 +323,13 @@ fn options(rule: Branching) -> MipOptions {
         // gave up at the same ceiling.
         max_nodes: 200_000,
         branching: rule,
+        // Cutting is off here, and deliberately, though it is on by default.
+        // Root cuts remove three quarters of this ladder's tree before the
+        // branching rule ever chooses anything, so leaving them on would make
+        // every number in this file a measurement of the cuts. The two changes
+        // are worth knowing separately, and `tests/cuts.rs` measures the other
+        // one against this same generator.
+        cuts: Cuts::Off,
         ..Default::default()
     }
 }
@@ -491,6 +498,7 @@ fn a_node_budget_still_stops_the_search_under_either_rule() {
             MipOptions {
                 max_nodes: 4,
                 branching: rule,
+                cuts: Cuts::Off,
                 ..Default::default()
             },
         )
@@ -522,6 +530,10 @@ fn at_the_default_budget_the_rule_decides_whether_the_answer_is_proved_at_all() 
             &c.integer,
             MipOptions {
                 branching: rule,
+                // Off for the same reason `options` turns it off: this is a
+                // claim about how far each branching rule gets on the default
+                // node budget, and root cuts would decide it instead.
+                cuts: Cuts::Off,
                 ..Default::default()
             },
         )

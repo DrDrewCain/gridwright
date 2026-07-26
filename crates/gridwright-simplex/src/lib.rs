@@ -54,9 +54,11 @@
 #![allow(clippy::needless_range_loop)]
 
 mod basis;
+mod cuts;
 pub mod lu;
 pub mod mip;
 
+pub use cuts::Cuts;
 pub use mip::{Branching, MipOptions, MipSolution, solve_mip};
 
 pub use basis::{Basis, BasisError};
@@ -663,6 +665,25 @@ const CRASH_PIVOT_THRESHOLD: f64 = 0.1;
 
 /// Solve a linear program.
 pub fn solve(p: Problem<'_>, o: Options) -> Result<Solution, SolveError> {
+    solve_keeping_basis(p, o).map(|(s, _)| s)
+}
+
+/// As [`solve`], and hands back the finished tableau with the answer.
+///
+/// Cut generation needs rows of `B⁻¹A`, and those live nowhere but in the basis
+/// this leaves behind. A [`Solution`] carries the point and the duals, and
+/// neither is enough to reconstruct which columns were basic — nor, from
+/// outside, could they be guessed by looking for variables strictly between
+/// their bounds, since a degenerate basic variable sits exactly on one and a
+/// nonbasic variable always does.
+///
+/// So this is the seam, and it is deliberately crate-private: [`Tab`] is an
+/// implementation detail, and publishing it would freeze the internals of the
+/// solver into its API for the sake of one caller in the same crate.
+pub(crate) fn solve_keeping_basis<'a>(
+    p: Problem<'a>,
+    o: Options,
+) -> Result<(Solution, Tab<'a>), SolveError> {
     validate(&p)?;
     let mut t = Tab::new(p, o);
     t.seed();
@@ -687,7 +708,8 @@ pub fn solve(p: Problem<'_>, o: Options) -> Result<Solution, SolveError> {
     let s1 = iterate(&mut t, &mut iters)?;
     let phase_one_iterations = iters;
     if s1 == Status::IterationLimit {
-        return Ok(report(&t, Status::IterationLimit, iters, iters, p));
+        let s = report(&t, Status::IterationLimit, iters, iters, p);
+        return Ok((s, t));
     }
 
     // Judge feasibility against a freshly factorised basis. The incremental
@@ -702,7 +724,8 @@ pub fn solve(p: Problem<'_>, o: Options) -> Result<Solution, SolveError> {
         .map(|r| t.value[t.n_struct + t.n_slack + r].abs())
         .sum();
     if residual > t.o.primal_tolerance * (1.0 + t.m as f64) {
-        return Ok(report(&t, Status::Infeasible, iters, iters, p));
+        let s = report(&t, Status::Infeasible, iters, iters, p);
+        return Ok((s, t));
     }
 
     // Phase two: pin the artificials shut and optimise the real objective.
@@ -721,7 +744,8 @@ pub fn solve(p: Problem<'_>, o: Options) -> Result<Solution, SolveError> {
     t.recompute()?;
 
     let s2 = iterate(&mut t, &mut iters)?;
-    Ok(report(&t, s2, iters, phase_one_iterations, p))
+    let s = report(&t, s2, iters, phase_one_iterations, p);
+    Ok((s, t))
 }
 
 fn validate(p: &Problem<'_>) -> Result<(), SolveError> {

@@ -49,8 +49,26 @@
 //! to four times fewer nodes once the models are large enough for the choice to
 //! matter at all. It is the default; [`Branching`] carries the table and the
 //! argument.
+//!
+//! # Cuts, and only at the root
+//!
+//! Branching splits bounds, and bounds are all a node has. That is why a node
+//! is cheap and it is also the search's only tool: every fractional vertex has
+//! to be resolved by halving the box and exploring both halves.
+//!
+//! Cutting planes remove such a vertex outright. They are rows rather than
+//! bounds, which is why they are added **once, at the root**, where nothing has
+//! been branched yet and so a cut derived there is valid over the whole tree.
+//! A node is still a pair of vectors; it is the problem underneath that has
+//! grown. On the commitment ladder that closes sixty to ninety-five percent of
+//! the root gap and is worth three to nineteen times the wall-clock, which is
+//! the largest change to this search so far. It is not free everywhere:
+//! [`MipOptions::cuts`] carries both tables, including the family it costs on,
+//! and `crate::cuts` carries the argument for why no cut can remove an integer
+//! point.
 
-use crate::{Options, Problem, Solution, SolveError, Status, solve};
+use crate::cuts::{Cuts, tighten_root};
+use crate::{Options, Problem, Solution, SolveError, Status, solve, solve_keeping_basis};
 
 /// How the search chooses which fractional variable to split on.
 ///
@@ -146,6 +164,99 @@ pub struct MipOptions {
     /// nothing per node against a full relaxation solve. [`Branching`] carries
     /// the table.
     pub branching: Branching,
+    /// Which cutting planes to add at the root, if any.
+    ///
+    /// # What the measurement says
+    ///
+    /// Two families of model, because cuts help very unevenly by structure and
+    /// one family would have concluded whatever that family happened to say.
+    /// Release build, best of five runs with an untimed warm-up per cell, node
+    /// counts including the relaxation solves spent cutting;
+    /// `tests/cuts.rs` builds the models and prints the tables.
+    ///
+    /// **Unit commitment**, the ladder the branching measurement already uses,
+    /// on three demand profiles each. Nodes and wall-clock, then how many cut
+    /// candidates were attempted, survived the guards and were affordable, and
+    /// then how much of the distance from the root relaxation to the integer
+    /// optimum was closed before the search started:
+    ///
+    /// | Units × periods | Profile | No cuts | Gomory | | Cuts a/s/k | Gap closed |
+    /// | --- | --- | --- | --- | --- | --- | --- |
+    /// | 6 × 6 | 0 | 48 nodes, 16 ms | 20, 11 ms | 1.49× | 23/23/20 | 85% |
+    /// | 6 × 6 | 1 | 28, 9.9 ms | 16, 9.3 ms | 1.06× | 20/20/20 | 86% |
+    /// | 6 × 6 | 2 | 82, 30 ms | 14, 7.1 ms | 4.20× | 9/9/9 | 95% |
+    /// | 8 × 8 | 0 | 286, 263 ms | 15, 22 ms | 11.8× | 26/26/26 | 94% |
+    /// | 8 × 8 | 1 | 146, 136 ms | 28, 43 ms | 3.15× | 15/15/15 | 90% |
+    /// | 8 × 8 | 2 | 320, 291 ms | 72, 109 ms | 2.66× | 20/20/20 | 78% |
+    /// | 10 × 10 | 0 | 439, 0.88 s | 26, 75 ms | 11.8× | 18/18/18 | 80% |
+    /// | 10 × 10 | 1 | 558, 1.11 s | 22, 69 ms | 16.2× | 32/32/32 | 91% |
+    /// | 10 × 10 | 2 | 356, 0.71 s | 68, 213 ms | 3.33× | 28/28/28 | 83% |
+    /// | 12 × 12 | 0 | 1,644, 6.45 s | 52, 0.34 s | 19.0× | 27/27/27 | 62% |
+    /// | 12 × 12 | 1 | 1,500, 5.97 s | 121, 0.76 s | 7.85× | 27/27/27 | 60% |
+    /// | 12 × 12 | 2 | 1,641, 6.56 s | 54, 0.36 s | 18.2× | 28/28/28 | 69% |
+    ///
+    /// That is the largest single win in the search so far, it grows with size,
+    /// and it comes from nine to thirty-two cuts. Sixty to ninety-five percent
+    /// of the root gap is gone *before the search starts*, so most of the tree
+    /// simply never exists. The guards reject nothing at all here — every
+    /// candidate survives them, and the only thinning is the round budget — so
+    /// the tableau of a commitment relaxation is evidently clean enough that
+    /// this is not where the caution is needed.
+    ///
+    /// **Multidimensional knapsack**, where every row is a knapsack over
+    /// binaries, says something quite different:
+    ///
+    /// | Items × rows | Profile | No cuts | Gomory | Cover | Cuts a/s/k | Gap closed |
+    /// | --- | --- | --- | --- | --- | --- | --- |
+    /// | 24 × 5 | 0 | 2,036 nodes, 48 ms | 2,076, 75 ms | 304, 9.4 ms | 50/33/4 | 18% |
+    /// | 24 × 5 | 1 | 4,210, 90 ms | 2,966, 110 ms | 2,257, 68 ms | 51/31/4 | 17% |
+    /// | 24 × 5 | 2 | 2,398, 56 ms | 4,646, 167 ms | 4,069, 102 ms | 50/33/4 | 8% |
+    /// | 30 × 5 | 0 | 10,076, 0.28 s | 12,646, 0.56 s | 8,338, 0.31 s | 50/33/4 | 12% |
+    /// | 30 × 5 | 1 | 5,898, 0.16 s | 6,226, 0.27 s | 5,080, 0.19 s | 50/38/4 | 12% |
+    /// | 30 × 5 | 2 | 7,036, 0.19 s | 11,298, 0.45 s | 6,798, 0.24 s | 51/34/4 | 15% |
+    /// | 36 × 5 | 0 | 20,368, 0.70 s | 20,368, 0.70 s | 16,400, 0.75 s | 50/9/4 | 3% |
+    /// | 36 × 5 | 1 | 25,490, 0.81 s | 25,490, 0.81 s | 25,443, 0.93 s | 50/11/3 | 3% |
+    /// | 40 × 8 | 0 | 141,938, 8.0 s | 141,938, 8.1 s | 100,890, 7.1 s | 52/11/2 | 1% |
+    /// | 40 × 8 | 1 | 53,970, 3.2 s | 53,970, 3.2 s | 55,105, 3.8 s | 33/1/1 | 0.1% |
+    ///
+    /// Gomory cuts are a **loss** there — up to three times slower at 24 to 30
+    /// items, and by 36 items no Gomory cut survives the guards at all, which is
+    /// why those rows are identical to `Off` node for node. Two things explain
+    /// it and neither is about the derivation. The first is width: a commitment
+    /// model has hundreds of rows, so twenty-seven cuts are six percent more
+    /// rows, while a knapsack has five, so even four cuts are most of the model
+    /// again — and with no warm start every node pays the row count in full. The
+    /// second is that the cuts are genuinely worse here, closing one to eighteen
+    /// percent of the root gap against sixty to ninety-five, and arriving far
+    /// dirtier: the guards throw out a third to five sixths of the candidates on
+    /// this family, against none at all on the other.
+    ///
+    /// Cover cuts are the mirror image. A commitment row pairs a continuous
+    /// dispatch variable with a binary status and so is not a knapsack at all,
+    /// and the separator correctly finds *nothing* on every rung of that ladder
+    /// — the `Cover` column there is identical to `Off`, node for node, which is
+    /// asserted in `tests/cuts.rs` rather than left to be noticed. On the
+    /// knapsack family they run from five times faster to somewhat slower, which
+    /// averages to not much.
+    ///
+    /// # The default, and what it costs
+    ///
+    /// [`Cuts::Gomory`], because the models this engine builds are unit
+    /// commitment and head bands, and that is the family the first table is
+    /// about: three to nineteen times faster, growing with size, on the same
+    /// ladder where the branching rule bought two to four.
+    ///
+    /// A caller whose problem is shaped like a knapsack — a handful of rows and
+    /// a great many binaries — pays up to three times for that default and
+    /// should say [`Cuts::Off`] or [`Cuts::Cover`]. That is a real cost on a
+    /// real family and it is stated rather than averaged away. It is also the
+    /// reason the enum has four values instead of a boolean.
+    ///
+    /// Cuts are added at the root only, and a cutting round is charged against
+    /// `max_nodes` like any other relaxation solve. `crate::cuts` carries the
+    /// argument for why the root is the safe scope and why no cut here can
+    /// remove an integer point.
+    pub cuts: Cuts,
     /// Options for the relaxation at each node.
     pub lp: Options,
 }
@@ -157,6 +268,7 @@ impl Default for MipOptions {
             integrality_tolerance: 1e-6,
             gap_tolerance: 1e-6,
             branching: Branching::PseudoCost,
+            cuts: Cuts::Gomory,
             lp: Options::default(),
         }
     }
@@ -182,7 +294,32 @@ pub struct MipSolution {
     pub gap: f64,
     /// Whether the gap closed to tolerance.
     pub proved: bool,
+    /// Relaxation solves, whether spent on a node of the tree or on a round of
+    /// cutting at the root.
+    ///
+    /// Cutting rounds are counted here rather than kept separate because they
+    /// cost exactly what a node costs — this solver has no warm start, so every
+    /// relaxation is built, crashed and solved from nothing — and a work
+    /// measure that omitted them would flatter cutting for free.
     pub nodes: usize,
+    /// Cut candidates attempted at the root.
+    pub cuts_generated: usize,
+    /// Those that survived the validity and stability guards.
+    pub cuts_survived: usize,
+    /// Those that were then affordable and were added to the problem.
+    ///
+    /// Reported separately from `cuts_survived` because the two say different
+    /// things. What the guards threw out is a statement about how far the
+    /// floating point arithmetic could be trusted; what the round budget threw
+    /// out is a statement about how many rows the model could afford, since
+    /// every cut is a row that every node solve below it then pays for.
+    pub cuts_kept: usize,
+    /// The relaxation value at the root after cutting.
+    ///
+    /// With cuts off this is the plain root relaxation, so the difference
+    /// between the two settings is what the cuts bought before the search
+    /// started.
+    pub root_bound: f64,
 }
 
 /// The branch that produced a node.
@@ -445,9 +582,19 @@ pub fn solve_mip(
         }
     };
 
+    // Cuts add rows, so the duals that come back are longer than the caller's
+    // row count. Everything past the original rows belongs to a cut and is not
+    // the caller's to read.
+    let trim = |mut duals: Vec<f64>| {
+        duals.truncate(p.n_rows);
+        duals
+    };
+
     // The root relaxation, which is both the first bound and the answer when it
-    // happens to come out integral.
-    let root = solve(p, o.lp)?;
+    // happens to come out integral. Solved keeping its tableau, because a cut
+    // is a statement about rows of `B⁻¹A` and nothing in a `Solution` can
+    // reconstruct those.
+    let (mut root, root_tab) = solve_keeping_basis(p, o.lp)?;
     if root.status != Status::Optimal {
         return Ok(MipSolution {
             status: root.status,
@@ -458,11 +605,14 @@ pub fn solve_mip(
             gap: f64::INFINITY,
             proved: false,
             nodes: 1,
+            cuts_generated: 0,
+            cuts_survived: 0,
+            cuts_kept: 0,
+            root_bound: f64::NEG_INFINITY,
         });
     }
 
     let mut nodes = 1usize;
-    let mut lower = root.objective;
     let mut incumbent: Option<Solution> = None;
     let mut upper = f64::INFINITY;
 
@@ -476,9 +626,48 @@ pub fn solve_mip(
         Branching::PseudoCost => costs.pick(values, integer, o.integrality_tolerance),
     };
 
+    // Cutting, at the root and nowhere else. A node is a pair of bound vectors
+    // and that is what makes it cheap; a cut is a row, so a cut generated
+    // inside the tree would have to be carried down every branch and dropped on
+    // the way back up, and one that escaped its subtree would remove points
+    // that are feasible elsewhere. Root cuts are derived from the caller's own
+    // bounds with no branching in place, so they hold everywhere below and
+    // there is nothing to scope. `crate::cuts` carries the argument in full.
+    //
+    // A cutting round is a relaxation solve and is charged against `max_nodes`
+    // like any other, so a caller who asked for one node gets the root and
+    // nothing else. Cutting outside the budget would spend work the caller
+    // refused, and worse, could return a proved answer where the budget said
+    // there was not enough time to prove one.
+    let tightened =
+        if o.cuts.any() && nodes < o.max_nodes && choose(&root.col_value, &costs).is_some() {
+            tighten_root(
+                p,
+                &root_tab,
+                integer,
+                o.cuts,
+                o.lp,
+                o.integrality_tolerance,
+                o.max_nodes - nodes,
+            )?
+        } else {
+            None
+        };
+    drop(root_tab);
+    let (base, cuts_generated, cuts_survived, cuts_kept) = match &tightened {
+        Some(t) => {
+            nodes += t.solves;
+            root = t.root.clone();
+            (t.problem(p), t.generated, t.survived, t.kept)
+        }
+        None => (p, 0, 0, 0),
+    };
+    let root_bound = root.objective;
+    let mut lower = root.objective;
+
     if choose(&root.col_value, &costs).is_none() {
-        // Integral already: the relaxation was tight and nothing needs
-        // searching.
+        // Integral: the relaxation was tight to begin with, or the cuts made it
+        // so, and either way nothing needs searching.
         return Ok(MipSolution {
             status: Status::Optimal,
             objective: root.objective,
@@ -487,7 +676,11 @@ pub fn solve_mip(
             proved: true,
             nodes,
             col_value: root.col_value,
-            row_dual: root.row_dual,
+            row_dual: trim(root.row_dual),
+            cuts_generated,
+            cuts_survived,
+            cuts_kept,
+            root_bound,
         });
     }
 
@@ -535,7 +728,7 @@ pub fn solve_mip(
             let sub = Problem {
                 col_lower: &node.lower,
                 col_upper: &node.upper,
-                ..p
+                ..base
             };
             let relaxed = match solve(sub, o.lp) {
                 Ok(s) => s,
@@ -635,6 +828,10 @@ pub fn solve_mip(
             gap: f64::INFINITY,
             proved: false,
             nodes,
+            cuts_generated,
+            cuts_survived,
+            cuts_kept,
+            root_bound,
         });
     };
 
@@ -643,7 +840,7 @@ pub fn solve_mip(
         status: Status::Optimal,
         objective: best.objective,
         col_value: best.col_value,
-        row_dual: best.row_dual,
+        row_dual: trim(best.row_dual),
         lower_bound: lower.min(upper),
         gap,
         // `proved` means the gap closed, and now says only that. It used to
@@ -652,6 +849,10 @@ pub fn solve_mip(
         // by itself, so the extra clause would only ever hide a recurrence.
         proved: !hit_limit && gap <= o.gap_tolerance,
         nodes,
+        cuts_generated,
+        cuts_survived,
+        cuts_kept,
+        root_bound,
     })
 }
 
