@@ -92,8 +92,8 @@ is *refused* rather than linearised, because widening a conductor changes its
 impedance and the DC flow equation would become bilinear.
 
 **Emissions.** A system-wide CO2 budget as a single constraint. Structurally
-unlike everything else here — one row millions of entries wide instead of many
-narrow ones — and the lever most decarbonisation questions are asked through.
+unlike everything else here (one row millions of entries wide instead of many
+narrow ones), and the lever most decarbonisation questions are asked through.
 
 **Unit commitment.** Thermal plant that cannot run below a stable minimum, with
 start-up costs and minimum up and down times. This makes the problem a MILP,
@@ -118,7 +118,7 @@ arithmetic rather than a finding.
 three asynchronous interconnections, Japan has two frequencies, Indonesia has
 600+ isolated systems, and the Philippines has three grids. Two things follow
 and both are enforced: an AC line may not cross an area boundary, and **each
-area gets its own angle reference** — pinning only one leaves every other area
+area gets its own angle reference**. Pinning only one leaves every other area
 with a free constant. Asynchronous grids join through HVDC ties, which carry
 losses: China's UHVDC loses about 3% per 1,000 km, so 2,000 km arrives 6%
 short, and that gap changes where it is worth building anything.
@@ -151,7 +151,7 @@ through line outage distribution factors, which is what makes it affordable: the
 obvious approach duplicates every flow variable once per contingency, while LODF
 turns each outage into constraints on the flow variables that already exist.
 Security costs rows, not columns. Lines whose loss would island the network are
-reported rather than quietly ignored — that is a real vulnerability, just not
+reported rather than quietly ignored. That is a real vulnerability, just not
 one flow limits can describe.
 
 **Rolling horizon.** A year of hourly commitment is a MIP with tens of thousands
@@ -176,16 +176,16 @@ constructed so its relaxation is provably fractional, because many commitment
 relaxations come out integral on their own and a test built on one of those
 exercises the branching not at all.
 
-**AC power flow.** DC flow is a linearisation, and the things it drops —
-losses, voltage magnitudes, reactive power — are often the binding constraints.
+**AC power flow.** DC flow is a linearisation, and the things it drops
+(losses, voltage magnitudes, reactive power) are often the binding constraints.
 So there is a genuine AC formulation too, through the Jabr second-order-cone
 relaxation solved with `clarabel`.
 
 Being precise about what that means, because it is easy to overclaim: AC-OPF is
 nonconvex and this does not solve it exactly. It solves a convex relaxation
 whose optimum is a rigorous lower bound. The relaxation is provably exact on
-radial networks, and can loosen on meshed ones. **Whether it came out tight is
-reported rather than assumed** — an inexact relaxation returns voltages that
+radial networks, and can loosen on meshed ones. **Whether it came out tight is reported rather than assumed**:
+an inexact relaxation returns voltages that
 correspond to no physical operating point, and a model that does not say so is
 worse than one that cannot do AC at all.
 
@@ -207,7 +207,8 @@ terms, which is why triangles were the limit; building the product one factor at
 a time costs six auxiliary variables per additional line, which is linear. It
 matters more than it sounds: a five-bus ring is meshed, has exactly one cycle,
 and a triangle-only formulation constrains nothing in it whatsoever. Cycles come
-from a spanning forest, so they are a basis — constraining them constrains every
+from a spanning forest, so they are a basis:
+constraining them constrains every
 cycle, because any other is a combination and the identity is additive around
 combinations.
 
@@ -236,8 +237,8 @@ drawn per megawatt-hour goes as `1/head` and head depends on the level.
 That bilinear half is modelled two ways. Exactly, over bands of reservoir level
 with a binary picking the band, following Borghetti, D'Ambrosio, Lodi and
 Martello (2008). And approximately, by holding head fixed, solving an ordinary
-linear program, recomputing head from the levels that came out and going round
-again — which gives up the optimality guarantee and is the only one that scales,
+linear program, recomputing head from the levels that came out and going round again,
+which gives up the optimality guarantee and is the only one that scales,
 since the exact form is 35,040 binaries for one reservoir over a year.
 
 Both take the level at the *start* of each period. Using the end level makes the
@@ -245,7 +246,8 @@ constraint self-limiting, since discharging lowers the level that permits the
 discharge, and a brim-full reservoir could never reach its rating.
 
 **Demand that can do more than fail.** Load used to be served or shed, and
-shedding is priced at the value of lost load — a number in the thousands chosen
+shedding is priced at the value of lost load,
+a number in the thousands chosen
 to mean "never do this". All four ways demand can fail to be served are now
 distinct, because they answer different questions and cost different amounts:
 shed, shifted to another snapshot with the energy conserved, declined on a
@@ -291,9 +293,9 @@ than claiming not to recognise the file.
 **None of it needs a filesystem.** `load_bytes` takes a name and a buffer;
 `load_files` takes a set of them, which is what a multiple-selection picker or
 a dropped folder produces, and is the only way to express a CSV directory or a
-CGMES model split across its profiles. Every reader is pure Rust — including
-netCDF, via a pure-Rust HDF5 implementation, and Parquet, using only codecs
-that cross-compile — so the whole format layer builds for
+CGMES model split across its profiles. Every reader is pure Rust
+(including netCDF, via a pure-Rust HDF5 implementation, and Parquet, using only
+codecs that cross-compile), so the whole format layer builds for
 `wasm32-unknown-unknown` alongside the engine and the solver:
 
 ```bash
@@ -389,8 +391,8 @@ per bus, storage on every fourth bus, DC power flow throughout.
 Peak resident memory for the 256 × 8760 case is **1.50 GB**, and construction
 includes the transpose: the model is assembled straight into the column major
 form the solvers take, so there is no second pass to charge for. It used to be
-1.95 GB and a further 79 ms, before the merged row major matrix was removed —
-nothing downstream had ever read it.
+1.95 GB and a further 79 ms, before the merged row major matrix was removed.
+Nothing downstream had ever read it.
 
 That row has been rebaselined twice, and both are reported rather than quietly
 absorbed. It was 89 ms before commitment, losses, cascades and multi-period
@@ -454,14 +456,16 @@ Three decisions do most of the work.
 **Time series are component major.** Availability for generator `g` is a
 contiguous run, exactly the order the bounds vector needs it in. Nodal balance
 appears to want the opposite layout, so balance is parallelised over *buses*
-rather than snapshots — equally valid, since both axes are independent, and it
+rather than snapshots. That is equally valid, since both axes are
+independent, and it
 keeps every read sequential.
 
 **The transpose is a parallel counting sort, and it reads the batches
 directly.** Column indices are already integers, so there is nothing to compare:
 count, prefix sum the counts into offsets, scatter. The batches are the unit of
 parallelism, since they are already one per builder thread. There is no merged
-row major matrix in between, because nothing would read it — 375 MB of a large
+row major matrix in between, because nothing would read it:
+375 MB of a large
 model, and a serial 79 ms pass, spent on a representation with no consumer.
 
 **The matrix reaches HiGHS as three pointers.** `Highs_passModel` accepts CSC
@@ -505,11 +509,11 @@ is fast and wrong is worthless:
 - prices separate across a saturated interconnector, 40 against 10 per MWh,
   which is what market splitting means
 - on a triangle of equal susceptance, power divides 2:1 between the direct and
-  the two-hop path — the DC power flow physics, not merely its plumbing
+  the two-hop path, which is the DC power flow physics rather than
+  merely its plumbing
 - storage covers a generator outage by having charged beforehand
 - the parallel transpose agrees with the serial one byte for byte at scale, and
-  transposing the batches directly agrees with merging them first and
-  transposing that — the operation it replaced
+  transposing the batches directly agrees with merging them first and transposing that, the operation it replaced
 - repeated builds of the same network produce identical matrices, so results
   never depend on how the thread pool happened to schedule
 - capacity is built exactly to the analytic break-even and not a MW past it,
@@ -530,9 +534,9 @@ inflow and spill, multi-period investment, N-1 security, planning reserve, and
 budgets for carbon, water and land.
 
 Everything the previous version of this section listed as absent is now in.
-Head's effect on energy *conversion* — the bilinear half, where a full
-reservoir yields more megawatt-hours from the same volume — is modelled two
-ways: exactly, over bands of reservoir level with a binary picking the band, and
+Head's effect on energy *conversion*
+(the bilinear half, where a full reservoir yields more megawatt-hours from the
+same volume) is modelled two ways: exactly, over bands of reservoir level with a binary picking the band, and
 approximately, by holding head fixed and iterating to a fixed point, which is
 what scales. Cycle constraints run to any length, since building the product one
 factor at a time costs six variables per additional line where writing the
@@ -546,8 +550,13 @@ willingness-to-pay curve, or curtailed under an interruptible contract a bounded
 number of times.
 
 **What is absent.** Nothing writes CIM, and a non-conformant CGMES file is worse
-than none. The head-to-head against `linopy` is still unmeasured. Time series
-are read whole into memory rather than streamed.
+than none. Time series are read whole into memory rather than streamed.
+
+The larger gaps are in evaluation rather than in features, and they are set out
+in [What would make this convincing](#what-would-make-this-convincing). The
+short form: every scaling number here is a synthetic ring, and the only
+head-to-head is against the tool this project's founding quote criticises
+rather than against the tools it recommends.
 
 **What has been measured and deliberately not built.** Forrest-Tomlin updates,
 which address 2.3% of a solve. A fill-reducing column ordering, which halves the
@@ -565,6 +574,52 @@ wherever they appear. The reason is time series rather than topology: real
 networks of this size are published, and a real network *with a year of hourly
 data attached* in one file is not.
 
+## What would make this convincing
+
+An honest account of what the evidence here does not yet cover, because the
+answer to "is this actually useful" is currently "the measurements do not
+settle it". Four gaps, in the order they matter.
+
+**1. Every scaling number is one synthetic ring.** A ring with chords has
+regular structure, uniform line ratings and identical plant at every bus. Real
+networks have long radial spurs, wildly unequal impedances and a handful of
+heavily meshed cores. That shape decides how sparse the basis stays, which is
+most of what a simplex spends its time on, so a ring may well flatter the solve.
+Correctness is already validated against real published networks, and the
+largest PGLib cases up to 13,659 buses are in the repository, so what is missing
+is specifically the *scaling* measurement on real topology rather than any
+question of whether real topology works.
+
+**2. There is no real year of time series on a real network.** This is the
+actual blocker behind gap 1, and it is a data problem rather than an engineering
+one: real networks of this size are published, and a real network *with a year
+of hourly data attached* in one file is not. Open Power System Data and the
+ENTSO-E transparency platform publish the series; mapping zone-level series onto
+buses is normal practice and needs to be done and stated rather than assumed
+away.
+
+**3. The head-to-head is against the wrong tool.** The founding quote says
+Python is non-competitive "compared to tools based on Julia or C++". This
+project has measured itself against `linopy`, which is Python, and never against
+JuMP, which is the Julia tool the quote is pointing at. Beating the tool the
+quote criticises is weak evidence for the quote. **JuMP may well be
+competitive with this, and if it is, that is the single most useful thing this
+benchmark could establish**. The claim would then narrow to memory, to the
+WebAssembly target, and to the repeated-build case, all of which would still
+stand.
+
+**4. Nobody has run a study with it.** Every number here is a microbenchmark or
+a property test. The claim that a fast build enables interactive editing,
+scenario sweeps and in-browser use is untested as a *workflow*: nobody has sat
+down, built a model, changed their mind, and rebuilt. That is the evaluation
+that would decide whether the engineering was worth doing, and it needs the
+interface, which is why the interface is the next thing.
+
+Two further things would sharpen the picture without settling it: a comparison
+against PyPSA's own path to a matrix, which is what a user actually experiences
+rather than what linopy does in isolation, and a measurement of how construction
+cost behaves as a *fraction of a real study* rather than of a single solve.
+
 ## The comparison this project was founded on
 
 The premise was a quotable claim from the energy modelling literature: that
@@ -572,8 +627,8 @@ Python is "non-competitive" at *building* optimisation problems. Quoting it is
 not measuring it, and it went unmeasured here for a long time.
 
 Same model, same machine, same session. A synthetic 256-bus ring over a year at
-hourly resolution, built in `linopy` 0.9.0 the way linopy is meant to be used —
-vectorised over xarray dimensions with incidence arrays, not Python loops — and
+hourly resolution, built in `linopy` 0.9.0 the way linopy is meant to be used
+(vectorised over xarray dimensions with incidence arrays, not Python loops), and
 in gridwright. Only construction is timed; both hand the result to the same
 solver afterwards and that part is not in dispute.
 
@@ -654,15 +709,15 @@ end rising to 5× at the large one, which is a different shape as well as a
 different number.
 
 The rolling-horizon table below re-measured to within 6% of its published
-values, so the fault was specific to this table rather than general — most
-likely machine load, which has now corrupted a measurement in this project
+values, so the fault was specific to this table rather than general.
+The most likely cause is machine load, which has now corrupted a measurement in this project
 three separate times. That is why every timing here is best-of-N on an idle
 machine, and why the run-to-run spread is worth stating: the two 64-bus runs
 differed by 16%.
 
 Construction is 0.009% of runtime at 128 buses. **At full resolution the fast
-build still buys almost nothing**, and that conclusion is untouched by the
-correction — it never rested on the solve being intractable.
+build still buys almost nothing**, and that conclusion is untouched by the correction:
+it never rested on the solve being intractable.
 
 The same year through a rolling horizon of 96-hour windows keeping 72:
 

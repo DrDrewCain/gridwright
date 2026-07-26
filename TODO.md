@@ -36,7 +36,7 @@ concrete in the way, named.
       The reason to want it is that every solve lengthens with the pivots since
       the last refactorisation. How much that costs is answerable without
       building anything: vary the interval and watch the total. At 9,216 rows
-      the curve is a shallow U — 3.55 s at 32 pivots, 3.30 at 64, 3.16 at 256,
+      the curve is a shallow U: 3.55 s at 32 pivots, 3.30 at 64, 3.16 at 256,
       3.20 at 512, and 5.41 s never refactorising at all. Fitting
       `base + A/k + B·k` gives a base of 3.03 s, and at the optimum the variable
       terms are 0.06 s of refactorisation against 0.07 s of update application.
@@ -47,7 +47,8 @@ concrete in the way, named.
       touch. The earlier suspicion that eta growth explained the `m^2.5` tail
       was wrong: that was the factorisation scan, fixed by the symbolic search.
 
-      The measurement paid for itself anyway — the default interval moved from
+      The measurement paid for itself anyway:
+      the default interval moved from
       64 to 256, worth a measured 4%.
 - [x] ~~**Faster pricing.**~~ **Built, measured, and left switched off.**
 
@@ -97,8 +98,8 @@ concrete in the way, named.
       triangular. The artificials were left as `seed` set them, though crashing
       changes the residuals their signs were chosen against. And the row's
       target was taken as its slack's bound when the running activity already
-      carried the slack's term, which counts it twice — that one produces
-      plausible values and a basis that factors perfectly well, and surfaces
+      carried the slack's term, which counts it twice. That one
+      produces plausible values and a basis that factors perfectly well, and surfaces
       thousands of iterations later as a solve that will not converge.
 - [ ] **The triangular solves** are what is left after that. Every iteration
       performs one forward and one transposed solve against the factors, and
@@ -125,9 +126,8 @@ concrete in the way, named.
       setting an answer that arrives beats one that is proved. Returns the
       incumbent and the bound separately and says whether they met.
 
-      Verified against HiGHS on a commitment problem constructed so its
-      relaxation is provably fractional — many commitment relaxations come out
-      integral on their own, and a test built on one of those exercises the
+      Verified against HiGHS on a commitment problem constructed so its relaxation is provably fractional, because many
+      commitment relaxations come out integral on their own, and a test built on one of those exercises the
       branching not at all.
 - [x] ~~Better branching than most-fractional.~~ **Done**, as pseudo-cost
       branching behind `MipOptions::branching`, and defaulted on.
@@ -137,8 +137,8 @@ concrete in the way, named.
       a sum happily picks one that is ruinous upwards and free downwards, which
       buys a child that prunes and a child indistinguishable from its parent.
       The cold start takes a prior from the objective coefficient rather than
-      strong branching, and the reason is specific to this solver rather than a
-      general preference — there is no warm start here, so a probe costs exactly
+      strong branching, and the reason is specific to this solver rather than a general preference:
+      there is no warm start here, so a probe costs exactly
       what exploring the node costs, and shortlisting ten candidates would spend
       twenty node-solves to save one branch.
 
@@ -162,18 +162,18 @@ concrete in the way, named.
       worse than it first looked.
 
       `proved` was granted whenever the node stack emptied, whatever the bound
-      said. The bound itself was recomputed on only one of the five ways a node
-      can leave the search — pruned before solving, contradictory bounds, an
-      infeasible relaxation, a relaxation no better than the incumbent, or
-      ordinary exploration — and the four early exits skipped it. When the last
+      said. The bound itself was recomputed on only one of the five ways a node can
+      leave the search (pruned before solving, contradictory bounds, an infeasible
+      relaxation, a relaxation no better than the incumbent, or ordinary
+      exploration), and the four early exits skipped it. When the last
       open nodes all left by one of those four, the search finished holding a
       bound it had already outgrown.
 
       On the commitment generator that is not a rounding wrinkle. Every rung
       from 2 × 2 to 6 × 6, under both branching rules, reported `proved` while
       still carrying a gap, the worst of them **7.2%**. Nothing computed was
-      wrong — the incumbent was the optimum and the bound was valid — but a
-      caller reading `proved` as "this is the optimum" was being told so by a
+      wrong (the incumbent was the optimum and the bound was valid), but a caller
+      reading `proved` as "this is the optimum" was being told so by a
       search that could not yet know it.
 
       The per-node work now sits in a labelled block with a single bound update
@@ -216,9 +216,8 @@ concrete in the way, named.
       coefficients, so they share a builder and a fix to how weights or capacity
       blocks are handled lands in all of them.
 
-      Water accrues per megawatt-hour generated, which is what makes it bind in
-      exactly the weeks demand peaks — in much of the world cooling water rather
-      than carbon decides whether a station runs through a dry summer. Land
+      Water accrues per megawatt-hour generated, which is what makes it bind in exactly the weeks demand peaks. In much of the
+      world, cooling water rather than carbon decides whether a station runs through a dry summer. Land
       accrues per megawatt built, and binds against renewables rather than for
       them, since a wind farm's footprint is what limits how much of it a region
       will accept. Charged on capacity added, not on the existing fleet, whose
@@ -260,7 +259,7 @@ concrete in the way, named.
       an integer one and is exact to the band width. And a successive
       approximation that holds head fixed within an iteration and updates it
       under-relaxation, which needs no binaries at all and lands near the same
-      answer — under-relaxation being what stops it oscillating, and a run that
+      answer, with under-relaxation being what stops it oscillating, and a run that
       does not settle says so rather than reporting the last iterate.
 
       Sixteen tests, including the band head worked by hand, that ignoring
@@ -295,9 +294,8 @@ concrete in the way, named.
       Cycles come from a spanning forest, so they are a basis of the cycle
       space: constraining them constrains every cycle, since any other is a
       combination and the identity is additive around combinations.
-- [x] ~~Bus shunt admittances.~~ **Done.** A conductance draws real power that
-      somebody has to generate — case300 carries over a megawatt of it — and a
-      susceptance injects the reactive power capacitor banks exist to supply.
+- [x] ~~Bus shunt admittances.~~ **Done.** A conductance draws real power that somebody has to generate
+      (case300 carries over a megawatt of it), and a susceptance injects the reactive power capacitor banks exist to supply.
 - [x] ~~Transformer phase shift angles.~~ **Done**, and why they had looked
       absent is worth recording: the Jabr cone is invariant under rotation of
       `(R, I)`, so no plain relaxation can distinguish a network with a phase
@@ -308,8 +306,8 @@ concrete in the way, named.
       impedances allowed. A rating bounds `√(P² + Q²)`, a circle in the complex
       plane, and both components are already linear in the decision variables,
       so it goes in as a three-dimensional second-order cone with no auxiliary
-      variables. A square limit would have allowed the corner — √2 times the
-      rating — which is what a pair of linear bounds carried over from the DC
+      variables. A square limit would have allowed the corner, √2 times the
+      rating, which is what a pair of linear bounds carried over from the DC
       model would give.
 - [x] ~~N-1 security constraints.~~ **Done.** Formulated through line outage
       distribution factors, so security costs rows rather than columns: the
@@ -349,9 +347,8 @@ was hiding most of the demand side.
       unserved energy at the value of lost load, a number in the thousands
       chosen to mean "never do this"; a curve turns dropping demand into a
       choice with a price. Tranches are taken cheapest first, so a caller does
-      not have to sort the curve, and demand beyond what the curve covers still
-      falls back on the value of lost load — a curve says what a consumer will
-      pay, not that they are indifferent past its end.
+      not have to sort the curve, and demand beyond what the curve covers still falls back on the value of lost load:
+      a curve says what a consumer will pay, not that they are indifferent past its end.
 - [x] ~~**Interruptible contracts.**~~ **Done.** A binary per snapshot saying
       whether the contract was called, the energy not delivered bounded by both
       the contract's size and that binary, and the calls counted over the
@@ -377,18 +374,17 @@ Peak resident memory on the 256-bus, 8,760-snapshot model is 1.50 GB, down from
 
 **What worked.** The model is now built column major and only column major: the
 constraint builders' row batches are transposed as they are absorbed, so the
-merged row major matrix never exists. Nothing downstream ever read it — HiGHS
-takes compressed sparse columns, and so does the simplex — so it was 375 MB
+merged row major matrix never exists. Nothing downstream ever read it (HiGHS takes
+      compressed sparse columns, and so does the simplex), so it was 375 MB
 spent on a representation with no reader, plus a row offsets array and a second
 copy of the row bounds. Measured saving 447 MB, rather more than the 375 MB
 predicted.
 
 It also made the model faster, for a reason that had nothing to do with memory:
 `to_csc` called the *serial* transpose, so every solve paid about 79 ms for it.
-Folding the transpose into the absorb and threading it over the batches — which
-are already one per builder thread, so no chunking had to be invented — put
-model construction at **104 ms including the transpose**, against 94 ms plus a
-separate 79 ms before — 1.7× faster to a solver-ready matrix, and between 1.6×
+Folding the transpose into the absorb and threading it over the batches, which are already one per builder thread so no
+      chunking had to be invented, put model construction at **104 ms including the transpose**, against 94 ms plus a
+      separate 79 ms before: 1.7× faster to a solver-ready matrix, and between 1.6×
 and 1.9× across 64 to 512 buses.
 
 **What did not work, and why.** Replacing the transpose's `threads × n_cols`
@@ -399,7 +395,7 @@ not at all. In both cases the allocator keeps freed pages rather than returning
 them, so this metric records what was allocated at the high-water mark rather
 than what was live. Both changes were kept regardless: the memory does become
 available for reuse, and 65 MB against 1.8 GB matters where address space is not
-free — the WebAssembly target has 4 GB of it in total.
+      free: the WebAssembly target has 4 GB of it in total.
 
 - [ ] Measure against an allocator that returns pages, to find out how much of
       the remaining 519 MB of slack is live and how much is retention. Until
@@ -409,19 +405,19 @@ free — the WebAssembly target has 4 GB of it in total.
 
 The transpose was suspected of costing ~90 ms and being the thing to optimise.
 It was neither. Per-phase timing on the real sparsity pattern, 14 threads:
-scatter 13.4 ms (48%), scan and cursor reset 4.5 ms, sort 4.2 ms, count 3.0 ms,
-allocation 3.0 ms — about 21 ms intact, not 90. The 90 ms readings were machine
+scatter 13.4 ms (48%), scan and cursor reset 4.5 ms, sort 4.2 ms, count 3.0 ms, allocation 3.0 ms,
+about 21 ms intact rather than 90. The 90 ms readings were machine
 load: with four competing busy loops the same kernel measures 60–150 ms, because
 it is five back-to-back full-width parallel regions and each ends when its
-slowest worker does. That also explains why three different counting strategies
-all measured the same — the measurement was environment-bound, so the algorithm
+slowest worker does. That also explains why three different counting strategies all measured the same:
+the measurement was environment-bound, so the algorithm
 could not move it.
 
 Ruled out empirically, so nobody repeats them: allocation and zeroing (≤3 ms of
 `mmap`, page faults only on the first call in a process), the prefix scan
 (4.5 ms), `u32` versus `usize` indices (already `u32`), and the count phase
 (3 ms). Cache-blocked radix partitioning pays only in the uniform-random regime,
-which this matrix is not in — a random-column matrix of the same shape takes
+which this matrix is not in. A random-column matrix of the same shape takes
 175 ms against 21 ms for the real one. The scatter moves ~700 MB at ~52 GB/s
 against 130–220 GB/s for `memcpy`, so it is 3–4× off bandwidth, not 20×.
 
@@ -456,7 +452,7 @@ Still missing:
 
 - [x] ~~**CGMES in its published form**, a zip of profile files.~~ **Done**, and
       it recurses one level, since a pan-European model is an archive of
-      archives. Both formats that are zips — a spreadsheet and a CGMES model —
+      archives. Both formats that are zips, a spreadsheet and a CGMES model,
       are told apart by what is inside rather than by the extension, because a
       CGMES archive is as likely to be named for its operator as for its
       contents.
@@ -471,8 +467,8 @@ Still missing:
       through `load_model_with_state`.
 
       Returned beside the `Case` rather than folded into the `Network`, because
-      the value of it is having a second answer to compare against rather than a
-      first one to trust — it is what the operator's own tools produced. Every
+      the value of it is having a second answer to compare against rather than a first one to trust:
+      it is what the operator's own tools produced. Every
       entry is an `Option`, since a published state is routinely partial and a
       zero would be a claim the model never made.
 
@@ -495,13 +491,13 @@ Still missing:
 
       What made them worth the effort is the conventions, each derived in a
       comment and re-derived in a test. **IEEE CDF** quotes impedances, line
-      charging and bus shunts *already per unit* on the title card's base —
+      charging and bus shunts *already per unit* on the title card's base,
       the opposite of MATPOWER, where the shunts are MW/MVAr and must be divided
       by it, so a reader that treated them alike is out by the base. A blank
       rating means unlimited rather than unusable, and a blank turns ratio means
       one rather than zero. **UCTE-DEF** quotes ohms and microsiemens, and the
       admittance base is the *reciprocal* of the impedance base, so susceptance
-      multiplies where impedance divides — dividing gives 2.1e-10 instead of
+      multiplies where impedance divides: dividing gives 2.1e-10 instead of
       0.4332. Current limits are amps and become MVA through √3·V·I, the same
       conversion CIM needed, but a transformer's rating is already MVA and must
       not go through it. Transformer impedance is referred to the regulated
@@ -535,8 +531,8 @@ Still missing:
       leaving as "harder".
 
       A conformant netCDF4 file needs HDF5 dimension scales, which means
-      `DIMENSION_LIST` and `REFERENCE_LIST` attributes carrying object
-      references — file offsets not known until the file has been laid out. The
+      `DIMENSION_LIST` and `REFERENCE_LIST` attributes carrying object references,
+      file offsets not known until the file has been laid out. The
       pure-Rust HDF5 library exposes the reference datatype and no way to emit
       one, and a `.nc` xarray refuses to open is worse than no `.nc`.
       `import_from_csv_folder` reaches the same destination by a road that
@@ -545,8 +541,8 @@ Still missing:
       The conversion that matters runs the opposite way from the reader's: PyPSA
       states impedance in ohms, so per unit has to be undone against the base
       voltage. Writing per-unit values into a field PyPSA reads as ohms gives
-      lines that are very nearly short circuits, which does not fail — it
-      produces answers.
+      lines that are very nearly short circuits, which does not fail:
+      it produces answers.
 - [ ] **A CIM writer.** Still wanted and still last: a CGMES file that is not
       conformant is worse than none, and conformance is a large surface.
 - [x] ~~Reading with no filesystem.~~ **Done.** `load_bytes` takes a name and a
@@ -577,8 +573,8 @@ what the interface can honestly offer.
       longer "a page can barely solve twenty buses over a day": a few thousand
       rows is interactive in-page, which is a small national model at daily
       resolution or a regional one at hourly. What it still is not is a
-      continental year, and no amount of solver work in this crate makes it one
-      — that is the decomposition question, not the factorisation question.
+      continental year, and no amount of solver work in this crate makes it one. That is the
+      decomposition question, not the factorisation question.
 - [ ] **`wasm-bindgen` wrapper**: load a file, edit a network, solve, read
       results, all across the JavaScript boundary. Small, and blocked on
       nothing.
@@ -624,7 +620,7 @@ It overstated the variable counts by about a quarter. It put growth at a flat
 different number.
 
 The rolling table below re-measured to within 6% of its published values, so
-this was specific rather than general. Most likely machine load — the third time
+this was specific rather than general. Most likely machine load, the third time
 in this project that a loaded machine produced a number that survived into a
 document, after the transpose that "took 90 ms" and takes 21, and the prefault
 experiment that measured backwards. Every timing is now best-of-N on an idle
@@ -645,8 +641,8 @@ The same year through a rolling horizon of 96-hour windows keeping 72:
 | 64 | 122 | 23.6 s | 110.7 s | 4.7× |
 | 128 | 122 | 76.3 s | 561.8 s | 7.4× |
 
-The previous claim — 23× at 32 buses, and that rolling "finishes at 64 and 128
-where the monolithic solve does not" — was an artefact of the bad table above.
+The previous claim, 23× at 32 buses and that rolling "finishes at 64 and 128
+where the monolithic solve does not", was an artefact of the bad table above.
 It is 3.6× at 32 buses, and the monolithic solve finishes at every size tried.
 
 What is true, and is the better argument, is that the advantage **compounds**:
@@ -685,14 +681,15 @@ narrower claim than "construction is the bottleneck".
       founding claim so it should have been measured first.
 
       Same model, same machine, same session, 256 buses over 8,760 snapshots.
-      linopy 0.9.0 used idiomatically — vectorised over xarray dimensions with
-      incidence arrays, not Python loops — reaching the same 16.3M variables and
+      linopy 0.9.0 used idiomatically
+      (vectorised over xarray dimensions with incidence arrays, not Python loops),
+      reaching the same 16.3M variables and
       29.2M nonzeros. Construction to a matrix: **0.096 s against 200.8 s**, on
       **1.95 GB against 22.4 GB**.
 
       The memory figure is the important one. Two hundred seconds is an
       annoyance; 22 GB is where a laptop stops and the model is not run at all.
-      That agrees with what the scaling section says from the other direction —
+      That agrees with what the scaling section says from the other direction:
       the fast build does not make the solve tractable, and what it buys is that
       the model fits, rebuilds interactively, and can be swept over.
 
@@ -711,9 +708,8 @@ narrower claim than "construction is the bottleneck".
       Each test asserts two things, and the second is the one that earns its
       keep: the solvers agree, **and the family changed the answer**. A test
       that enables a constraint which does not bind proves only that both
-      solvers can ignore it consistently. Four of the sixteen failed on the
-      first run for exactly that reason — my fixtures, not the code — and
-      fixing them is what surfaced the real bug below.
+      solvers can ignore it consistently. Four of the sixteen failed on the first run for exactly that reason (my fixtures, not the code),
+      and fixing them is what surfaced the real bug below.
 
       **The bug.** Hydro cascades were a separate row family,
       `soc_downstream[arrival] >= released`, sitting beside the downstream
@@ -731,7 +727,7 @@ narrower claim than "construction is the bottleneck".
       spilling and the lower one discharging what came down, at no cost.
 
       It survived because the existing test asserted only that both cases solve.
-      Its comment claimed "the diesel has to run and the cost is far higher" —
+      Its comment claimed "the diesel has to run and the cost is far higher",
       an assertion that was described and never written.
 - [x] ~~Larger real networks.~~ **Partly done.** PEGASE 1354 is now in the
       validation suite: a real European network, four times the largest IEEE
