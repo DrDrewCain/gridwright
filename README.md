@@ -349,20 +349,30 @@ per bus, storage on every fourth bus, DC power flow throughout.
 Peak resident memory for the 256 × 8760 case is **1.50 GB**, and construction
 includes the transpose: the model is assembled straight into the column major
 form the solvers take, so there is no second pass to charge for. It used to be
-1.95 GB and a further 150 ms, before the merged row major matrix was removed —
+1.95 GB and a further 79 ms, before the merged row major matrix was removed —
 nothing downstream had ever read it.
 
 That row has been rebaselined twice, and both are reported rather than quietly
 absorbed. It was 89 ms before commitment, losses, cascades and multi-period
 capacity were added, which cost about 12% and seems a fair price. Folding the
-transpose in adds a further 8 ms here and removes a separate 150 ms pass, so the
-comparable figure is now what it takes to reach a matrix a solver can read.
+transpose in adds 6 ms here and removes a separate 79 ms pass, so the comparable
+figure is now what it takes to reach a matrix a solver can read.
 
-Scaling is close to linear: 28.8 → 53.6 → 100.0 → 189.6 ms across
-64 → 128 → 256 → 512 buses, about 1.88× per doubling, best of three runs. Take
-best-of-N rather than a single reading: the assembly is several full-width
-parallel regions and each ends when its slowest thread does, so one busy core
-elsewhere on the machine moves the number more than any of these changes did.
+Measured both ways on the same machine, that is what the change was worth:
+
+| Buses | Build, before | Transpose, before | **Total before** | **Now** |
+| --- | --- | --- | --- | --- |
+| 64 | 27.5 ms | 19.4 ms | **46.9 ms** | **28.8 ms** |
+| 128 | 48.8 ms | 42.8 ms | **91.6 ms** | **53.6 ms** |
+| 256 | 94.2 ms | 79.1 ms | **173.3 ms** | **100.0 ms** |
+| 512 | 188.8 ms | 173.5 ms | **362.3 ms** | **189.6 ms** |
+
+Between 1.6× and 1.9× faster to a solver-ready matrix at every size, and the
+scaling stays close to linear at about 1.88× per doubling. Best of three runs,
+and best-of-N rather than a single reading is the method to use here: the
+assembly is several full-width parallel regions and each ends when its slowest
+thread does, so one busy core elsewhere on the machine moves the number more
+than any of these changes did.
 
 **What has not been measured yet:** a head-to-head against `linopy` on an
 identical problem. Until that exists the claim here is "builds a 16 million
@@ -412,7 +422,7 @@ directly.** Column indices are already integers, so there is nothing to compare:
 count, prefix sum the counts into offsets, scatter. The batches are the unit of
 parallelism, since they are already one per builder thread. There is no merged
 row major matrix in between, because nothing would read it — 375 MB of a large
-model, and a serial 150 ms pass, spent on a representation with no consumer.
+model, and a serial 79 ms pass, spent on a representation with no consumer.
 
 **The matrix reaches HiGHS as three pointers.** `Highs_passModel` accepts CSC
 directly. The safe `highs` wrapper crate was deliberately not used: its builder

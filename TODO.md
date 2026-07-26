@@ -334,11 +334,12 @@ copy of the row bounds. Measured saving 447 MB, rather more than the 375 MB
 predicted.
 
 It also made the model faster, for a reason that had nothing to do with memory:
-`to_csc` called the *serial* transpose, so every solve paid 150–205 ms for it.
+`to_csc` called the *serial* transpose, so every solve paid about 79 ms for it.
 Folding the transpose into the absorb and threading it over the batches — which
 are already one per builder thread, so no chunking had to be invented — put
-model construction at **104 ms including the transpose**, against 96 ms plus a
-separate 150 ms before.
+model construction at **104 ms including the transpose**, against 94 ms plus a
+separate 79 ms before — 1.7× faster to a solver-ready matrix, and between 1.6×
+and 1.9× across 64 to 512 buses.
 
 **What did not work, and why.** Replacing the transpose's `threads × n_cols`
 histogram with one atomic counter array cut allocation from 1.8 GB to 65 MB and
