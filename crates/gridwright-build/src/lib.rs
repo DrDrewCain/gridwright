@@ -75,6 +75,10 @@ pub struct VarIndex {
     pub spill: Vec<Option<VarBlock>>,
     /// Loss on each lossy line, always non-negative.
     pub line_loss: Vec<Option<VarBlock>>,
+    /// Whether an interruptible contract was called, per load. Binary.
+    pub interrupt: Vec<Option<VarBlock>>,
+    /// Energy not delivered under that contract, per load.
+    pub interrupt_mw: Vec<Option<VarBlock>>,
     /// Demand given up at each tranche of a load's willingness-to-pay curve.
     ///
     /// Empty for an inelastic load, which is every load that has not been given
@@ -394,6 +398,24 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         }));
     }
 
+    // Interruptible contracts: a binary per snapshot saying whether the
+    // contract was called, and the energy not delivered when it was. The count
+    // is what makes this discrete — an interruptible load with no limit on how
+    // often is simply expensive shedding — so this turns the model into a MILP
+    // exactly when a contract exists.
+    vars.interrupt.reserve(net.loads.len());
+    vars.interrupt_mw.reserve(net.loads.len());
+    for load in &net.loads {
+        if load.interruptible_mw > 0.0 && load.max_interruptions > 0 {
+            vars.interrupt.push(Some(model.add_binary_block(t32, 0.0)));
+            vars.interrupt_mw
+                .push(Some(model.add_block(t32, 0.0, load.interruptible_mw, 0.0)));
+        } else {
+            vars.interrupt.push(None);
+            vars.interrupt_mw.push(None);
+        }
+    }
+
     // Price-elastic demand: one variable per tranche of the willingness-to-pay
     // curve, bounded by that tranche's size and priced at its value. Dropping
     // demand is then a choice with a price rather than a catastrophe with a
@@ -562,6 +584,15 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
         }
     }
     for (l, load) in net.loads.iter().enumerate() {
+        if let Some(block) = vars.interrupt_mw[l] {
+            if flat {
+                model.fill_obj(block, load.interruption_cost * weights[0]);
+            } else {
+                obj_buf.clear();
+                obj_buf.extend((0..t).map(|s| cost_at(load.interruption_cost, s)));
+                model.set_obj(block, &obj_buf)?;
+            }
+        }
         let mut at = 0usize;
         for &(mw, value) in &load.value_tranches {
             if mw <= 0.0 {
@@ -612,6 +643,7 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     all.extend(build_commitment(net, &vars, t));
     all.extend(build_ramps(net, &vars, t));
     all.extend(build_shiftable(net, &vars, t));
+    all.extend(build_interruptible(net, &vars, t));
     all.extend(build_head(net, &vars, t));
     all.extend(build_head_conversion(net, &vars, t));
     all.extend(build_losses(net, &vars, t));
@@ -715,6 +747,13 @@ fn build_balance(
                     }
                 }
                 terms.push((vars.shed[b].at(ti), 1.0));
+                // An interruption reduces what has to be generated, like every
+                // other way of not serving demand.
+                for &ld in loads {
+                    if let Some(block) = vars.interrupt_mw[ld as usize] {
+                        terms.push((block.at(ti), 1.0));
+                    }
+                }
                 // Demand given up at a stated value. Same sign as shedding,
                 // since both reduce what has to be generated; the difference is
                 // the price and the bound.
@@ -1303,6 +1342,44 @@ fn head_band_level(unit: &gridwright_net::StorageUnit, b: usize) -> f64 {
 /// The level that matters is the one at the *start* of the period, for the same
 /// reason [`build_head`] uses it: water leaves at the head it had on the way
 /// out, and using the end level would make the constraint self-limiting.
+/// Interruptible supply contracts.
+///
+/// Two rows and a binary. The energy not delivered is bounded by the contract's
+/// size *and* by whether it was called in that snapshot, which is what ties the
+/// continuous quantity to the discrete decision. Then the calls are counted
+/// over the horizon and held to the agreed number.
+///
+/// That count is the whole contract. Without it an interruptible load is
+/// expensive shedding with extra steps, and it is also the only part that
+/// cannot be written linearly, which is why this makes the model a MILP.
+fn build_interruptible(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
+    net.loads
+        .par_iter()
+        .enumerate()
+        .filter(|(l, _)| vars.interrupt[*l].is_some())
+        .map(|(l, load)| {
+            let called = vars.interrupt[l].expect("filtered");
+            let energy = vars.interrupt_mw[l].expect("filtered");
+            let mut batch = RowBatch::with_capacity(t + 1, 2 * t + 1);
+
+            for step in 0..t {
+                let ti = step as u32;
+                // energy <= size · called
+                batch.push_le(
+                    [(energy.at(ti), 1.0), (called.at(ti), -load.interruptible_mw)],
+                    0.0,
+                );
+            }
+            // The agreed number of interruptions, over the whole horizon.
+            batch.push_le(
+                (0..t).map(|step| (called.at(step as u32), 1.0)),
+                load.max_interruptions as f64,
+            );
+            batch
+        })
+        .collect()
+}
+
 /// Demand that moves in time rather than being served or shed.
 ///
 /// Two families of row. The first conserves energy: over each window the

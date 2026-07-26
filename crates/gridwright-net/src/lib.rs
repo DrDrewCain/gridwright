@@ -591,6 +591,26 @@ pub struct Load {
     /// within a shift. Zero, or a value at least as long as the horizon, lets
     /// energy move anywhere inside it.
     pub shift_window: usize,
+    /// Megawatts this load may be curtailed by, under an interruptible
+    /// contract.
+    ///
+    /// Neither shedding nor shifting nor declining. A large consumer signs away
+    /// the right to be cut a bounded number of times, for a bounded duration,
+    /// at an agreed compensation, in exchange for a cheaper tariff. The energy
+    /// does not move to another hour and it is not valued on a curve: it is
+    /// simply not delivered, and the consumer is paid for that.
+    ///
+    /// The bounded count is what makes this discrete rather than continuous,
+    /// and therefore what makes it a binary. Zero leaves the load
+    /// uninterruptible.
+    pub interruptible_mw: f64,
+    /// How many snapshots this load may be interrupted in, over the horizon.
+    ///
+    /// The heart of the contract. Without a limit an interruptible load is just
+    /// expensive shedding, and the negotiation is entirely about this number.
+    pub max_interruptions: usize,
+    /// Compensation per MWh not delivered under the contract.
+    pub interruption_cost: f64,
     /// A willingness-to-pay curve, as tranches of `(MW, value per MWh)`.
     ///
     /// Demand is otherwise all-or-nothing: served, or shed at the value of lost

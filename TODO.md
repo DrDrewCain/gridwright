@@ -193,6 +193,12 @@ concrete in the way, named.
 
 ## Flexible demand
 
+All four ways demand can fail to be served are now distinct, which they were
+not: shed at the value of lost load, moved to another snapshot, declined on a
+willingness-to-pay curve, or curtailed under contract. They answer different
+questions and cost different amounts, and collapsing them into one penalty
+was hiding most of the demand side.
+
 - [x] ~~**Shiftable load.**~~ **Done.** A signed deviation from the demand
       profile, bounded by a per-load fraction, summing to zero over a window so
       that what leaves one snapshot arrives in another. That conservation is the
@@ -208,10 +214,14 @@ concrete in the way, named.
       not have to sort the curve, and demand beyond what the curve covers still
       falls back on the value of lost load — a curve says what a consumer will
       pay, not that they are indifferent past its end.
-- [ ] **Interruptible contracts**, which are neither shedding nor shifting: a
-      load that may be curtailed a bounded number of times for a bounded
-      duration, at a stated compensation. Discrete, so it belongs with
-      commitment.
+- [x] ~~**Interruptible contracts.**~~ **Done.** A binary per snapshot saying
+      whether the contract was called, the energy not delivered bounded by both
+      the contract's size and that binary, and the calls counted over the
+      horizon against the agreed number.
+
+      That count is the whole contract: without it this is expensive shedding
+      with extra steps, and it is also the only part that cannot be written
+      linearly, which is why a contract makes the model an integer one.
 
 ## Data formats
 

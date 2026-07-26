@@ -339,6 +339,9 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
                 // `30@200;20@500`. Ugly and unambiguous, which is the right
                 // way round for a column that is usually absent.
                 value_tranches: parse_tranches(&t.text_or(r, "value_tranches", "")),
+                interruptible_mw: t.number(r, "interruptible_mw", 0.0).map_err(|e| field(e, &src.label("loads")))?,
+                max_interruptions: t.number(r, "max_interruptions", 0.0).map_err(|e| field(e, &src.label("loads")))? as usize,
+                interruption_cost: t.number(r, "interruption_cost", 0.0).map_err(|e| field(e, &src.label("loads")))?,
             });
         }
     }
@@ -619,17 +622,18 @@ tap_ratio,phase_shift,loss,s_nom_extendable,s_nom_max,capital_cost\n",
     }
     write_csv(dir, "lines.csv", &out)?;
 
-    let mut out = String::from("name,bus,p_set,q_set,shiftable_pu,shift_window,shift_cost,value_tranches\n");
+    let mut out = String::from("name,bus,p_set,q_set,shiftable_pu,shift_window,shift_cost,value_tranches,interruptible_mw,max_interruptions,interruption_cost\n");
     for l in &net.loads {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{}\n",
             q(&l.name), bus(l.bus), f(l.p_set), f(l.q_set), f(l.shiftable_pu),
             l.shift_window, f(l.shift_cost),
             q(&l.value_tranches
                 .iter()
                 .map(|(mw, v)| format!("{}@{}", f(*mw), f(*v)))
                 .collect::<Vec<_>>()
-                .join(";"))
+                .join(";")),
+            f(l.interruptible_mw), l.max_interruptions, f(l.interruption_cost)
         ));
     }
     write_csv(dir, "loads.csv", &out)?;
