@@ -30,12 +30,29 @@ concrete in the way, named.
       moves the in-page ceiling from roughly twenty buses over a day to a few
       thousand rows in about a second, which is an interactive model rather than
       an illustration.
-- [ ] **Forrest-Tomlin updates**, which update the factors themselves rather
-      than appending elementary matrices. Product form is what is implemented
-      and it is simpler; its cost is that every solve lengthens with the pivots
-      since the last refactorisation, which is visible in the scaling degrading
-      from `m^1.9` at 3,000 rows to about `m^2.5` at 14,000. Forrest-Tomlin is
-      the standard remedy.
+- [x] ~~**Forrest-Tomlin updates.**~~ **Measured and not built**, which is the
+      cheaper of the two ways to reject something.
+
+      The reason to want it is that every solve lengthens with the pivots since
+      the last refactorisation. How much that costs is answerable without
+      building anything: vary the interval and watch the total. At 9,216 rows
+      the curve is a shallow U — 3.55 s at 32 pivots, 3.30 at 64, 3.16 at 256,
+      3.20 at 512, and 5.41 s never refactorising at all. Fitting
+      `base + A/k + B·k` gives a base of 3.03 s, and at the optimum the variable
+      terms are 0.06 s of refactorisation against 0.07 s of update application.
+
+      Applying the updates is **2.3% of runtime**. That is the entire addressable
+      cost, and Forrest-Tomlin would replace it with something rather than
+      nothing. The other 96% is triangular solves and pricing, which it does not
+      touch. The earlier suspicion that eta growth explained the `m^2.5` tail
+      was wrong: that was the factorisation scan, fixed by the symbolic search.
+
+      The measurement paid for itself anyway — the default interval moved from
+      64 to 256, worth a measured 4%.
+- [ ] **Faster pricing.** Now the largest single cost, at something like 96% of
+      a solve together with the triangular solves. Dantzig pricing scans every
+      column each iteration; partial or devex pricing scans a subset and is what
+      a production code does.
 - [x] ~~**A fill-reducing ordering.**~~ **Measured and rejected**, twice.
       Greedy minimum degree maintains the column counts as elimination proceeds
       and follows the singleton cascade an LP basis is full of. It **halves the

@@ -132,6 +132,12 @@ pub struct Options {
     pub pivot_tolerance: f64,
     /// Rebuild the inverse after this many updates, to stop rounding error
     /// accumulating through repeated rank-one updates.
+    ///
+    /// Two hundred and fifty-six, chosen by measurement rather than by
+    /// tradition. Refactorising is expensive and letting the updates pile up is
+    /// expensive, and the total is a shallow U in between: at 9,216 rows the
+    /// curve reads 3.55 s at 32, 3.30 at 64, 3.16 at 256, 3.20 at 512 and 5.41
+    /// if it never refactorises at all.
     pub refactor_every: usize,
     /// Refactorise once the accumulated updates carry this multiple of the
     /// factorisation's own nonzeros.
@@ -151,7 +157,7 @@ impl Default for Options {
             dual_tolerance: 1e-9,
             primal_tolerance: 1e-8,
             pivot_tolerance: 1e-9,
-            refactor_every: 64,
+            refactor_every: 256,
             refactor_fill_ratio: 0.5,
         }
     }
