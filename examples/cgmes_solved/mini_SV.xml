@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+  <!--
+    The state variables profile: what the operator's own tools said this
+    network was doing. Every number below is chosen so it can be checked by
+    hand, and the whole file is one consistent load flow.
+
+    Voltages. Magnitudes are kilovolts and angles are degrees, which is what
+    CIM publishes and not what the engine uses.
+      NORTH 400  410.0 kV / 400 kV nominal = 1.025 per unit, angle  0 deg
+      SOUTH 400  396.0 kV / 400 kV nominal = 0.990 per unit, angle -5 deg
+      SOUTH 220  214.5 kV / 220 kV nominal = 0.975 per unit, angle -8 deg
+
+    Flows. Positive is into the equipment and away from the node, so every
+    terminal at a node sums to zero:
+      NORTH 400   machine -610 + line  +610 = 0   (and -110 + 110 = 0)
+      SOUTH 400   line    -603 + tx    +603 = 0   (and  -85 +  85 = 0)
+      SOUTH 220   tx      -600 + load  +600 + capacitor 0 = 0
+                  and     -70          +100          -30 = 0
+
+    The losses fall out of the same numbers: the line carries 610 MW away from
+    NORTH and delivers 603 MW to SOUTH, so it loses 7 MW and 25 MVAr; the
+    transformer takes 603 MW and delivers 600 MW, so it loses 3 MW and 15 MVAr.
+    Generation is 610 MW against 600 MW of demand and 10 MW of losses, and the
+    machine's 110 MVAr covers 100 of demand and 40 of losses less the 30 the
+    capacitor bank supplies.
+  -->
+
+  <cim:SvVoltage rdf:ID="_sv_v_n1">
+    <cim:SvVoltage.TopologicalNode rdf:resource="#_n1"/>
+    <cim:SvVoltage.v>410.0</cim:SvVoltage.v>
+    <cim:SvVoltage.angle>0.0</cim:SvVoltage.angle>
+  </cim:SvVoltage>
+  <cim:SvVoltage rdf:ID="_sv_v_n2">
+    <cim:SvVoltage.TopologicalNode rdf:resource="#_n2"/>
+    <cim:SvVoltage.v>396.0</cim:SvVoltage.v>
+    <cim:SvVoltage.angle>-5.0</cim:SvVoltage.angle>
+  </cim:SvVoltage>
+  <cim:SvVoltage rdf:ID="_sv_v_n3">
+    <cim:SvVoltage.TopologicalNode rdf:resource="#_n3"/>
+    <cim:SvVoltage.v>214.5</cim:SvVoltage.v>
+    <cim:SvVoltage.angle>-8.0</cim:SvVoltage.angle>
+  </cim:SvVoltage>
+
+  <!--
+    Both branches are given their receiving end first, and both receiving ends
+    are named so that they sort ahead of their sending ends as well. A reader
+    that filled the two ends in the order it met them — document order or
+    identifier order, it makes no difference here — would report both branches
+    running backwards, with negative losses. The end has to be decided by the
+    node each terminal reaches.
+  -->
+  <cim:SvPowerFlow rdf:ID="_sv_f_a_line1_receiving">
+    <cim:SvPowerFlow.Terminal rdf:resource="#_t_line1_2"/>
+    <cim:SvPowerFlow.p>-603.0</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>-85.0</cim:SvPowerFlow.q>
+  </cim:SvPowerFlow>
+  <cim:SvPowerFlow rdf:ID="_sv_f_b_line1_sending">
+    <cim:SvPowerFlow.Terminal rdf:resource="#_t_line1_1"/>
+    <cim:SvPowerFlow.p>610.0</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>110.0</cim:SvPowerFlow.q>
+  </cim:SvPowerFlow>
+
+  <cim:SvPowerFlow rdf:ID="_sv_f_a_tx1_receiving">
+    <cim:SvPowerFlow.Terminal rdf:resource="#_t_tx1_2"/>
+    <cim:SvPowerFlow.p>-600.0</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>-70.0</cim:SvPowerFlow.q>
+  </cim:SvPowerFlow>
+  <cim:SvPowerFlow rdf:ID="_sv_f_b_tx1_sending">
+    <cim:SvPowerFlow.Terminal rdf:resource="#_t_tx1_1"/>
+    <cim:SvPowerFlow.p>603.0</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>85.0</cim:SvPowerFlow.q>
+  </cim:SvPowerFlow>
+
+  <!-- The machine, negative because it is producing: the flow at its terminal
+       is out of the machine and into the node. -->
+  <cim:SvPowerFlow rdf:ID="_sv_f_gen1">
+    <cim:SvPowerFlow.Terminal rdf:resource="#_t_gen1"/>
+    <cim:SvPowerFlow.p>-610.0</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>-110.0</cim:SvPowerFlow.q>
+  </cim:SvPowerFlow>
+  <cim:SvPowerFlow rdf:ID="_sv_f_load1">
+    <cim:SvPowerFlow.Terminal rdf:resource="#_t_load1"/>
+    <cim:SvPowerFlow.p>600.0</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>100.0</cim:SvPowerFlow.q>
+  </cim:SvPowerFlow>
+  <cim:SvPowerFlow rdf:ID="_sv_f_sh1">
+    <cim:SvPowerFlow.Terminal rdf:resource="#_t_sh1"/>
+    <cim:SvPowerFlow.p>0.0</cim:SvPowerFlow.p>
+    <cim:SvPowerFlow.q>-30.0</cim:SvPowerFlow.q>
+  </cim:SvPowerFlow>
+
+  <!-- Three steps above neutral on a changer whose neutral is 10. -->
+  <cim:SvTapStep rdf:ID="_sv_tap_rtc1">
+    <cim:SvTapStep.TapChanger rdf:resource="#_rtc1"/>
+    <cim:SvTapStep.position>13</cim:SvTapStep.position>
+  </cim:SvTapStep>
+
+  <!-- Two of the capacitor bank's four sections switched in, which is where
+       the 30 MVAr at SOUTH 220 comes from. -->
+  <cim:SvShuntCompensatorSections rdf:ID="_sv_sec_sh1">
+    <cim:SvShuntCompensatorSections.ShuntCompensator rdf:resource="#_sh1"/>
+    <cim:SvShuntCompensatorSections.sections>2</cim:SvShuntCompensatorSections.sections>
+  </cim:SvShuntCompensatorSections>
+</rdf:RDF>

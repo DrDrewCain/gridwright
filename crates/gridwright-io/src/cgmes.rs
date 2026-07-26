@@ -37,6 +37,24 @@
 //! through `BaseVoltage` on the equipment or on its voltage level, and where
 //! it cannot be found the line is reported rather than silently taken as per
 //! unit.
+//!
+//! # The solved state
+//!
+//! The state variables profile is the odd one out: it is not needed to build a
+//! network and it is the most valuable thing in the archive. `SvVoltage`,
+//! `SvPowerFlow`, `SvTapStep` and `SvShuntCompensatorSections` together are the
+//! answer the operator's own tools produced for this model, published so that
+//! whoever receives it can reproduce it.
+//!
+//! It is therefore deliberately kept out of the [`Network`]. Folding published
+//! voltages and flows into the model would destroy the only thing they are good
+//! for: an independent answer stops being independent the moment the solver is
+//! handed it. It also would not fit — a `Network` states what a system *can*
+//! do, and a solved state states what one *did*, which is a result and not an
+//! input. So [`load_model_with_state`] returns a [`SolvedState`] beside the
+//! `Case`, indexed to line up with the network component by component, and
+//! [`load_model`] stays exactly as it was for every caller who only wants the
+//! model.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -50,7 +68,9 @@ use crate::Case;
 pub enum CgmesError {
     #[error("{file}: {message}")]
     Xml { file: String, message: String },
-    #[error("no connectivity or topological nodes found in {file}; this does not look like a CIM model")]
+    #[error(
+        "no connectivity or topological nodes found in {file}; this does not look like a CIM model"
+    )]
     NoNodes { file: String },
     #[error("network is not valid: {0}")]
     Invalid(#[from] gridwright_net::NetError),
@@ -243,10 +263,11 @@ impl Model {
                 .or_else(|| t.refs.get("ConnectivityNode"));
             if let Some(node) = node {
                 let seq = t.num("sequenceNumber").unwrap_or(f64::MAX) as i64;
-                collected
-                    .entry(equipment.clone())
-                    .or_default()
-                    .push((seq, key.clone(), node.clone()));
+                collected.entry(equipment.clone()).or_default().push((
+                    seq,
+                    key.clone(),
+                    node.clone(),
+                ));
             }
         }
         let mut nodes_of: HashMap<String, Vec<String>> = HashMap::new();
@@ -292,11 +313,299 @@ impl Model {
     }
 }
 
+/// The power crossing one terminal, as the state variables profile states it.
+///
+/// CIM measures at the terminal and signs the flow *into* the equipment, away
+/// from the node. A line whose sending end reads `+610` and whose receiving end
+/// reads `-603` is carrying 610 MW away from one bus and delivering 603 MW to
+/// the other, and the seven megawatts between them are the losses. The same
+/// convention makes a machine that is generating read negative, because it is
+/// the network's view of the terminal and not the machine's.
+///
+/// That sign is kept rather than flipped to match the engine's generator
+/// convention. A validation input that has been quietly rearranged is no longer
+/// the published answer, and the one property worth having here — that every
+/// terminal at a node sums to zero — only holds in CIM's own signs.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TerminalFlow {
+    /// Active power into the equipment, MW.
+    pub p: f64,
+    /// Reactive power into the equipment, MVAr.
+    pub q: f64,
+}
+
+/// The voltage a solved state reports at one bus.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BusVoltage {
+    /// Magnitude in kilovolts, exactly as published.
+    pub v_kv: f64,
+    /// Magnitude per unit on the bus's nominal voltage.
+    ///
+    /// Absent where the model never said what the bus's nominal voltage is,
+    /// which is the same gap that stops ohms becoming per unit. Reporting the
+    /// kilovolts as though they were per unit would give a bus sitting at 400
+    /// per unit, so it is left unanswered instead.
+    pub v_pu: Option<f64>,
+    /// Angle in radians.
+    ///
+    /// CIM publishes degrees. Everything downstream of here — the DC flow
+    /// constraint, the phase shift a MATPOWER branch carries, the angle
+    /// variables the solver allocates — is in radians, so the conversion
+    /// happens once, at the edge. Leaving it in degrees would not fail
+    /// anywhere; it would make every angle difference wrong by a factor of 57
+    /// and produce flows that look plausible.
+    pub angle: f64,
+}
+
+/// The flows a solved state reports on one branch, one per end.
+///
+/// Each end is matched to the bus it was measured at rather than to the order
+/// the profile happened to list its terminals in, so `end0` is always the flow
+/// at the branch's `bus0`. Getting this from position would make the sign of
+/// every reported flow depend on document order, which is the same failure the
+/// transformer ends already have to avoid.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct BranchFlow {
+    /// At the `bus0` end of the line.
+    pub end0: Option<TerminalFlow>,
+    /// At the `bus1` end of the line.
+    pub end1: Option<TerminalFlow>,
+}
+
+/// Where a tap changer was left standing.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TapPosition {
+    pub name: String,
+    /// The branch in the network it drives, when it could be reached.
+    ///
+    /// The path is `SvTapStep` to `TapChanger` to `TransformerEnd` to
+    /// `PowerTransformer`, and any of those links may be missing in a partial
+    /// model, so the position is still reported when the branch is not.
+    pub branch: Option<usize>,
+    pub position: f64,
+}
+
+/// How much of a shunt compensator was switched in.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShuntSections {
+    pub name: String,
+    /// The bus it sits on, when its terminal reaches one.
+    pub bus: Option<usize>,
+    pub sections: f64,
+}
+
+/// A solved state, as published in a model's state variables profile.
+///
+/// Indexed to line up with the [`Case`] it was read beside: `voltages[i]`
+/// belongs to `network.buses[i]`, `branches[i]` to `network.lines[i]`, and so
+/// on. That is what makes it usable as a check — a caller can walk its own
+/// solution and the operator's side by side without matching names.
+///
+/// An entry is `None` where the profile said nothing about that component. A
+/// published SV profile is frequently partial, and a zero would be a claim the
+/// model never made.
+///
+/// Flows on equipment this reader does not model — shunt compensators,
+/// switches, converters — are not indexed here, because there is nothing in the
+/// network to compare them against. A node's reactive balance may therefore
+/// fail to close on what is recorded, and the missing term is real equipment
+/// rather than a lost number.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SolvedState {
+    /// One entry per bus in the network, in the same order.
+    pub voltages: Vec<Option<BusVoltage>>,
+    /// One entry per line in the network, in the same order.
+    pub branches: Vec<BranchFlow>,
+    /// One entry per generator in the network, in the same order.
+    pub generators: Vec<Option<TerminalFlow>>,
+    /// One entry per load in the network, in the same order.
+    pub loads: Vec<Option<TerminalFlow>>,
+    /// Every tap position the profile stated, in identifier order.
+    pub taps: Vec<TapPosition>,
+    /// Every shunt compensator position the profile stated, in identifier order.
+    pub shunts: Vec<ShuntSections>,
+}
+
+impl SolvedState {
+    /// How many buses the profile gave a voltage for.
+    pub fn buses_covered(&self) -> usize {
+        self.voltages.iter().filter(|v| v.is_some()).count()
+    }
+
+    /// How many branches the profile gave a flow for, at either end.
+    pub fn branches_covered(&self) -> usize {
+        self.branches
+            .iter()
+            .filter(|b| b.end0.is_some() || b.end1.is_some())
+            .count()
+    }
+}
+
+/// Where each CIM object ended up in the assembled network.
+///
+/// The state variables profile talks about equipment by identifier and about
+/// buses through terminals, so reading it needs the same joins the assembly
+/// already made. Keeping them rather than rebuilding them is also what stops
+/// the two passes from disagreeing about which end of a branch is which.
+#[derive(Default)]
+struct Placed {
+    node: HashMap<String, usize>,
+    line: HashMap<String, usize>,
+    generator: HashMap<String, usize>,
+    load: HashMap<String, usize>,
+}
+
+/// Read the state variables profile out of an already-assembled model.
+///
+/// `None` when the merged documents carry no SV profile at all, which is the
+/// ordinary case: EQ and TP alone describe a network nobody has solved yet.
+fn solved_state(
+    model: &Model,
+    ordered: &[(&String, &Object)],
+    net: &Network,
+    placed: &Placed,
+) -> Option<SolvedState> {
+    if !ordered.iter().any(|(_, o)| o.class.starts_with("Sv")) {
+        return None;
+    }
+
+    let mut state = SolvedState {
+        voltages: vec![None; net.buses.len()],
+        branches: vec![BranchFlow::default(); net.lines.len()],
+        generators: vec![None; net.generators.len()],
+        loads: vec![None; net.loads.len()],
+        taps: Vec::new(),
+        shunts: Vec::new(),
+    };
+
+    for (_, o) in ordered {
+        match o.class.as_str() {
+            "SvVoltage" => {
+                let Some(bus) = o
+                    .refs
+                    .get("TopologicalNode")
+                    .and_then(|n| placed.node.get(n))
+                    .copied()
+                else {
+                    continue;
+                };
+                let Some(v_kv) = o.num("v") else { continue };
+                let v_nom = net.buses[bus].v_nom;
+                state.voltages[bus] = Some(BusVoltage {
+                    v_kv,
+                    v_pu: (v_nom > 0.0).then(|| v_kv / v_nom),
+                    angle: o.num("angle").unwrap_or(0.0).to_radians(),
+                });
+            }
+            "SvPowerFlow" => {
+                let Some(terminal_id) = o.refs.get("Terminal") else {
+                    continue;
+                };
+                let Some(equipment) = model
+                    .get(terminal_id)
+                    .and_then(|t| t.refs.get("ConductingEquipment"))
+                else {
+                    continue;
+                };
+                let flow = TerminalFlow {
+                    p: o.num("p").unwrap_or(0.0),
+                    q: o.num("q").unwrap_or(0.0),
+                };
+                if let Some(i) = placed.line.get(equipment).copied() {
+                    // The end is decided by the node this terminal itself
+                    // reaches, not by the order the profile listed its flows
+                    // in. A branch whose ends were swapped reports its losses
+                    // as negative and its direction backwards.
+                    let bus = model
+                        .terminal_node
+                        .get(terminal_id)
+                        .and_then(|n| placed.node.get(n))
+                        .copied();
+                    let line = &net.lines[i];
+                    if bus == Some(line.bus0) {
+                        state.branches[i].end0 = Some(flow);
+                    } else if bus == Some(line.bus1) {
+                        state.branches[i].end1 = Some(flow);
+                    }
+                } else if let Some(i) = placed.generator.get(equipment).copied() {
+                    state.generators[i] = Some(flow);
+                } else if let Some(i) = placed.load.get(equipment).copied() {
+                    state.loads[i] = Some(flow);
+                }
+            }
+            "SvTapStep" => {
+                let Some(changer_id) = o.refs.get("TapChanger") else {
+                    continue;
+                };
+                // A continuous position is what a model that treats the tap as
+                // a real variable publishes; a discrete one is the step the
+                // changer is actually standing on.
+                let Some(position) = o.num("position").or_else(|| o.num("continuousPosition"))
+                else {
+                    continue;
+                };
+                let changer = model.get(changer_id);
+                let branch = changer
+                    .and_then(|c| c.refs.get("TransformerEnd"))
+                    .and_then(|e| model.get(e))
+                    .and_then(|e| e.refs.get("PowerTransformer"))
+                    .and_then(|t| placed.line.get(t))
+                    .copied();
+                state.taps.push(TapPosition {
+                    name: changer
+                        .map(|c| model.name_of(changer_id, c, "tap"))
+                        .unwrap_or_else(|| format!("tap{changer_id}")),
+                    branch,
+                    position,
+                });
+            }
+            "SvShuntCompensatorSections" => {
+                let Some(shunt_id) = o.refs.get("ShuntCompensator") else {
+                    continue;
+                };
+                let Some(sections) = o.num("sections").or_else(|| o.num("continuousSections"))
+                else {
+                    continue;
+                };
+                let shunt = model.get(shunt_id);
+                let bus = model
+                    .nodes_of
+                    .get(shunt_id)
+                    .and_then(|n| n.first())
+                    .and_then(|n| placed.node.get(n))
+                    .copied();
+                state.shunts.push(ShuntSections {
+                    name: shunt
+                        .map(|s| model.name_of(shunt_id, s, "shunt"))
+                        .unwrap_or_else(|| format!("shunt{shunt_id}")),
+                    bus,
+                    sections,
+                });
+            }
+            _ => {}
+        }
+    }
+    Some(state)
+}
+
 /// Parse a CIM model from one or more RDF/XML documents.
 pub fn parse_model(
     documents: &[(String, String)],
     name: impl Into<String>,
 ) -> Result<Case, CgmesError> {
+    parse_model_with_state(documents, name).map(|(case, _)| case)
+}
+
+/// Parse a CIM model and whatever solved state was published with it.
+///
+/// The `Case` is byte for byte what [`parse_model`] returns; the state is
+/// additional, and `None` for the ordinary EQ-and-TP model that nobody has
+/// solved yet. See [`SolvedState`] for why it is returned beside the network
+/// rather than written into it.
+pub fn parse_model_with_state(
+    documents: &[(String, String)],
+    name: impl Into<String>,
+) -> Result<(Case, Option<SolvedState>), CgmesError> {
     let mut objects = HashMap::new();
     for (file, text) in documents {
         parse(text, file, &mut objects)?;
@@ -391,14 +700,18 @@ pub fn parse_model(
         if o.class != "CurrentLimit" && o.class != "ActivePowerLimit" {
             continue;
         }
-        let Some(value) = o.num("value") else { continue };
+        let Some(value) = o.num("value") else {
+            continue;
+        };
         let Some(set) = o.refs.get("OperationalLimitSet") else {
             continue;
         };
         let Some(terminal) = model.get(set).and_then(|s| s.refs.get("Terminal")) else {
             continue;
         };
-        let Some(equipment) = model.get(terminal).and_then(|t| t.refs.get("ConductingEquipment"))
+        let Some(equipment) = model
+            .get(terminal)
+            .and_then(|t| t.refs.get("ConductingEquipment"))
         else {
             continue;
         };
@@ -406,7 +719,10 @@ pub fn parse_model(
             value
         } else {
             // Three-phase apparent power from a per-phase current limit.
-            let kv = model.get(equipment).and_then(|e| model.kv(e)).unwrap_or(0.0);
+            let kv = model
+                .get(equipment)
+                .and_then(|e| model.kv(e))
+                .unwrap_or(0.0);
             if kv <= 0.0 {
                 continue;
             }
@@ -423,6 +739,15 @@ pub fn parse_model(
     let mut dangling = 0;
     let mut out_of_service = 0;
     let mut zero_reactance = 0;
+
+    // Where each CIM identifier ends up, recorded as the components are added
+    // rather than reconstructed afterwards. A second pass that re-derived which
+    // line a `PowerTransformer` became could disagree with the first about
+    // which end is `bus0`, and a solved state attached to the wrong end is
+    // worse than none.
+    let mut line_of: HashMap<String, usize> = HashMap::new();
+    let mut generator_of: HashMap<String, usize> = HashMap::new();
+    let mut load_of: HashMap<String, usize> = HashMap::new();
 
     for (key, obj) in &ordered {
         match obj.class.as_str() {
@@ -459,7 +784,7 @@ pub fn parse_model(
                     zero_reactance += 1;
                     0.0
                 };
-                net.add_line(Line {
+                let at = net.add_line(Line {
                     name: model.name_of(key, obj, "line"),
                     bus0,
                     bus1,
@@ -469,6 +794,7 @@ pub fn parse_model(
                     reactance: x,
                     ..Default::default()
                 });
+                line_of.insert((*key).clone(), at);
             }
             "PowerTransformer" => {
                 let Some((bus0, bus1)) = ends(key) else {
@@ -544,11 +870,12 @@ pub fn parse_model(
                     zero_reactance += 1;
                     0.0
                 };
-                let rating = limit_of
-                    .get(*key)
-                    .copied()
-                    .unwrap_or(if rated_s > 0.0 { rated_s } else { 1e6 });
-                net.add_line(Line {
+                let rating = limit_of.get(*key).copied().unwrap_or(if rated_s > 0.0 {
+                    rated_s
+                } else {
+                    1e6
+                });
+                let placed_at = net.add_line(Line {
                     name: model.name_of(key, obj, "transformer"),
                     bus0,
                     bus1,
@@ -556,12 +883,21 @@ pub fn parse_model(
                     susceptance,
                     resistance: r,
                     reactance: x,
-                    tap_ratio: if tap.is_finite() && tap > 0.0 { tap } else { 1.0 },
+                    tap_ratio: if tap.is_finite() && tap > 0.0 {
+                        tap
+                    } else {
+                        1.0
+                    },
                     ..Default::default()
                 });
+                line_of.insert((*key).clone(), placed_at);
             }
-            "SynchronousMachine" | "GeneratingUnit" | "ThermalGeneratingUnit"
-            | "HydroGeneratingUnit" | "WindGeneratingUnit" | "NuclearGeneratingUnit"
+            "SynchronousMachine"
+            | "GeneratingUnit"
+            | "ThermalGeneratingUnit"
+            | "HydroGeneratingUnit"
+            | "WindGeneratingUnit"
+            | "NuclearGeneratingUnit"
             | "SolarGeneratingUnit" => {
                 // Only the machine sits on a terminal; the generating unit
                 // carries the operating limits. Skip the units and reach them
@@ -599,7 +935,7 @@ pub fn parse_model(
                         _ => "unknown",
                     })
                     .unwrap_or("unknown");
-                net.add_generator(Generator {
+                let at = net.add_generator(Generator {
                     name: model.name_of(key, obj, "gen"),
                     bus,
                     p_nom: p_max,
@@ -613,6 +949,7 @@ pub fn parse_model(
                     q_max: obj.num("maxQ").unwrap_or(f64::INFINITY),
                     ..Default::default()
                 });
+                generator_of.insert((*key).clone(), at);
             }
             "EnergyConsumer" | "ConformLoad" | "NonConformLoad" => {
                 if !in_service(obj) {
@@ -634,13 +971,14 @@ pub fn parse_model(
                 if p.abs() < 1e-12 && q.abs() < 1e-12 {
                     continue;
                 }
-                net.add_load(Load {
+                let at = net.add_load(Load {
                     name: model.name_of(key, obj, "load"),
                     bus,
                     p_set: p,
                     q_set: q,
-            ..Default::default()
+                    ..Default::default()
                 });
+                load_of.insert((*key).clone(), at);
             }
             _ => {}
         }
@@ -681,17 +1019,49 @@ pub fn parse_model(
             "{zero_reactance} zero-reactance branches treated as transport links"
         ));
     }
+    let placed = Placed {
+        node: node_index,
+        line: line_of,
+        generator: generator_of,
+        load: load_of,
+    };
+    let state = solved_state(&model, &ordered, &net, &placed);
+    if let Some(s) = &state {
+        // Said out loud, because a caller who is handed only the `Case` would
+        // otherwise never learn that the archive contained the operator's own
+        // answer and that this reader deliberately did not apply it.
+        notes.push(format!(
+            "state variables: a published solution covers {} of {} buses and {} of {} \
+             branches; it is returned beside the network rather than folded into it, so \
+             a solver's own answer can be checked against it",
+            s.buses_covered(),
+            net.buses.len(),
+            s.branches_covered(),
+            net.lines.len()
+        ));
+        if !s.taps.is_empty() || !s.shunts.is_empty() {
+            notes.push(format!(
+                "the solved state also fixes {} tap positions and {} shunt compensator \
+                 settings, which describe the controls rather than the network and are \
+                 reported rather than applied",
+                s.taps.len(),
+                s.shunts.len()
+            ));
+        }
+    }
     notes.push(
-        "CIM carries no generation costs; every marginal cost is zero until one is supplied"
-            .into(),
+        "CIM carries no generation costs; every marginal cost is zero until one is supplied".into(),
     );
 
     net.validate()?;
-    Ok(Case {
-        name: name.into(),
-        network: net,
-        notes,
-    })
+    Ok((
+        Case {
+            name: name.into(),
+            network: net,
+            notes,
+        },
+        state,
+    ))
 }
 
 /// Read every XML document out of a zip archive.
@@ -701,7 +1071,10 @@ pub fn parse_model(
 /// operator inside another, so this recurses one level: an archive holding
 /// archives is exactly what a pan-European model looks like.
 #[cfg(feature = "cgmes")]
-pub fn documents_from_zip(bytes: Vec<u8>, label: &str) -> Result<Vec<(String, String)>, CgmesError> {
+pub fn documents_from_zip(
+    bytes: Vec<u8>,
+    label: &str,
+) -> Result<Vec<(String, String)>, CgmesError> {
     fn read(bytes: Vec<u8>, label: &str, depth: usize, into: &mut Vec<(String, String)>) {
         use std::io::Read;
         let Ok(mut archive) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) else {
@@ -749,20 +1122,40 @@ pub fn documents_from_zip(bytes: Vec<u8>, label: &str) -> Result<Vec<(String, St
 /// unpacked directory both work; pointing at a single file only works when that
 /// file is self-contained.
 pub fn load_model(path: impl AsRef<Path>) -> Result<Case, crate::IoError> {
+    load_model_with_state(path).map(|(case, _)| case)
+}
+
+/// Read a CIM model together with the solved state published alongside it.
+///
+/// Identical to [`load_model`] in every other respect, including reading an
+/// archive or a directory, because the state variables profile is just another
+/// file in the same model and has to survive both routes in.
+pub fn load_model_with_state(
+    path: impl AsRef<Path>,
+) -> Result<(Case, Option<SolvedState>), crate::IoError> {
     let path = path.as_ref();
+    let (documents, name) = documents_of(path)?;
+    parse_model_with_state(&documents, name).map_err(crate::IoError::Cgmes)
+}
+
+/// Collect every profile document a path stands for, and the model's name.
+fn documents_of(path: &Path) -> Result<(Vec<(String, String)>, String), crate::IoError> {
+    let name = path
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "model".into());
     let mut documents = Vec::new();
 
-    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip")) {
+    if path
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+    {
         let bytes = std::fs::read(path).map_err(|source| crate::IoError::Read {
             path: path.display().to_string(),
             source,
         })?;
-        let name = path
-            .file_stem()
-            .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "model".into());
         let docs = documents_from_zip(bytes, &name).map_err(crate::IoError::Cgmes)?;
-        return parse_model(&docs, name).map_err(crate::IoError::Cgmes);
+        return Ok((docs, name));
     }
 
     let read_one = |p: &Path| -> Result<(String, String), crate::IoError> {
@@ -781,10 +1174,7 @@ pub fn load_model(path: impl AsRef<Path>) -> Result<Case, crate::IoError> {
         let mut paths: Vec<std::path::PathBuf> = entries
             .flatten()
             .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .is_some_and(|e| e.eq_ignore_ascii_case("xml"))
-            })
+            .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("xml")))
             .collect();
         // Deterministic order, so a model assembled from several profiles is
         // assembled the same way every time.
@@ -796,11 +1186,7 @@ pub fn load_model(path: impl AsRef<Path>) -> Result<Case, crate::IoError> {
         documents.push(read_one(path)?);
     }
 
-    let name = path
-        .file_stem()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| "model".into());
-    parse_model(&documents, name).map_err(crate::IoError::Cgmes)
+    Ok((documents, name))
 }
 
 #[cfg(test)]

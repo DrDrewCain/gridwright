@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+         xmlns:cim="http://iec.ch/TC57/2013/CIM-schema-cim16#">
+
+  <cim:TopologicalNode rdf:ID="_n1">
+    <cim:IdentifiedObject.name>NORTH 400</cim:IdentifiedObject.name>
+    <cim:TopologicalNode.BaseVoltage rdf:resource="#_bv400"/>
+  </cim:TopologicalNode>
+  <cim:TopologicalNode rdf:ID="_n2">
+    <cim:IdentifiedObject.name>SOUTH 400</cim:IdentifiedObject.name>
+    <cim:TopologicalNode.BaseVoltage rdf:resource="#_bv400"/>
+  </cim:TopologicalNode>
+  <cim:TopologicalNode rdf:ID="_n3">
+    <cim:IdentifiedObject.name>SOUTH 220</cim:IdentifiedObject.name>
+    <cim:TopologicalNode.BaseVoltage rdf:resource="#_bv220"/>
+  </cim:TopologicalNode>
+
+  <cim:Terminal rdf:about="#_t_line1_1">
+    <cim:Terminal.TopologicalNode rdf:resource="#_n1"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_t_line1_2">
+    <cim:Terminal.TopologicalNode rdf:resource="#_n2"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_t_tx1_1">
+    <cim:Terminal.TopologicalNode rdf:resource="#_n2"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_t_tx1_2">
+    <cim:Terminal.TopologicalNode rdf:resource="#_n3"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_t_gen1">
+    <cim:Terminal.TopologicalNode rdf:resource="#_n1"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_t_load1">
+    <cim:Terminal.TopologicalNode rdf:resource="#_n3"/>
+  </cim:Terminal>
+  <cim:Terminal rdf:about="#_t_sh1">
+    <cim:Terminal.TopologicalNode rdf:resource="#_n3"/>
+  </cim:Terminal>
+</rdf:RDF>
