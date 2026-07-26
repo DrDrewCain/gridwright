@@ -578,7 +578,15 @@ pub fn build_lopf(net: &Network) -> Result<Lopf, BuildError> {
     all.extend(build_head_conversion(net, &vars, t));
     all.extend(build_losses(net, &vars, t));
     all.extend(build_cascades(net, &vars, t));
-    if let Some(batch) = build_co2(net, &vars, t) {
+    // Carbon, water and land: one row each, over the same variables.
+    for batch in [
+        build_co2(net, &vars, t),
+        build_water(net, &vars, t),
+        build_land(net, &vars, t),
+    ]
+    .into_iter()
+    .flatten()
+    {
         all.push(batch);
     }
     all.extend(build_reserve(net, &vars));
@@ -1546,42 +1554,89 @@ fn build_cascades(net: &Network, vars: &VarIndex, t: usize) -> Vec<RowBatch> {
 /// while this is a single row potentially millions of entries wide. It is
 /// built serially because there is only one of it, and because a row that
 /// wide is memory bound rather than compute bound anyway.
-fn build_co2(net: &Network, vars: &VarIndex, t: usize) -> Option<RowBatch> {
-    let limit = net.co2_limit?;
-    let emitters: Vec<usize> = net
-        .generators
-        .iter()
-        .enumerate()
-        .filter(|(_, g)| g.co2_emissions > 0.0)
-        .map(|(i, _)| i)
-        .collect();
-
-    // A budget with nothing to spend it on still constrains nothing, but the
-    // row is emitted regardless so that row counts stay predictable and the
-    // dual is available to report the (zero) carbon price.
+/// A system-wide budget over dispatch and over capacity built.
+///
+/// Carbon, water and land are the same row with different coefficients: some
+/// quantity accrues per megawatt-hour generated, some per megawatt installed,
+/// and the total may not exceed a ceiling. Writing one function rather than
+/// three means a fix to how weights or capacity blocks are handled lands in all
+/// of them, and it means adding a fourth resource is a call rather than a
+/// copy.
+///
+/// The dual of the row is what the constraint is worth: the carbon price a cap
+/// implies, or the value of another cubic metre of water.
+fn build_budget(
+    net: &Network,
+    vars: &VarIndex,
+    t: usize,
+    limit: Option<f64>,
+    per_mwh: impl Fn(&gridwright_net::Generator) -> f64,
+    per_mw_built: impl Fn(&gridwright_net::Generator) -> f64,
+) -> Option<RowBatch> {
+    let limit = limit?;
     let weights = net.snapshots.weights();
-    let mut batch = RowBatch::with_capacity(1, emitters.len() * t + net.generators.len());
-    let mut terms: Vec<(u32, f64)> = Vec::with_capacity(emitters.len() * t);
-    // Capacity built carries its embodied carbon into the same budget. Leaving
-    // it out lets a model meet a cap by building its way there for free.
+    let mut batch = RowBatch::with_capacity(1, net.generators.len() * (t + 1));
+    let mut terms: Vec<(u32, f64)> = Vec::with_capacity(net.generators.len() * t);
+
+    // Capacity built carries its own share into the same budget. Leaving it out
+    // lets a model meet a ceiling by building its way there for free.
     for (g, unit) in net.generators.iter().enumerate() {
-        if unit.embodied_co2 > 0.0
+        let rate = per_mw_built(unit);
+        if rate > 0.0
             && let Some(cap) = vars.gen_capacity[g]
         {
             for q in 0..cap.len() {
-                terms.push((cap.at(q), unit.embodied_co2));
+                terms.push((cap.at(q), rate));
             }
         }
     }
-    for &g in &emitters {
-        let rate = net.generators[g].co2_emissions;
+    for (g, unit) in net.generators.iter().enumerate() {
+        let rate = per_mwh(unit);
+        if rate <= 0.0 {
+            continue;
+        }
         let p = vars.dispatch[g];
         for (step, &w) in weights.iter().enumerate().take(t) {
             terms.push((p.at(step as u32), rate * w));
         }
     }
+
+    // A budget with nothing to spend it on still constrains nothing, and the
+    // row is emitted regardless so that row counts stay predictable and the
+    // dual is available to report the (zero) price.
     batch.push_le(terms, limit);
     Some(batch)
+}
+
+fn build_co2(net: &Network, vars: &VarIndex, t: usize) -> Option<RowBatch> {
+    build_budget(
+        net,
+        vars,
+        t,
+        net.co2_limit,
+        |g| g.co2_emissions,
+        |g| g.embodied_co2,
+    )
+}
+
+/// Water withdrawn over the horizon.
+///
+/// Thermal plant is cooled with water, and in much of the world that rather
+/// than carbon is what decides whether a station can run through a dry summer.
+/// It binds in exactly the weeks demand peaks, which is why it belongs in the
+/// optimisation rather than in a report afterwards.
+fn build_water(net: &Network, vars: &VarIndex, t: usize) -> Option<RowBatch> {
+    build_budget(net, vars, t, net.water_limit, |g| g.water_use, |_| 0.0)
+}
+
+/// Land occupied by capacity built.
+///
+/// The constraint that binds against renewables rather than for them: a wind
+/// farm's footprint is what limits how much of it a region will accept. Charged
+/// on capacity added rather than on the existing fleet, since the land the
+/// existing fleet stands on is already taken.
+fn build_land(net: &Network, vars: &VarIndex, t: usize) -> Option<RowBatch> {
+    build_budget(net, vars, t, net.land_limit, |_| 0.0, |g| g.land_use)
 }
 
 #[cfg(test)]

@@ -359,6 +359,21 @@ pub struct Generator {
     pub capital_cost: f64,
     /// Tonnes of CO2 per MWh generated.
     pub co2_emissions: f64,
+    /// Cubic metres of water consumed per MWh generated.
+    ///
+    /// Thermal plant is cooled with water and a great deal of it is not
+    /// returned. In much of the world that, rather than carbon, is what
+    /// actually decides where a station can be built and whether it can run
+    /// through a dry summer, and it is a constraint that binds in exactly the
+    /// weeks demand peaks. Zero for wind and solar, which is most of the point.
+    pub water_use: f64,
+    /// Square kilometres occupied per MW of capacity built.
+    ///
+    /// The counterpart to water, and the one that binds for renewables rather
+    /// than against them: a wind farm's footprint is what limits how much of it
+    /// a region will accept. Charged against capacity added rather than the
+    /// existing fleet, for the same reason embodied carbon is.
+    pub land_use: f64,
     /// Tonnes of CO2 per MW of capacity built.
     ///
     /// A wind turbine emits nothing while running and a great deal while being
@@ -426,6 +441,8 @@ impl Default for Generator {
             capital_cost: 0.0,
             co2_emissions: 0.0,
             embodied_co2: 0.0,
+            water_use: 0.0,
+            land_use: 0.0,
             committable: false,
             start_up_cost: 0.0,
             shut_down_cost: 0.0,
@@ -824,6 +841,17 @@ pub struct Network {
     /// entries wide. It is also the constraint most decarbonisation questions
     /// are actually asked through, so it earns its place.
     pub co2_limit: Option<f64>,
+    /// A ceiling on water consumed over the horizon, in cubic metres.
+    ///
+    /// The same machinery as the carbon budget and a different question: one
+    /// asks what may be emitted, the other what may be withdrawn. Both are
+    /// linear rows over the same dispatch variables, and both put a shadow
+    /// price on the dual saying what the constraint is worth.
+    pub water_limit: Option<f64>,
+    /// A ceiling on land occupied by capacity built, in square kilometres.
+    ///
+    /// The constraint that binds against renewables rather than for them.
+    pub land_limit: Option<f64>,
 }
 
 impl Network {
@@ -848,6 +876,8 @@ impl Network {
             contingencies: Vec::new(),
             reserve_margin: None,
             co2_limit: None,
+            water_limit: None,
+            land_limit: None,
         }
     }
 

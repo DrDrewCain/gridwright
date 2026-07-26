@@ -94,9 +94,18 @@ concrete in the way, named.
       and a fleet intensity is not any one unit's figure.
 - [x] ~~Carbon price as an alternative to a cap.~~ **Done**, as
       `Network.co2_price` entering the objective alongside marginal cost.
-- [ ] Water use and land use, on the same machinery as CO₂. Both are real
-      constraints in siting decisions and neither needs new solver work: they
-      are additional linear rows over the same dispatch variables.
+- [x] ~~Water use and land use, on the same machinery as CO₂.~~ **Done**, and
+      literally the same machinery: all three are one row with different
+      coefficients, so they share a builder and a fix to how weights or capacity
+      blocks are handled lands in all of them.
+
+      Water accrues per megawatt-hour generated, which is what makes it bind in
+      exactly the weeks demand peaks — in much of the world cooling water rather
+      than carbon decides whether a station runs through a dry summer. Land
+      accrues per megawatt built, and binds against renewables rather than for
+      them, since a wind farm's footprint is what limits how much of it a region
+      will accept. Charged on capacity added, not on the existing fleet, whose
+      land is already taken.
 - [ ] Emissions of the *network* itself: line losses are already modelled, and
       the carbon attributable to them currently lands on whoever consumed the
       power rather than being reported as a loss.

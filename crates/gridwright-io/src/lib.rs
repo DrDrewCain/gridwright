@@ -266,6 +266,8 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
                 capital_cost: f("capital_cost", 0.0)?,
                 co2_emissions: f("co2_emissions", 0.0)?,
                 embodied_co2: f("embodied_co2", 0.0)?,
+                water_use: f("water_use", 0.0)?,
+                land_use: f("land_use", 0.0)?,
                 committable: t
                     .boolean(r, "committable", false)
                     .map_err(|e| field(e, &src.label("generators")))?,
@@ -413,6 +415,21 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
     {
         net.co2_price = v;
     }
+    for (file, slot) in [
+        ("water_limit.txt", 0usize),
+        ("land_limit.txt", 1),
+    ] {
+        if let Some(text) = src.text(file)?
+            && let Ok(v) = text.trim().parse::<f64>()
+            && v.is_finite()
+        {
+            if slot == 0 {
+                net.water_limit = Some(v);
+            } else {
+                net.land_limit = Some(v);
+            }
+        }
+    }
     if let Some(text) = src.text("co2_limit.txt")? {
         let trimmed = text.trim();
         if !trimmed.is_empty() {
@@ -545,15 +562,16 @@ pub fn write_network(net: &Network, dir: impl AsRef<Path>) -> Result<(), IoError
 
     let mut out = String::from(
         "name,bus,carrier,p_nom,p_nom_extendable,p_nom_max,p_min_pu,marginal_cost,\
-capital_cost,co2_emissions,embodied_co2,committable,start_up_cost,shut_down_cost,\
+capital_cost,co2_emissions,embodied_co2,water_use,land_use,committable,start_up_cost,shut_down_cost,\
 min_up_time,min_down_time,ramp_up,ramp_down,q_min,q_max\n",
     );
     for g in &net.generators {
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
             q(&g.name), bus(g.bus), q(&g.carrier), f(g.p_nom), g.p_nom_extendable,
             f(g.p_nom_max), f(g.p_min_pu), f(g.marginal_cost), f(g.capital_cost),
-            f(g.co2_emissions), f(g.embodied_co2), g.committable, f(g.start_up_cost),
+            f(g.co2_emissions), f(g.embodied_co2), f(g.water_use), f(g.land_use),
+            g.committable, f(g.start_up_cost),
             f(g.shut_down_cost), g.min_up_time, g.min_down_time, f(g.ramp_up),
             f(g.ramp_down), f(g.q_min), f(g.q_max)
         ));
@@ -644,6 +662,12 @@ p_nom_extendable,p_nom_max,capital_cost,head_min_pu,head_bands,travel_time,spill
     }
     if let Some(limit) = net.co2_limit {
         write_csv(dir, "co2_limit.txt", &f(limit))?;
+    }
+    if let Some(limit) = net.water_limit {
+        write_csv(dir, "water_limit.txt", &f(limit))?;
+    }
+    if let Some(limit) = net.land_limit {
+        write_csv(dir, "land_limit.txt", &f(limit))?;
     }
     Ok(())
 }
