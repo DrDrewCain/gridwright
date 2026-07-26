@@ -197,14 +197,25 @@ concrete in the way, named.
       `Im(W₁W₂W₃) = 0`, a trilinear equality, which McCormick envelopes relax
       convexly. Validity is what the tests check: adding the cuts must never
       lower the bound, since a bound that falls means the cuts are wrong.
-- [ ] **Head's effect on energy conversion**, as opposed to on available
-      capacity, which is implemented. A full reservoir yields more megawatt-hours
-      from the same volume of water, because the water falls further. That part
-      is bilinear in flow and volume rather than linear, so unlike the capacity
-      effect it cannot go into the LP as written. It needs either a piecewise
-      linearisation over head bands or the same convex-envelope treatment the
-      AC relaxation uses — and the machinery for the second now exists, in
-      `gridwright-acopf::bnb`.
+- [x] ~~**Head's effect on energy conversion**, as opposed to on available
+      capacity.~~ **Done**, both ways, because the two suit different callers.
+
+      A full reservoir yields more megawatt-hours from the same *volume*,
+      because the water falls further. Volume drawn per megawatt-hour goes as
+      `1/head` and head depends on the level, so unlike the capacity effect this
+      one is bilinear and cannot go into the LP as written.
+
+      Piecewise over bands of reservoir level, following Borghetti, D'Ambrosio,
+      Lodi and Martello (2008): a binary picks the band, which makes the model
+      an integer one and is exact to the band width. And a successive
+      approximation that holds head fixed within an iteration and updates it
+      under-relaxation, which needs no binaries at all and lands near the same
+      answer — under-relaxation being what stops it oscillating, and a run that
+      does not settle says so rather than reporting the last iterate.
+
+      Sixteen tests, including the band head worked by hand, that ignoring
+      conversion overstates how far the water goes, and that conversion and
+      capacity are separate effects that both apply.
 - [x] ~~Spatial branch and bound on the McCormick boxes.~~ **Done.** Over a box
       `R² + I²` lies under its corner secant and `u_i·u_j` lies over its
       McCormick underestimator, so `secant ≥ McCormick` is implied by the
