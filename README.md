@@ -35,32 +35,33 @@ not solving.
 ## What that actually buys, and what it does not
 
 On the same model, this builds in 0.104 s on 1.50 GB where linopy takes 200.8 s
-on 22.4 GB. Left there, the number claims more than follows from it, so the
-qualification belongs here rather than five hundred lines further down.
+on 22.4 GB. Stated on its own, that ratio implies more than actually follows
+from it, so the qualification belongs here rather than five hundred lines
+further down.
 
 **It does not make a hard solve tractable.** On a full year at hourly
 resolution the solve dominates completely: construction is 0.0–0.1% of runtime.
 A model that takes HiGHS four minutes still takes four minutes. If your model
-already solves, and you build it once, this buys you nothing you could measure
+already solves and you build it once, this buys you nothing you could measure,
 and you should use PyPSA, which has a decade of features this does not.
 
 **Nor is 22.4 GB alarming on its own.** On a workstation it is unremarkable,
-and 200 seconds is an annoyance rather than an obstacle. Anyone reading those
-two numbers as a crisis is right to be sceptical.
+and 200 seconds is an annoyance rather than an obstacle. Anyone sceptical that
+those two numbers amount to a crisis is right to be.
 
 What the difference buys is narrower, and it is about *where* and *how often*
 rather than how fast:
 
-- **Whether the model fits at all.** 1.50 GB against 22.4 GB is the difference
-  between a laptop, a CI runner or a browser tab and a machine you have to book.
-  PyPSA-Eur's advice to cluster Europe down to a couple of hundred nodes is a
-  memory decision before it is a time decision.
+- **Whether the model fits at all.** 1.50 GB runs on a laptop, a CI runner or
+  a browser tab; 22.4 GB needs a machine you have to book. PyPSA-Eur's advice
+  to cluster Europe down to a couple of hundred nodes is a memory decision
+  before it is a time decision.
 - **Building stops being a per-iteration tax.** One build is not the case that
-  matters. A rolling horizon over a year is 122 builds; a scenario sweep is
-  hundreds; an interactive edit is one per keystroke-ish. At 200 s each, 122
-  windows is **6.8 hours of pure assembly** before any solving happens. At
-  0.104 s each it is 13 seconds. This is where the ratio stops being a
-  curiosity.
+  matters. A rolling horizon over a year takes 122 builds, a scenario sweep
+  takes hundreds, and an interactive edit takes one per change. At 200.8 s
+  each, 122 windows come to **6.8 hours of pure assembly** before any solving
+  happens; at 0.104 s each they come to 13 seconds. That is where the ratio
+  stops being a curiosity.
 - **It runs where a Python stack cannot.** The whole engine, the format layer
   and a solver compile to `wasm32-unknown-unknown`, so the model can be built
   and solved in a browser tab with no server at all.
@@ -593,14 +594,14 @@ elsewhere because a table travels without its context:
 
 1. **It is one synthetic 256-bus ring.** It says what construction costs on a
    model of that shape and size. It is not evidence about any real network's
-   topology, and no claim here rests on it that is not about construction.
-2. **200.8 s and 22.4 GB are not, by themselves, alarming numbers.** Optimisation
-   people routinely spend minutes and tens of gigabytes, and a reviewer who
-   shrugs at them is right to. The case is not that linopy is slow in the
-   abstract; it is that both numbers are *per build*, and the interesting
-   workloads build many times. A rolling horizon over this year is 122 builds:
-   6.8 hours of assembly at 200.8 s each against 13 seconds at 0.104 s each. A
-   scenario sweep multiplies it again.
+   topology, and the only claims resting on it are claims about construction.
+2. **200.8 s and 22.4 GB are not, by themselves, alarming numbers.**
+   Optimisation routinely costs minutes and tens of gigabytes, and anyone who
+   shrugs at these two is not wrong to. The case is not that linopy is slow in
+   the abstract; it is that both numbers are *per build*, and the workloads
+   that matter build many times over. A rolling horizon over this year takes
+   122 builds: 6.8 hours of assembly at 200.8 s each, against 13 seconds at
+   0.104 s each. A scenario sweep multiplies it again.
 3. **This is construction only, and construction is the small half.** Solving
    this same model takes far longer than either column. That is stated plainly
    in [Scale](#scale) and is not walked back anywhere: at full hourly
@@ -639,9 +640,9 @@ A full year at hourly resolution, solved whole:
 | 64 | 4.1M | — | being measured; see below |
 
 The seven-minute cutoff this row used to carry was not a property of the
-problem, it was the point at which I stopped waiting, and reporting it as
-though it meant something was wrong. Minutes are not a long time for an
-optimisation of this size. It is being run to completion and this row will
+problem; it was the point at which I stopped waiting. Reporting it as though
+it were a result was wrong, because minutes are not a long time for an
+optimisation of this size. It is being run to completion, and this row will
 carry the number rather than an abandonment.
 
 The solve grows about 9.5× for a doubling and construction is 0.0–0.1% of
