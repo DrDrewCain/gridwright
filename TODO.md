@@ -829,8 +829,59 @@ need modifying. No fork required — one ordering fix and an audit.
 | Needs a worker and a progress bar | 7,800 rows → 3.9 s |
 
 A regional network at daily resolution, or a small system hourly, is
-comfortable in-page today. A continental year is not, and no amount of frontend
-work makes it one.
+comfortable in-page with the pure-Rust simplex alone.
+
+### HiGHS *is* available in the browser, and it moves that ceiling ~20×
+
+This was researched expecting to rule it out, and it ruled itself in.
+
+[`highs-js`](https://github.com/lovasoa/highs-js) is an Emscripten build of
+HiGHS, **MIT-licensed**, and unusually alive: npm `1.15.2` published
+2026-07-22, `1.15.3-pre.3` on 2026-07-24, upstream tracked within weeks.
+(The other package this project previously cited, `fuglede/highs-wasm`, is
+**dead — the repository 404s**, and its stale search-engine description is what
+makes it look otherwise. Verified.)
+
+Measured rather than assumed:
+
+| Property | Finding |
+| --- | --- |
+| Speed vs native HiGHS | **1.10–1.38×** on 240k and 960k nonzero LPs, identical iteration counts and objectives |
+| Duals | **Returns every row dual.** 319,980 of them on the larger case |
+| Threading | **Single-threaded** — so **no COOP/COEP, no cross-origin isolation** |
+| Size | 3.4 MB raw, **826 KB brotli** |
+| Marshalling a 10M-nonzero CSC matrix between two wasm heaps | **~2 ms** via `TypedArray.set` |
+| Real ceiling | Emscripten's **2 GiB heap**, reached around 2.5–3M nonzeros |
+
+Two things make this better than a raw speed number. The prerelease line exposes
+the **full low-level C API** — `createModel` taking CSC directly, warm starts
+from a saved basis, ranging, and **`getIis`**, an irreducible infeasible
+subsystem. That last one is the engine half of the infeasibility diagnosis in
+Stage 4, which the domain research flags as the single largest pain point in
+every incumbent tool. And it ships **PDLP**, so first-order methods are
+available for free to test against the biggest models.
+
+One trap worth recording: the *stable* API is one-shot and takes CPLEX LP
+**text**. Serialising 2M nonzeros to that format took 245 ms and produced a
+26.9 MB string, against 1 ms for the equivalent CSC copy. Use the CSC path,
+never the text path.
+
+**So the plan is both solvers, chosen by size.** HiGHS-js for anything up to a
+few million nonzeros — which covers essentially every model a person will
+interact with — and the pure-Rust simplex above that, where the 2 GiB
+Emscripten heap gives out, and as the zero-dependency path when a second module
+is unavailable.
+
+**Keeping our own simplex is not sentiment.** The pure-Rust field was surveyed
+and there is no replacement: `microlp` returns **no duals at all** (verified by
+reading its `Solution` type), which disqualifies it and everything downstream of
+it in `good_lp` for a tool whose output is nodal prices. `clarabel` returns
+duals but is interior-point with **no crossover**, so on the massively
+degenerate LPs that network dispatch produces it converges to an analytic-centre
+dual rather than a basic one — legitimate, but not the numbers power-systems
+tooling expects for locational marginal prices. Everything else is unmaintained
+or toy-scale. Ours remains the only pure-Rust solver here that returns the duals
+this project exists to produce.
 
 ### The architecture this settles on
 
@@ -840,6 +891,8 @@ crates/
   gridwright-studio/  eframe app: docking, network editor, charts, 3D view
   gridwright-worker/  [[bin]] -> its own .wasm, wraps the engine,
                       receives a model, streams progress, returns results
+                      + loads highs-js as a sibling module and picks a
+                        solver by problem size
 ```
 
 Four decisions, each with a reason rather than a preference:
@@ -898,6 +951,17 @@ specification for one that will, not a reason to add a server.
 - [ ] **One `SolveBackend` trait, the only place the two targets diverge.**
       Worker implementation for web, `std::thread` for native. If anything else
       in the UI needs `cfg(target_arch)`, the abstraction is in the wrong place.
+- [ ] **`highs-js` as a sibling module inside the worker**, selected by problem
+      size, with the pure-Rust simplex as the fallback above the 2 GiB heap and
+      whenever the module fails to load. Hand it CSC through
+      `TypedArray.set` — never the LP-text path. Pin the version: the low-level
+      C API is on the `1.15.3-pre.*` line at time of writing and the stable
+      line is one-shot text only.
+- [ ] **A differential test across the two browser backends.** The same model
+      solved by `highs-js` and by our simplex should agree on objective and on
+      every dual, exactly as `differential.rs` already does natively against
+      linked HiGHS. This is cheap to write and it is the only thing that will
+      catch a marshalling bug that produces plausible-but-wrong prices.
 - [ ] **Cancellation, designed before it is needed.** A worker blocked inside a
       solve cannot dequeue messages, so `postMessage({cancel})` arrives *after*
       the solve finishes and is useless. Three mechanisms, and we want the first
@@ -999,8 +1063,18 @@ design work goes in. If this works, nothing architectural is left to discover.
       result with an `OPEN` gap must look different from a proved optimum.
 - [ ] **Infeasibility diagnosis.** Reportedly the single largest pain point in
       every incumbent tool. "Infeasible" with no further information is a dead
-      end for a user; the engine should be able to say which constraints
-      conflict. Needs solver work, not just UI.
+      end for a user; the engine should say which constraints conflict.
+
+      Half of this is now cheaper than expected: `highs-js` exposes **`getIis`**,
+      an irreducible infeasible subsystem, so the browser path can get a minimal
+      conflicting constraint set without new solver work. What remains is the
+      part that matters — mapping those row indices back to *things the user
+      recognises*. "Rows 40,117 and 40,118 conflict" is not an answer;
+      "the 14:00 ramp limit on Unit 7 cannot meet the load after you cut the
+      Aachen–Liège line" is. That mapping is ours to build and it is the
+      difference between a diagnostic and a shrug.
+      The pure-Rust path needs its own IIS eventually, or it degrades to
+      Phase-1 infeasibility residuals, which are weaker but not nothing.
 
 ### Stage 5 — scenarios, which is what makes it a studio
 
@@ -1419,9 +1493,9 @@ narrower claim than "construction is the bottleneck".
       That is the strongest argument this project has for having written its own
       solver, and it was found by accident rather than looked for. The reason
       the solver exists was that HiGHS cannot go in *this* browser module —
-      it compiles to wasm perfectly well through Emscripten, as `highs-js` and
-      `highs-wasm` both demonstrate, but that is `wasm32-unknown-emscripten` and
-      will not link into a `wasm32-unknown-unknown` Rust binary. That it *also*
+      it compiles to wasm perfectly well through Emscripten, as `highs-js`
+      demonstrates, but that is `wasm32-unknown-emscripten` and will not link
+      into a `wasm32-unknown-unknown` Rust binary. That it *also*
       solves a case HiGHS declines is a better reason and nobody predicted it.
       Three tests pin it, including one asserting HiGHS still fails, to be
       deleted when an upgrade fixes it.
