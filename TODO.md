@@ -688,9 +688,18 @@ Still missing:
 
 The library side is done: the engine, the format layer and the pure-Rust solver
 all build for `wasm32-unknown-unknown`, every reader takes bytes rather than a
-path, and a network round-trips losslessly through JSON. What remains is the
-binding layer, the interface itself, and one piece of solver work that decides
-what the interface can honestly offer.
+path, and a network round-trips losslessly through JSON.
+
+What this section is now for: building an actual **simulation studio** — a
+design tool in the sense that Blender or Grasshopper are design tools, where the
+model is something you shape and interrogate rather than a file you submit to a
+batch job. The engine is fast enough to make that possible and nothing has yet
+been built to prove it. The plan below is staged so that each stage produces
+something usable rather than something half-built, and so that the risky parts
+are proved before the expensive parts are started.
+
+The measurements that decide the architecture come first, because every choice
+after them is downstream of what the browser can actually do.
 
 - [x] ~~**Sparse LU first.**~~ **Done**, and it moved the ceiling this section
       was written around. 864 rows took a second when this item was written; it
@@ -704,26 +713,286 @@ what the interface can honestly offer.
       resolution or a regional one at hourly. What it still is not is a
       continental year, and no amount of solver work in this crate makes it one. That is the
       decomposition question, not the factorisation question.
-- [ ] **`wasm-bindgen` wrapper**: load a file, edit a network, solve, read
-      results, all across the JavaScript boundary. Small, and blocked on
-      nothing.
-- [ ] **Decide where the solve happens.** Two honest designs, and the choice
-      changes the product rather than the plumbing. Either the page edits and
-      visualises while a server runs HiGHS, which handles real studies and needs
-      a server; or everything runs in the page, which needs nothing and is
-      bounded by the paragraph above. Both are defensible and doing one well
-      beats hedging.
-- [ ] Rust GUI (Dioxus) importing the engine as a library, compiled to WASM for
-      the browser and natively for desktop.
-- [ ] Network editing with live rebuild. Construction being fast is worth most
-      here rather than in batch: an edit that rebuilds in a hundred milliseconds
-      is a different interaction from one that takes a second.
-- [ ] Result visualisation: flows on a map, price duration curves, dispatch
-      stacks, capacity build-out by period.
-- [ ] Show the *status* of an answer, not just the number. An AC result that is
-      a relaxation rather than an operating point, a head iteration that did not
-      converge, and a branch-and-bound that stopped on its node limit are all
-      things the engine now reports and an interface would be wrong to hide.
+- [x] ~~**Decide where the solve happens.**~~ **Decided, on measurement rather
+      than on taste: everything runs in the page.** No server, static hosting.
+
+      The decision was blocked for months on not knowing the in-page ceiling.
+      It is now measured, in the actual target rather than extrapolated from
+      native numbers. See *What the browser target actually costs* below.
+
+### What the browser target actually costs
+
+Measured 26 July 2026, warm, n=5, identical code compiled twice. These numbers
+decide the architecture, so they are recorded before the plan that rests on
+them.
+
+**The solver costs 1.3× under wasm and nothing else.**
+
+| Size | Native | wasm | Penalty |
+| --- | --- | --- | --- |
+| 8 × 24 | 8.1 ms | 10.0 ms | 1.23× |
+| 16 × 24 | 37.3 ms | 48.5 ms | 1.30× |
+| 24 × 48 | 300.3 ms | 399.9 ms | 1.33× |
+| 32 × 48 | 568.5 ms | 750.3 ms | 1.32× |
+| 48 × 72 | 2.98 s | 3.86 s | 1.30× |
+| 64 × 96 | 11.34 s | 14.37 s | 1.27× |
+
+1.27 to 1.33× across three orders of magnitude, which is about as good as wasm
+gets on tight numeric code. The reason it is so flat: the simplex does not use
+rayon, so it loses no parallelism by moving to a single-threaded target. It was
+already single-threaded.
+
+**Construction costs 2 to 5×, and it does not matter.**
+
+| Size | Native | wasm | Penalty |
+| --- | --- | --- | --- |
+| 256 × 168 | 2.4 ms | 5.0 ms | 2.1× |
+| 256 × 720 | 6.2 ms | 21.7 ms | 3.5× |
+| 256 × 2190 | 16.5 ms | 65.8 ms | 4.0× |
+| 256 × 8760 | 50.5 ms | 265.6 ms | 5.3× |
+
+The penalty grows with size because construction *does* use rayon — twelve
+`par_iter` sites in `gridwright-build` plus the CSC transpose — and loses that
+parallelism. But construction is roughly fifty times cheaper than the solve at
+interactive sizes: 5 ms of build against 400 ms of solve at 256 × 168.
+
+**rayon does not trap on `wasm32-unknown-unknown`.** It falls back to the
+calling thread. This was the risk that looked like it might sink the whole
+plan; it is not one. The module has zero host imports and the output is
+numerically identical to native — 559,104 nonzeros at 256 × 168, matching the
+published table exactly.
+
+**A full year fits.** 256 buses over 8,760 snapshots — 16.3M variables, 29.2M
+nonzeros — assembles inside a wasm32 module in 266 ms. The memory claim this
+project rests on now holds in the target it was always about.
+
+**Threads compile, if we ever want them.** The whole dependency tree builds with
+`+atomics,+bulk-memory,+mutable-globals` and `--shared-memory` on nightly with
+`-Z build-std`, and `memory.buffer instanceof SharedArrayBuffer` is true. So
+the door is open. It is deliberately not being walked through: threads would buy
+2–5× on construction, which is the component that is already fifty times
+cheaper than the solve. That is an optimisation on the wrong thing, bought with
+a nightly toolchain, `-Z build-std`, cross-origin isolation, a Safari risk, and
+two threading crates that have not been published in eighteen months.
+
+**Therefore, the interactive budget in-page today, no threads, no HiGHS:**
+
+| Feel | Size |
+| --- | --- |
+| Instant, under 100 ms | ~1,000 rows |
+| Responsive, under 500 ms | ~2,600 rows |
+| Noticeable, under 1 s | ~3,500 rows |
+| Needs a worker and a progress bar | 7,800 rows → 3.9 s |
+
+A regional network at daily resolution, or a small system hourly, is
+comfortable in-page today. A continental year is not, and no amount of frontend
+work makes it one.
+
+### The architecture this settles on
+
+```
+crates/
+  gridwright-*        the engine, unchanged, no UI dependencies
+  gridwright-studio/  eframe app: docking, network editor, charts, 3D view
+  gridwright-worker/  [[bin]] -> its own .wasm, wraps the engine,
+                      receives a model, streams progress, returns results
+```
+
+Four decisions, each with a reason rather than a preference:
+
+**egui/eframe for the shell.** The only Rust option where dense technical
+tooling, static hosting, and a genuine native desktop build from one codebase
+are simultaneously true. Rerun's viewer is the proof point: egui/eframe, shipped
+as static `.html` + `.wasm` + `.js`, and it explicitly avoids spawning threads
+under wasm — the same constraint. The ecosystem is unusually well matched:
+`egui-snarl` for the node editor, `egui_tiles` for docking (what Rerun uses),
+`egui_plot` for charts, `egui_graphs` for large-graph layout, `wgpu` embedded in
+a panel via render callback for the 3D view.
+
+Ruled out with reasons rather than vibes. **Bevy**: no wasm multithreading, the
+tracking issue has been open since 2022, and WebGL2 versus WebGPU needs two
+separate builds. **Leptos**: its entire value is SSR and server functions, which
+"no server" deletes, and desktop is a Tauri wrapper documented against a version
+two majors old. **Slint**: its own docs call the web target demonstration-grade,
+and the tri-licence interacts badly with this project's AGPL/commercial posture.
+**Dioxus** stays the runner-up — better if HTML accessibility and CSS matter
+more than diagram quality, but the diagram surface would be a hand-rolled canvas
+either way, which is two rendering models to maintain.
+
+**Compute in a dedicated Web Worker, as a second wasm module.** This is the
+decision that removes almost all the risk. A worker holding its own
+single-threaded wasm instance keeps the UI at 60 Hz through a fourteen-second
+solve, and it needs **stable Rust, no nightly, no `-Z build-std`, and no
+cross-origin isolation**. The threading machinery is only required for
+*multi-core speedup inside* the solve, which the measurements say is not worth
+buying. Splitting these two concerns is what lets v1 ship on stable.
+
+**The solver swaps by target, not by fork.** `highs-sys` is now declared under
+`[target.'cfg(not(target_family = "wasm"))'.dependencies]`, so a wasm build
+succeeds with default features on and the browser silently gets the pure-Rust
+simplex while native gets HiGHS. One codebase, two capabilities.
+
+**Where a dependency cannot follow us into the browser, we write the
+replacement.** This project already did it once — the from-scratch simplex
+exists because HiGHS could not go where the engine needed to go, and it turned
+out to solve a case HiGHS declines. That is the standing policy for this work
+rather than a last resort: a crate that will not compile to wasm is a
+specification for one that will, not a reason to add a server.
+
+### Stage 0 — foundations, before any pixels
+
+- [ ] **CI, first, because everything else rests on it.** There is currently no
+      `.github/workflows` at all, and nothing guards the wasm target. It works
+      today because it was checked by hand. A workflow that runs the 644-test
+      suite, `cargo build --target wasm32-unknown-unknown`, `clippy` and
+      `fmt` is an hour's work and protects the foundation the entire interface
+      plan stands on.
+- [ ] **`gridwright-worker`**: the compute module. A `[[bin]]` compiled to its
+      own wasm, exposing `load(bytes) -> Model`, `build(Model) -> Problem`,
+      `solve(Problem) -> Solution`, with progress posted mid-solve. Native build
+      of the same crate runs the same calls directly on a thread.
+- [ ] **One `SolveBackend` trait, the only place the two targets diverge.**
+      Worker implementation for web, `std::thread` for native. If anything else
+      in the UI needs `cfg(target_arch)`, the abstraction is in the wrong place.
+- [ ] **Cancellation, designed before it is needed.** A worker blocked inside a
+      solve cannot dequeue messages, so `postMessage({cancel})` arrives *after*
+      the solve finishes and is useless. Three mechanisms, and we want the first
+      and third: `worker.terminate()` as the guaranteed backstop from day one,
+      and later a `SharedArrayBuffer` `Int32Array` flag polled through
+      `js_sys::Atomics::load` every few milliseconds of iterations. The atomics
+      flag works even from a non-atomics wasm build, because the SAB is a JS
+      object rather than linear memory.
+
+      **This constrains the solver, not just the UI.** `panic = "abort"` is set
+      in the workspace profile, so a cancelled solve cannot unwind. Cancellation
+      has to be a `Result` variant threaded through the simplex loop, and that
+      is a decision to take before the loop is written rather than after.
+- [ ] **Progress out of the solver.** A worker can `post_message` mid-computation
+      without yielding, so a progress bar costs nothing structurally. The
+      simplex needs to emit iteration count, current objective and the gap; the
+      branch and bound needs nodes explored, incumbent and bound. Both already
+      track these internally.
+- [ ] **Memory budget, enforced rather than hoped for.** The wasm32 ceiling is
+      4 GiB and irrelevant: mobile Safari has been measured crashing pages
+      around 100–200 MB with no catchable exception, and wasm memory never
+      shrinks, so an instance permanently holds its peak. Budget 1–1.5 GiB
+      desktop and 200–400 MB mobile, pin `--max-memory` at link time, use
+      `Vec::try_reserve` at the handful of sites that allocate the big matrices,
+      and add a pre-solve size estimate that refuses politely instead of
+      trapping the tab.
+- [ ] **Result transfer that does not copy twice.** wasm linear memory is not
+      transferable, so "zero-copy to the UI" is not available. Copy the solution
+      into a fresh `ArrayBuffer` in the worker and `postMessage` it with a
+      transfer list: one memcpy, then an O(1) handoff. Return a few large flat
+      `f64` arrays — primals, duals, nodal prices — plus a small JSON header.
+      Never run `serde_json` over tens of megabytes. And never hand the UI a
+      `Float64Array` view onto unshared linear memory: the next allocation
+      detaches it and silently zeroes its length.
+
+### Stage 1 — the thinnest thing that proves the whole pipe
+
+One vertical slice, ugly on purpose, that exercises every boundary before any
+design work goes in. If this works, nothing architectural is left to discover.
+
+- [ ] Drag a MATPOWER or PSS/E file onto the page; it parses **in the worker**.
+- [ ] Build and solve in the worker, progress bar ticking, UI still responsive.
+- [ ] A results table: objective, per-bus prices, branch flows.
+- [ ] Cancel mid-solve and get the tab back.
+- [ ] The identical crate runs as a native desktop window, with HiGHS.
+- [ ] Deployed to Vercel as static output and loading from a cold cache.
+
+### Stage 2 — the studio shell
+
+- [ ] `egui_tiles` docking: a viewport, an inspector, a run/console panel, and
+      a scenario browser, all rearrangeable and persisted between sessions.
+- [ ] A command palette. It is the cheapest discoverability mechanism there is
+      and it makes every later feature findable without menu archaeology.
+- [ ] Undo/redo as an explicit command stack over model edits. Retrofitting undo
+      into a canvas editor is a rewrite; designing it in on day one is a trait.
+- [ ] Project save/load, and autosave into OPFS. OPFS is Baseline-wide since
+      2023; the File System Access API is Chromium-only in 2026 and must be a
+      progressive enhancement, never the load-bearing path.
+
+### Stage 3 — the network editor, which is the actual product
+
+- [ ] Canvas with pan/zoom, marquee select, snapping, and a minimap. Rendered
+      through `wgpu` in an egui panel so it stays smooth at thousands of nodes.
+- [ ] Node and edge editing: buses, lines, generators, loads, storage. Typed
+      inspectors generated from the model types where possible.
+- [ ] **Live rebuild on edit.** This is the thesis the whole engine rests on and
+      it is still, per gap 4 in the README, untested as a workflow. The
+      measurements say it holds: an edit at regional scale rebuilds in single
+      -digit milliseconds in the browser. Prove it with a real edit loop.
+- [ ] Geographic layout when coordinates exist, force-directed when they do not.
+- [ ] Large-network behaviour: level-of-detail, culling, and a decision about
+      what a 13,659-bus network even looks like on screen.
+
+### Stage 4 — results, and being honest about them
+
+- [ ] Flows on the network, coloured by loading, animated by direction.
+- [ ] Dispatch stacks, price duration curves, storage state of charge,
+      capacity build-out by period. `egui_plot` for all of it.
+- [ ] Nodal price heatmap on the network itself — this is the output the engine
+      exists to produce and the one competing browser tools cannot show.
+- [ ] **Show the *status* of an answer, not just the number.** An AC result that
+      is a relaxation rather than an operating point, a head iteration that did
+      not converge, and a branch and bound that stopped on its node limit are
+      all things the engine reports and an interface would be wrong to hide. A
+      result with an `OPEN` gap must look different from a proved optimum.
+- [ ] **Infeasibility diagnosis.** Reportedly the single largest pain point in
+      every incumbent tool. "Infeasible" with no further information is a dead
+      end for a user; the engine should be able to say which constraints
+      conflict. Needs solver work, not just UI.
+
+### Stage 5 — scenarios, which is what makes it a studio
+
+- [ ] Define a scenario as a diff against a base network, not a copy.
+- [ ] Run a sweep and compare runs side by side.
+- [ ] The comparison view: what changed, what it cost, which constraints bound.
+
+### Testing the interface
+
+Untested UI code rots faster than anything else in a codebase, and a canvas app
+resists the usual tools: there is no DOM, so Playwright selectors have nothing
+to grip.
+
+- [ ] **`egui_kittest`** for widget and interaction tests — the official harness.
+      Simulated clicks, typing and drags, running headless in CI.
+- [ ] **Snapshot tests** on rendered frames for the editor and each chart type,
+      with a software rasteriser path so results do not vary by GPU.
+- [ ] **`wasm-bindgen-test` in headless Chrome and Firefox** for anything that
+      only fails in the browser: worker round-trips, OPFS, file loading,
+      memory-growth behaviour.
+- [ ] **End-to-end through a test hook rather than the DOM.** Expose a small
+      scripted-command surface from Rust so a browser test can drive the app and
+      assert on model state, instead of pixel-matching a canvas.
+- [ ] **Frame-time budget as a test.** A studio that drops below 60 fps while
+      panning a large network has a bug, and it should fail CI rather than be
+      noticed in a demo.
+- [ ] **Accessibility assertions through AccessKit**, which egui already wires
+      up. Canvas apps are the worst offenders here and it is much cheaper to
+      keep it working than to retrofit it.
+- [ ] **A golden-path integration test** that loads a real PGLib case, edits it,
+      solves it, and checks the answer against the same case solved through the
+      CLI. That single test would catch nearly every plumbing regression.
+
+### Hosting
+
+- [ ] Static deploy on Vercel; verified working for this exact shape, including
+      free tier, static-only output, and `.wasm` served as `application/wasm`
+      with Brotli, without configuration.
+- [ ] `vercel.json` with `"source": "/(.*)"` — note Vercel's own knowledge-base
+      example uses `"/"`, which matches only the root and misses workers and
+      wasm under any other path.
+- [ ] Two things that bite: Brotli compression removes `Content-Length`, so a
+      byte-accurate download progress bar needs the expected size hardcoded or
+      `Content-Encoding`-aware handling; and the Hobby tier's 100 MB static
+      upload ceiling should be tested against rather than assumed, since the
+      wasm bundle plus example networks could approach it.
+- [ ] Cross-origin isolation is available on Vercel if threads are ever wanted —
+      verified on live deployments, including a Rust app using rayon with shared
+      memory. Use `require-corp` rather than `credentialless`, since Safari does
+      not support the latter. Not needed for v1.
 
 ## What the scaling measurements established
 
