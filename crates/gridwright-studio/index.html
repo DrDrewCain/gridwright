@@ -1,0 +1,41 @@
+<!doctype html>
+<!--
+  The page the wasm build mounts into.
+
+  Deliberately plain, and deliberately here rather than in a build system: what
+  it documents is the contract between this crate and whatever eventually serves
+  it — one canvas, one id, one call to `mount`.
+
+  Note what is absent. There is no COOP/COEP requirement, no SharedArrayBuffer,
+  and no cross-origin-isolation check, because nothing here uses wasm threads.
+  That is what lets this page be served from a plain static host, a file://
+  URL behind a trivial server, or a corporate intranet that will not set
+  response headers for you.
+
+  Build with:
+    cargo build -p gridwright-studio --lib --release --target wasm32-unknown-unknown
+    wasm-bindgen --target web --out-dir pkg \
+      target/wasm32-unknown-unknown/release/gridwright_studio.wasm
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+    <title>gridwright studio</title>
+    <style>
+      html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1e22; }
+      /* The canvas is sized in CSS pixels and eframe handles the device pixel
+         ratio itself, so giving it a fixed width/height attribute here would
+         fight it. */
+      canvas { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <canvas id="gridwright_studio"></canvas>
+    <script type="module">
+      import init, { mount } from "./pkg/gridwright_studio.js";
+      await init();
+      mount("gridwright_studio");
+    </script>
+  </body>
+</html>

@@ -1,0 +1,70 @@
+[package]
+name = "gridwright-studio"
+description = "Interactive shell for gridwright: a network view and a solve, natively and in a browser tab."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# The same two crate types as `gridwright-worker`, and for the same reason: a
+# browser loads a cdylib, and the rlib is what the native binary below links
+# against so that everything of substance is one build away from a debugger.
+[lib]
+name = "gridwright_studio"
+crate-type = ["cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "gridwright-studio"
+path = "src/main.rs"
+
+[dependencies]
+# `glow` rather than the default `wgpu`, and it is not a preference.
+#
+# eframe's wasm build takes wgpu with `default-features = false`, which leaves
+# out wgpu's `webgl` backend, so the wgpu path in a browser is WebGPU only.
+# WebGPU is still not everywhere — it is off by default in Firefox on Linux and
+# only recently on by default in Safari — and a tab that renders nothing is not
+# a degraded experience, it is a blank page. egui_glow targets WebGL2, which has
+# been universally available for years. Natively glow costs a smaller dependency
+# tree for a UI that draws flat 2D shapes and would not notice the difference.
+#
+# `x11` and `wayland` are named explicitly because dropping eframe's defaults
+# drops those too, and a Linux build without either has no way to open a window.
+# They resolve to nothing on macOS and Windows.
+#
+# `accesskit` and `web_screen_reader` are deliberately *not* re-enabled here.
+# They are in eframe's defaults and they are worth having, but neither can do
+# anything useful for a canvas of painted circles until the view exposes its
+# contents as something a screen reader can read. Turning them on now would
+# claim an accessibility story this version does not have. Tracked as work, not
+# as a decision against it.
+eframe = { version = "0.35", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "x11",
+    "wayland",
+] }
+
+gridwright-net.workspace = true
+
+# The reader and the solver, reached through the worker crate rather than
+# through `gridwright-io` and `gridwright-solve` directly.
+#
+# That is the point of it being an rlib as well as a cdylib: `load()` and
+# `solve()` are ordinary Rust functions, so the native build calls them with no
+# JSON in the middle, and the wasm build gets a dependency graph already proven
+# to reach `wasm32-unknown-unknown` — in particular one where `gridwright-solve`
+# is taken with `default-features = false`, so HiGHS (C++, no wasm toolchain
+# exists) is nowhere in it. Depending on those two crates here would mean
+# repeating that feature selection and being able to get it wrong.
+gridwright-worker.workspace = true
+
+# Only on wasm. The native binary mounts nothing and needs none of this.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.100"
+# eframe's web start-up is async, and a `#[wasm_bindgen]` entry point cannot be,
+# so the future has to be handed somewhere that will drive it.
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "Element", "HtmlCanvasElement", "Window"] }

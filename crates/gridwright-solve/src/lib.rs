@@ -213,6 +213,13 @@ pub enum SolveError {
 }
 
 /// Objective sense as the solver's constant.
+///
+/// Gated exactly as `highs_backend` is, and for the same reason: it is the only
+/// caller, the feature stays enabled on a wasm build with only the dependency
+/// dropped, and without the target gate this is dead code there. That produced
+/// a hard error rather than a warning as soon as anything built this crate for
+/// wasm under `-D warnings`, which is how CI builds it.
+#[cfg(all(feature = "highs", not(target_family = "wasm")))]
 #[inline]
 pub(crate) fn sense_code(sense: Sense) -> i32 {
     match sense {

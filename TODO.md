@@ -1176,6 +1176,104 @@ reference it is worth more than any amount of general advice.
 - [ ] Large-network behaviour: level-of-detail, culling, and a decision about
       what a 13,659-bus network even looks like on screen.
 
+### Canvas interaction patterns worth stealing, from tools that got them right
+
+Surveyed from Grasshopper, TouchDesigner, Substance 3D Designer, Houdini, Nuke,
+n8n and ComfyUI. Listed because these are the details that separate a canvas
+that feels like an instrument from one that feels like a demo, and because most
+of them are cheap if designed in and expensive if retrofitted.
+
+- [ ] **Encode data *shape* in the wire itself.** Grasshopper draws a single
+      grey line for one item, a **double line for a list**, a **dashed double
+      line for a tree**, and turns the wire **orange when no data is flowing**.
+      A user reads the structure of their model without opening anything.
+
+      This maps onto our domain better than it does onto Grasshopper's: a link
+      here is a scalar, a time series, or a scenario-indexed series, and getting
+      that wrong is one of the most common modelling errors there is. A wire
+      that shows its own dimensionality would catch it at a glance.
+- [ ] **Per-wire display modes: default, faint, hidden.** Also Grasshopper. A
+      hidden wire still carries data; selecting either end draws a ghost wire so
+      the connection is recoverable. This is how a dense graph stays readable
+      without deleting information, and it is a per-input property rather than a
+      global toggle.
+- [ ] **Type-aware connection.** Substance filters its node-creation search by
+      connector type when you drag off a pin, and offers a link mode that
+      *prohibits* connections between mismatched usages. Refusing an invalid
+      wire at connect time is worth more than reporting it at solve time.
+- [ ] **Highlight flow.** Substance can highlight everything upstream or
+      downstream of the selection. On an energy network that is "what feeds this
+      bus" and "what does this unit affect", which is a question users ask
+      constantly and currently answer by tracing wires with a finger.
+- [ ] **Keep label text at constant screen size past a zoom threshold.**
+      Substance does exactly this, and it pairs with the egui font-quantisation
+      trap recorded below: if labels stop scaling past a threshold, the glyph
+      cache stops missing. The performance fix and the legibility fix are the
+      same fix.
+- [ ] **Box-select direction should carry meaning.** Grasshopper inherits
+      Rhino's convention: left-to-right selects only fully enclosed nodes and
+      draws a solid rectangle; right-to-left selects anything touched and draws
+      a dashed one. Free to implement, and instantly familiar to anyone from a
+      CAD background — which is our audience.
+- [ ] **Selection and wire modifiers, taken wholesale** because they are
+      near-universal: shift-drag adds to a selection, ctrl-drag subtracts,
+      ctrl-shift-click toggles. On a pin, shift-drag adds a wire without
+      replacing the existing one, ctrl-drag erases, ctrl-shift-drag moves every
+      wire at once.
+- [ ] **Type-to-create in the canvas search.** Grasshopper turns `123` into a
+      slider preset to that value, `1<5` into a slider with that domain,
+      `//text` into a panel and `~text` into an annotation. The equivalent here
+      writes itself: a number becomes a parameter, `bus7>bus9` becomes a line,
+      a carrier name becomes a generator. This is the single largest speed
+      difference between an expert and a novice in these tools.
+- [ ] **Show computation on the wires.** TouchDesigner animates dashed wires
+      along the path that is currently cooking. For us that is a live picture of
+      which part of the model is rebuilding, and it costs almost nothing.
+- [ ] **Frames, comments and pins as first-class document objects**, not
+      decorations: a frame that moves its contents and auto-fits, comments that
+      can be parented to a node and die with it, and navigation pins that a
+      hotkey cycles through. All three are what make a large graph navigable
+      by someone who did not build it.
+
+**On minimaps, where the evidence is genuinely split.** Nuke's design is the
+best of those surveyed: the minimap **appears automatically only when the graph
+exceeds the viewport and disappears when it fits**, which removes the clutter
+objection entirely. ComfyUI's is the second good idea — it renders **error and
+bypass state**, so it is a status overview rather than a locator. Blender
+deliberately declined to build one, a core developer preferring "semantic zoom"
+— showing nodes differently when zoomed out — and that objection is worth
+taking seriously rather than dismissing. Houdini, TouchDesigner and Nuke all
+bind theirs to a single key. Build it late, make it status-bearing, and let it
+auto-hide.
+
+- [ ] **Auto-layout: scope it, stabilise it, and make it undoable.** The
+      evidence here is unusually clear. "Tidy selection" is welcomed; "tidy
+      everything" is resented — n8n users report their whole-graph tidy
+      "makes large workflows look worse, not better. Everything gets stretched
+      into one long vertical line." Their most-requested unmet feature is simply
+      **spacing controls**, which were never shipped.
+
+      The stability problem has a name and a citation: Misue, Eades, Lai and
+      Sugiyama, *Layout Adjustment and the Mental Map* (1995) — the same
+      Sugiyama who invented layered layout in 1981 also wrote the paper warning
+      that re-laying-out from scratch destroys the user's understanding. A user
+      complaint from 2022 puts it more plainly: "a small change to the structure
+      will typically cause a full re-layout, and place nodes completely
+      differently to the previous output, making visual/mental comparisons
+      between versions quite taxing."
+
+      The cheap mitigation, verified in n8n's source, is to **feed the layout
+      engine nodes and edges pre-sorted by their current position**, so that
+      equal-cost orderings resolve to the arrangement the user already has.
+
+      For the implementation, **`rust-sugiyama`** is the right starting point:
+      a full five-stage pipeline — cycle removal via petgraph's greedy feedback
+      arc set, network-simplex ranking, weighted-median crossing reduction,
+      Brandes–Köpf coordinates — built directly on `petgraph`, MIT licensed, and
+      citing exactly the same lineage as dagre and ELK's defaults. Avoid
+      `graphviz-rust`, which shells out to a native binary, and `elkjs`, which
+      is transpiled Java.
+
 ### egui performance traps, found before hitting them
 
 Four of these are specific to a zoomable canvas with text on it, which is

@@ -11,6 +11,7 @@ members = [
     "crates/gridwright-solve",
     "crates/gridwright-cli",
     "crates/gridwright-worker",
+    "crates/gridwright-studio",
 ]
 
 [workspace.package]

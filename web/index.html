@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>gridwright — pipeline check</title>
+    <!--
+      A proof that the pipeline works end to end: a file goes into a Web Worker,
+      the wasm engine reads it, the engine solves it, and the numbers come back.
+      It is deliberately not the interface — an eframe studio is being built
+      separately. Everything here is one file's worth of plain DOM so that when
+      it breaks, it is obvious where.
+    -->
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fbfbfa;
+        --panel: #fff;
+        --ink: #17181b;
+        --dim: #6b6f76;
+        --line: #e2e2df;
+        --accent: #2f5d50;
+        --bad: #9d2f28;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #16171a;
+          --panel: #1d1f23;
+          --ink: #e9e9e6;
+          --dim: #9aa0a8;
+          --line: #2e3136;
+          --accent: #7fbfa8;
+          --bad: #e08a82;
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        padding: 2.5rem 1.25rem 4rem;
+        background: var(--bg);
+        color: var(--ink);
+        font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+          sans-serif;
+      }
+      main {
+        max-width: 46rem;
+        margin: 0 auto;
+      }
+      h1 {
+        font-size: 1.35rem;
+        margin: 0 0 0.25rem;
+        letter-spacing: -0.01em;
+      }
+      p.lede {
+        margin: 0 0 1.75rem;
+        color: var(--dim);
+      }
+      #drop {
+        border: 1.5px dashed var(--line);
+        border-radius: 10px;
+        padding: 2.25rem 1.5rem;
+        text-align: center;
+        background: var(--panel);
+        transition: border-color 0.12s, background 0.12s;
+      }
+      #drop.hot {
+        border-color: var(--accent);
+        border-style: solid;
+      }
+      #drop p {
+        margin: 0 0 0.75rem;
+        color: var(--dim);
+      }
+      button {
+        font: inherit;
+        color: var(--ink);
+        background: transparent;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        padding: 0.4rem 0.9rem;
+        cursor: pointer;
+      }
+      button:hover {
+        border-color: var(--accent);
+      }
+      #status {
+        margin: 1.25rem 0 0;
+        color: var(--dim);
+        min-height: 1.55em;
+      }
+      #status.err {
+        color: var(--bad);
+        white-space: pre-wrap;
+      }
+      section {
+        margin-top: 1.5rem;
+        padding: 1.1rem 1.25rem;
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+      }
+      section[hidden] {
+        display: none;
+      }
+      h2 {
+        font-size: 0.72rem;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
+        color: var(--dim);
+        margin: 0 0 0.85rem;
+        font-weight: 600;
+      }
+      dl {
+        display: grid;
+        grid-template-columns: max-content 1fr;
+        gap: 0.3rem 1.25rem;
+        margin: 0;
+      }
+      dt {
+        color: var(--dim);
+      }
+      dd {
+        margin: 0;
+        font-variant-numeric: tabular-nums;
+      }
+      ul.notes {
+        margin: 0;
+        padding-left: 1.1rem;
+        color: var(--ink);
+      }
+      ul.notes li {
+        margin-bottom: 0.3rem;
+      }
+      .none {
+        color: var(--dim);
+      }
+      footer {
+        margin-top: 2.5rem;
+        color: var(--dim);
+        font-size: 0.85rem;
+      }
+      code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.9em;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>gridwright pipeline check</h1>
+      <p class="lede">
+        Drop a network file. It is read and solved by WebAssembly in a Web
+        Worker in this tab. Nothing is uploaded.
+      </p>
+
+      <div id="drop">
+        <p>
+          MATPOWER, PSS/E, IEEE CDF, UCTE, CSV, JSON, Parquet, Excel, CGMES,
+          netCDF
+        </p>
+        <button id="pick" type="button">Choose a file</button>
+        <input id="file" type="file" hidden />
+      </div>
+
+      <p id="status">Loading the engine…</p>
+
+      <section id="loaded" hidden>
+        <h2>Network</h2>
+        <dl id="summary"></dl>
+      </section>
+
+      <section id="notes" hidden>
+        <h2>Reader notes</h2>
+        <ul class="notes" id="notes-list"></ul>
+      </section>
+
+      <section id="solved" hidden>
+        <h2>Solve</h2>
+        <dl id="result"></dl>
+      </section>
+
+      <footer>
+        Single-threaded on purpose, so there are no cross-origin isolation
+        headers to satisfy. See <code>web/README.md</code>.
+      </footer>
+    </main>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>
