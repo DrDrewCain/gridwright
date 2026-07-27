@@ -872,14 +872,28 @@ specification for one that will, not a reason to add a server.
       simplex needs to emit iteration count, current objective and the gap; the
       branch and bound needs nodes explored, incumbent and bound. Both already
       track these internally.
-- [ ] **Memory budget, enforced rather than hoped for.** The wasm32 ceiling is
-      4 GiB and irrelevant: mobile Safari has been measured crashing pages
-      around 100–200 MB with no catchable exception, and wasm memory never
-      shrinks, so an instance permanently holds its peak. Budget 1–1.5 GiB
-      desktop and 200–400 MB mobile, pin `--max-memory` at link time, use
-      `Vec::try_reserve` at the handful of sites that allocate the big matrices,
-      and add a pre-solve size estimate that refuses politely instead of
-      trapping the tab.
+- [ ] **Memory budget, enforced rather than hoped for.** Budget **2 GiB**, pin
+      `--max-memory` at link time, use `Vec::try_reserve` at the handful of
+      sites that allocate the big matrices, and add a pre-solve size estimate
+      that refuses politely instead of trapping the tab. Two facts make the
+      last part non-optional: wasm memory **never shrinks**, so an instance
+      permanently holds its peak, and an allocation failure under
+      `panic = "abort"` is an unrecoverable trap that poisons the module. Treat
+      the worker as disposable and re-instantiate rather than trying to recover.
+
+      **Mobile is explicitly out of scope**, and this is a scoping decision
+      rather than an oversight. Mobile Safari has been measured crashing pages
+      at 100–200 MB with no catchable exception, which would cap the model size
+      about an order of magnitude below anything worth modelling. A docked
+      multi-panel studio with a solver in it is not a phone experience in the
+      first place, so the constraint is being dropped rather than designed
+      around: no touch input, no responsive small-screen layout, no mobile
+      memory ceiling. Desktop browsers only.
+
+      Desktop Safari stays in scope — it is nothing like iOS Safari for memory,
+      and keeping it costs almost nothing, since `require-corp` works there and
+      a self-contained studio has few third-party assets to make
+      `credentialless` worth wanting.
 - [ ] **Result transfer that does not copy twice.** wasm linear memory is not
       transferable, so "zero-copy to the UI" is not available. Copy the solution
       into a fresh `ArrayBuffer` in the worker and `postMessage` it with a
@@ -991,8 +1005,13 @@ to grip.
       wasm bundle plus example networks could approach it.
 - [ ] Cross-origin isolation is available on Vercel if threads are ever wanted —
       verified on live deployments, including a Rust app using rayon with shared
-      memory. Use `require-corp` rather than `credentialless`, since Safari does
-      not support the latter. Not needed for v1.
+      memory. Use `require-corp` rather than `credentialless`: desktop Safari
+      does not support the latter, and a self-contained studio has little
+      third-party content for `credentialless` to rescue. Not needed for v1.
+- [ ] One consequence of `COOP: same-origin` worth knowing before it surprises
+      someone: it severs `window.opener`, which breaks popup-based OAuth and
+      payment flows. Irrelevant while there is no sign-in, and a real constraint
+      the day there is one.
 
 ## What the scaling measurements established
 
