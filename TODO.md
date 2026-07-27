@@ -958,18 +958,41 @@ narrower claim than "construction is the bottleneck".
 - [x] ~~**The linopy head-to-head.**~~ **Measured**, at last, and it is the
       founding claim so it should have been measured first.
 
-      Same model, same machine, same session, 256 buses over 8,760 snapshots.
-      linopy 0.9.0 used idiomatically
-      (vectorised over xarray dimensions with incidence arrays, not Python loops),
-      reaching the same 16.3M variables and
-      29.2M nonzeros. Construction to a matrix: **0.096 s against 200.8 s**, on
-      **1.95 GB against 22.4 GB**.
+      Same model, same machine, same session, 256 buses over 8,760 snapshots,
+      reaching the same 16.3M variables and 29.2M nonzeros.
 
-      The memory figure is the important one. Two hundred seconds is an
-      annoyance; 22 GB is where a laptop stops and the model is not run at all.
-      That agrees with what the scaling section says from the other direction:
-      the fast build does not make the solve tractable, and what it buys is that
-      the model fits, rebuilds interactively, and can be swept over.
+      **This entry was wrong and is corrected here.** It described the benchmark
+      as "linopy 0.9.0 used idiomatically (vectorised over xarray dimensions with
+      incidence arrays, not Python loops)" and reported 0.096 s against 200.8 s
+      on 1.95 GB against 22.4 GB. Vectorising over a dense incidence array *was
+      the bug*: `(p * g_at).sum("gen")` materialises a
+      generators-by-buses-by-snapshots intermediate to express a sum in which all
+      but three terms per bus are zero. It looks like ordinary xarray and it is
+      not what the library is for. Written the way PyPSA writes it — `groupby`
+      for per-bus sums, indexed `sel` for a line's two ends — linopy produces the
+      identical matrix about 130 times faster.
+
+      | | gridwright | linopy 0.9.0, properly | linopy as originally scripted |
+      | --- | --- | --- | --- |
+      | Construction | **0.096 s** | 1.54 s | 200.8 s |
+      | Peak memory | **1.50 GB** | 3.45 GB | 22.4 GB |
+
+      So the honest figures are **about 15× on time and 2.3× on memory**, not
+      2,000× and 11×. The conclusion drawn from the old numbers — "22 GB is where
+      a laptop stops" — was drawn from the artefact and does not survive it. A
+      two-to-four-times memory advantage is worth having and is not, on this
+      model, the difference between running and not running.
+
+      What does survive is the narrower claim: a purpose-built assembler beats a
+      general-purpose algebraic modelling layer by one to two orders of
+      magnitude, and both general-purpose layers measured (linopy and JuMP) land
+      within a factor of two of each other. That is a claim about the shape of
+      the tool rather than about the language, and the founding quote was about
+      the language.
+
+      Still outstanding: these were taken on a machine that was not idle, with
+      repetition counts varying by condition and no spread reported. They have
+      not been re-run under `measure.sh` at n=5.
 
 - [x] ~~Extend the differential harness to every constraint family.~~ **Done**,
       and it paid for itself on the first run by finding a formulation bug that

@@ -42,8 +42,8 @@ and that is what this engine is not. The numbers are in
 
 ## What that actually buys, and what it does not
 
-On the same model, this builds in 0.089 s on 1.50 GB where linopy takes 1.54 s
-on 3.45 GB and JuMP takes 10.34 s on 5.08 GB. That is fifteen times faster than
+On the same model, this builds in 0.096 s on 1.50 GB where linopy takes 1.54 s
+on 3.45 GB and JuMP takes 10.34 s on 5.08 GB. That is sixteen times faster than
 linopy and a hundred times faster than JuMP, which is worth having and is less
 than this section used to claim: the earlier figure of two thousand times came
 from a benchmark script of ours that used linopy badly, and
@@ -73,7 +73,7 @@ rather than how fast:
   matters. A rolling horizon over a year takes 122 builds, a scenario sweep
   takes hundreds, and an interactive edit takes one per change. At 1.55 s each,
   122 windows come to **just over three minutes of pure assembly** before any
-  solving happens; at 0.089 s each they come to 11 seconds. Three minutes is
+  solving happens; at 0.096 s each they come to 12 seconds. Three minutes is
   not a crisis, which is the honest way to put it. It is the difference between
   an edit that redraws and an edit you wait for.
 - **It runs where a Python stack cannot.** The whole engine, the format layer
@@ -399,8 +399,15 @@ per bus, storage on every fourth bus, DC power flow throughout.
 | Network | Columns | Rows | Nonzeros | Construction |
 | --- | --- | --- | --- | --- |
 | 256 bus × 168 h | 311,808 | 118,272 | 559,104 | **3.3 ms** |
-| 256 bus × 8760 h | 16,258,560 | 6,167,040 | 29,153,280 | **~100 ms** |
+| 256 bus × 8760 h | 16,258,560 | 6,167,040 | 29,153,280 | **96 ms** |
 | 512 bus × 8760 h | 32,517,120 | 12,334,080 | 58,306,560 | **190 ms** |
+
+The 256 × 8760 row is the median of five runs: 119.7, 94.6, 96.6, 96.2, 94.6 ms.
+It had been quoted variously as 89, 96, 100 and 102 ms in different places in
+this repository — one measurement wearing four numbers, each a single reading.
+Note the first run again, 119.7 ms against a 96.2 ms median: that is the
+construction first-run penalty described under [Scale](#scale). The other two
+rows are single readings and are not promoted to more than that.
 
 Peak resident memory for the 256 × 8760 case is **1.50 GB**, and construction
 includes the transpose: the model is assembled straight into the column major
@@ -430,11 +437,14 @@ assembly is several full-width parallel regions and each ends when its slowest
 thread does, so one busy core elsewhere on the machine moves the number more
 than any of these changes did.
 
-**What has not been measured yet:** a head-to-head against `linopy` on an
-identical problem. Until that exists the claim here is "builds a 16 million
-variable model in under a tenth of a second", which is a fact, and *not*
-"faster than linopy", which is so far only an expectation. That benchmark is
-the next thing to build, and its numbers get published either way.
+**This has since been measured against linopy, JuMP and PyPSA** on a matrix
+whose counts match exactly, and the numbers are in
+[The comparison this project was founded on](#the-comparison-this-project-was-founded-on)
+with the method in [`benchmarks/head_to_head.md`](benchmarks/head_to_head.md).
+They did not come out the way this section originally anticipated: the ratio
+against linopy fell from a published two thousand to about fifteen once the
+benchmark script was fixed. This paragraph previously said the comparison did
+not exist, which stopped being true and is corrected here.
 
 **When this does not matter.** Run `gw bench --solve` at a modest size and the
 build share of total runtime is around 0.1%. HiGHS takes seconds; construction
@@ -583,34 +593,48 @@ the IEEE cases from PGLib, and PEGASE 1354, a real European system four times
 the size of the largest of them. The from-scratch simplex agrees with HiGHS on
 every one, including all 118 nodal prices of case118.
 
-Scaling benchmarks still use synthetic topologies, and are labelled as synthetic
-wherever they appear. The reason is time series rather than topology: real
-networks of this size are published, and a real network *with a year of hourly
-data attached* in one file is not.
+Most scaling benchmarks use synthetic topologies and are labelled as synthetic
+wherever they appear. That is no longer the only evidence: real PGLib topologies
+carrying a real year of hourly data have since been measured against
+size-matched rings, and the ring turns out to flatter the solve by between 1.3
+and 7 times. See gap 1 below.
 
 ## What would make this convincing
 
 An honest account of what the evidence here does not yet cover, because the
 answer to "is this actually useful" is currently "the measurements do not
-settle it". Four gaps, in the order they matter.
+settle it". Four gaps, in the order they matter. Three have since been closed
+and are kept with their results rather than deleted, because what a gap turned
+out to contain is more informative than the fact that it once existed — and in
+two of the three cases the answer went against this project.
 
-**1. Every scaling number is one synthetic ring.** A ring with chords has
-regular structure, uniform line ratings and identical plant at every bus. Real
-networks have long radial spurs, wildly unequal impedances and a handful of
-heavily meshed cores. That shape decides how sparse the basis stays, which is
-most of what a simplex spends its time on, so a ring may well flatter the solve.
-Correctness is already validated against real published networks, and the
-largest PGLib cases up to 13,659 buses are in the repository, so what is missing
-is specifically the *scaling* measurement on real topology rather than any
-question of whether real topology works.
+**1. ~~Every scaling number is one synthetic ring.~~ Measured, and the ring was
+flattering the solve.** The worry was that a ring's regular structure, uniform
+ratings and identical plant at every bus keep the basis sparser than a real
+network's radial spurs, unequal impedances and meshed cores would. It does. Real
+PGLib topologies against rings matched to the same column count:
 
-**2. There is no real year of time series on a real network.** This is the
-actual blocker behind gap 1, and it is a data problem rather than an engineering
-one: real networks of this size are published, and a real network *with a year
-of hourly data attached* in one file is not. Open Power System Data and the
-ENTSO-E transparency platform publish the series; mapping zone-level series onto
-buses is normal practice and needs to be done and stated rather than assumed
-away.
+| Case | Real solve | Ring solve | Ratio | nnz/col real | nnz/col ring |
+| --- | --- | --- | --- | --- | --- |
+| IEEE 14 | 7.2 s | 5.7 s | 1.27× | 2.21 | 1.66 |
+| IEEE 57 | 305.3 s | 42.0 s | 7.27× | 2.26 | 1.65 |
+| IEEE 118 | 787.3 s | 191.6 s | 4.11× | 2.27 | 1.65 |
+
+Real networks carry about 2.25 nonzeros per column against the ring's 1.65, and
+cost between 1.3 and 7 times more to solve at matched size. The ratio is not
+monotone, so read it as "several times" rather than as a trend, and two of those
+rows were taken while the solve itself drove the load above the threshold the
+test sets for itself, so they are upper bounds. Every synthetic scaling number
+elsewhere in this document should be read as optimistic by that much.
+
+**2. ~~There is no real year of time series on a real network.~~ Assembled.**
+Open Power System Data's 2019 hourly series for the four German control zones
+are fetched by [`benchmarks/fetch_opsd_time_series.py`](benchmarks/fetch_opsd_time_series.py)
+and mapped onto PGLib buses by zone, which is normal practice and is stated
+rather than assumed away. The distilled file is not committed: the upstream
+source is 130 MB, and the derived series comes from ENTSO-E transparency data
+whose redistribution terms are less explicit than the CC-BY 4.0 the PGLib cases
+carry. Run the script once and the measurement above reproduces.
 
 **3. ~~The head-to-head is against the wrong tool.~~ Measured, and it cost us
 a headline.** The founding quote recommends Julia, and this project had only
@@ -618,8 +642,10 @@ ever measured itself against `linopy`, which is Python. JuMP has now been
 measured: gridwright is about a hundred times faster on identical counts, so
 that comparison went the way the project hoped. The quote did not: Python built
 a larger matrix per second than Julia did. And the measurement turned up that
-our own linopy script was unfair, which narrows the published ratio from two
-thousand to about a hundred. See
+our own linopy script was unfair, which narrows the published linopy ratio from
+two thousand to about **sixteen**. (An earlier version of this sentence said "to
+about a hundred", which conflated two different comparisons: a hundred is the
+JuMP ratio, not the corrected linopy one.) See
 [the comparison](#the-comparison-this-project-was-founded-on).
 
 **4. Nobody has run a study with it.** Every number here is a microbenchmark or
@@ -667,14 +693,35 @@ resolution. Only construction is timed, to a matrix a solver could read.
 
 | | gridwright | linopy 0.9.0 | JuMP 1.31 | PyPSA 1.2.4 |
 | --- | --- | --- | --- | --- |
-| Variables | 16,258,560 | 16,258,560 | 16,258,560 | matched |
-| Nonzeros | 29,153,280 | 29,153,216 | 29,153,280 | matched |
-| Construction | **0.089 s** | **1.54 s** | 10.34 s | 10.39 s |
+| Variables | 16,258,560 | 16,258,560 | 16,258,560 | 14,016,000 |
+| Nonzeros | 29,153,280 | 29,153,216 | 29,153,280 | 58,148,880 |
+| Construction | **0.096 s** | **1.54 s** | 10.34 s | 10.39 s |
 | Peak memory | **1.50 GB** | **3.45 GB** | 5.08 GB | 12.13 GB |
 
-Against linopy used properly that is **about 15 times faster on roughly half
-the memory**, not two thousand times on a fifteenth. Against JuMP it is about a
-hundred times, on counts that match exactly.
+**Read this table with its limitations attached.** PyPSA's counts do not match
+and were never going to — it formulates transmission through cycle flows rather
+than voltage angles, and emits fixed capacity limits as rows where gridwright
+puts them in bounds — so its column is a different problem and belongs in a
+per-nonzero comparison rather than a wall-clock one. The earlier version of this
+table said "matched" for both PyPSA counts, which was wrong;
+[`head_to_head.md`](benchmarks/head_to_head.md) has always carried the real
+figures and the reconciliation.
+
+Three further caveats, none of which the numbers above carry on their face. The
+head-to-head was taken **on a machine that was not idle** — two of fourteen
+cores were busy — which biases against gridwright alone, since it is the only
+one of the four that builds in parallel, but is still not the standard the rest
+of this document now holds itself to. The repetition count **varies by
+condition** (best of 5, best of 3, and best of 1 for every peak-memory figure),
+and **no spread is reported for any of them**. And they are best-of-N, which is
+a floor rather than an expectation. That comparison has not yet been re-run
+under `benchmarks/measure.sh` at n=5; until it is, treat one significant figure
+as the resolution these ratios support.
+
+Against linopy used properly that is **about 16 times faster on 2.3 times less
+memory**, not two thousand times on a fifteenth. Against JuMP it is about a
+hundred times, on counts that match exactly — though see the caveat above about
+what resolution these ratios actually support.
 
 ### What the corrected numbers still support, and what they do not
 
@@ -698,16 +745,32 @@ implementation to check against and JuMP has no equivalent here. Treat the 100x
 as unconfirmed in the way the 2000x turned out to be.
 
 Method, counts and caveats: [`benchmarks/head_to_head.md`](benchmarks/head_to_head.md).
-The linopy timings above were taken while the machine was busy and are being
-re-run under `benchmarks/measure.sh`, which refuses to measure on a loaded
-machine.
+These timings were taken while the machine was busy. Re-running them under
+`benchmarks/measure.sh` at n=5, which is the standard the rest of this document
+now meets, is **outstanding work and not yet done** — an earlier version of this
+paragraph said the re-run was in progress, which it was not.
 
-**The memory number matters more than the speed one.** Two hundred seconds is an
-annoyance; 22 GB is where a laptop stops and the model does not get run at all.
-That is the same conclusion the [Scale](#scale) section reaches from the other
-direction: the fast build does not make the *solve* tractable, and what it
-actually buys is that the model fits, that it can be rebuilt interactively, and
-that a scenario sweep assembling it hundreds of times is not absurd.
+**The memory number matters more than the speed one, and it too is smaller than
+this section once claimed.** An earlier version argued it as "two hundred seconds
+is an annoyance; 22 GB is where a laptop stops" — but 200 s and 22 GB are the
+*as-scripted* linopy figures, the ones this very section identifies as an
+artefact of the benchmark script and replaces. Arguing from them after
+retracting them is the same error as quoting the ratio they produced.
+
+Measured against linopy used properly, the memory advantage is **1.50 GB against
+3.45 GB, about 2.3×**. Against JuMP it is 3.4×, and against PyPSA 8× on wall
+figures — though PyPSA builds a matrix twice the size, so the like-for-like
+comparison there is 54 bytes per nonzero against 209, about 3.9×.
+
+A factor of two to four in memory is worth having and is not a laptop-stopping
+difference on this model. Where it becomes one is extrapolation: the same ratio
+applied to a problem already near a machine's ceiling is the difference between
+a run and no run. That is a claim about headroom rather than a measurement, and
+it is stated as such. It is the same conclusion the [Scale](#scale) section
+reaches from the other direction: the fast build does not make the *solve*
+tractable, and what it actually buys is that the model fits, that it can be
+rebuilt interactively, and that a scenario sweep assembling it hundreds of times
+is not absurd.
 
 Caveats, since the number is flattering. This is linopy 0.9.0 and a later
 version may differ. linopy also does more than construct: it keeps a symbolic
