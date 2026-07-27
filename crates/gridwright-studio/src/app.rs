@@ -35,6 +35,14 @@ pub struct StudioApp {
 const SAMPLE: &[u8] = include_bytes!("../../../examples/pglib/case14_ieee.m");
 const SAMPLE_NAME: &str = "case14_ieee.m";
 
+/// Rows below which a freshly opened network is solved without being asked.
+///
+/// From the measured in-wasm ladder: 432 rows solves in 3.9 ms and 2,592 in
+/// 150 ms. Two thousand sits inside "the answer was already there when I
+/// looked", which is the only regime where solving unasked is a courtesy
+/// rather than a hijacking of the main thread.
+const AUTO_SOLVE_ROWS: usize = 2_000;
+
 impl StudioApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Before anything draws. The default egui palette is a fine developer
@@ -66,11 +74,27 @@ impl StudioApp {
         match gridwright_worker::load(name, bytes) {
             Ok(loaded) => {
                 self.positions = layout(&loaded.network);
-                self.loaded = Some(loaded);
                 self.view.reset();
                 self.outcome = None;
                 self.peak_shed.clear();
                 self.load_error = None;
+
+                // Solve immediately when it is cheap enough to be
+                // imperceptible. Asking someone to press a button to find out
+                // something that takes ten milliseconds is friction with no
+                // purpose, and the answer is what they opened the file for.
+                //
+                // The threshold is deliberately far below what the backend will
+                // accept: this is "so fast the user will not notice", not "as
+                // much as we can get away with". Anything larger stays explicit,
+                // because a solve you did not ask for and then have to wait for
+                // is worse than a button.
+                let rows = gridwright_build::Lopf::row_counts(&loaded.network).total();
+                if rows <= AUTO_SOLVE_ROWS && self.backend.is_ready() {
+                    self.backend.submit(&loaded.network);
+                }
+
+                self.loaded = Some(loaded);
             }
             Err(f) => self.load_error = Some(format!("{}: {}", f.kind, f.message)),
         }
@@ -456,7 +480,9 @@ impl eframe::App for StudioApp {
             .resizable(true)
             .default_size(300.0)
             .show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.side_panel(ui));
+                egui::ScrollArea::vertical()
+                    .animated(false)
+                    .show(ui, |ui| self.side_panel(ui));
             });
 
         self.status_strip(ui);

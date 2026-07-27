@@ -49,6 +49,11 @@ eframe = { version = "0.35", default-features = false, features = [
 
 gridwright-net.workspace = true
 
+# For `Lopf::row_counts`, which sizes a model from the network alone. The web
+# backend needs it to refuse a solve that would freeze the tab *before*
+# attempting it; a refusal that arrives after the freeze is not a refusal.
+gridwright-build.workspace = true
+
 # The reader and the solver, reached through the worker crate rather than
 # through `gridwright-io` and `gridwright-solve` directly.
 #

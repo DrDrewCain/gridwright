@@ -1500,6 +1500,7 @@ name = "gridwright-studio"
 version = "0.1.0"
 dependencies = [
  "eframe",
+ "gridwright-build",
  "gridwright-net",
  "gridwright-worker",
  "wasm-bindgen",

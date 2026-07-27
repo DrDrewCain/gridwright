@@ -138,24 +138,43 @@ mod web {
 
     use super::SolveBackend;
 
-    /// The browser side, which is not built yet.
+    /// The browser side, solved on the interactive thread.
     ///
-    /// It cannot be built from here. `gridwright-worker` already exposes
-    /// `solve_json` across `wasm_bindgen`, but reaching it means a second wasm
-    /// module instantiated inside a Web Worker, a `postMessage` protocol, and
-    /// the JS that owns both — none of which is Rust, and all of which is being
-    /// written separately. What this crate owes that work is the shape it has
-    /// to fit, which is the [`SolveBackend`] trait above.
+    /// A previous version of this was a `todo!()` waiting on Web Worker glue,
+    /// and that was the wrong call: `gridwright-worker` is an rlib as well as a
+    /// cdylib, so `solve()` is an ordinary Rust function this crate can already
+    /// see. Waiting for a `postMessage` protocol before solving anything meant
+    /// shipping a browser build that could open a network and not do the one
+    /// thing the network is for.
     ///
-    /// Until then [`is_ready`](SolveBackend::is_ready) is false, so the UI
-    /// disables the solve control and says so. `submit` is unreachable by
-    /// construction rather than merely unused, which is why it is a `todo!()`
-    /// and not a silent no-op: a no-op here would turn "not built" into "the
-    /// button does nothing", and those should not look the same.
+    /// **This blocks the frame.** That is stated plainly because it is a real
+    /// limitation and not a rounding error: the pure-Rust simplex runs at about
+    /// 1.3x its native time under wasm, measured, so a few hundred rows is
+    /// imperceptible, a few thousand is a stutter, and ten thousand-plus will
+    /// freeze the tab for seconds. The size guard below refuses the cases that
+    /// would freeze rather than appearing to hang.
+    ///
+    /// The Worker remains the right end state, and the trait this implements is
+    /// unchanged by it — `submit` then poll is exactly the shape a worker needs.
+    /// What changes when it lands is that this struct stops blocking, not that
+    /// anything above it is rewritten.
     #[derive(Default)]
     pub struct WorkerSolver {
-        _private: (),
+        /// Set by `submit`, consumed by `take_result`. Deliberately not solved
+        /// inside `submit`: deferring by one frame lets the UI paint its
+        /// "solving" state before the thread stops answering, so a slow solve
+        /// looks like work rather than like a hang.
+        pending: Option<Network>,
     }
+
+    /// Rows above which the in-page solve is refused rather than attempted.
+    ///
+    /// From the measured wasm ladder: 3,456 rows takes 0.75 s and 13,824 takes
+    /// 14.4 s. Somewhere in between, "the tab is thinking" becomes "the tab is
+    /// broken", and a tool that freezes for fifteen seconds with no way out has
+    /// lied about what it can do. Eight thousand is the last rung that stays
+    /// under about four seconds.
+    const MAX_ROWS_IN_PAGE: usize = 8_000;
 
     impl WorkerSolver {
         pub fn new() -> Self {
@@ -165,21 +184,40 @@ mod web {
 
     impl SolveBackend for WorkerSolver {
         fn is_ready(&self) -> bool {
-            false
+            true
         }
 
-        fn submit(&mut self, _network: &Network) {
-            // TODO(worker-glue): post the network to the Web Worker that hosts
-            // gridwright-worker's `solve_json`, and stash the reply channel.
-            todo!("the browser solve path is the JS worker glue, not yet landed")
+        fn submit(&mut self, network: &Network) {
+            self.pending = Some(network.clone());
         }
 
         fn is_busy(&self) -> bool {
-            false
+            self.pending.is_some()
         }
 
         fn take_result(&mut self) -> Option<Result<Solved, Failure>> {
-            None
+            let network = self.pending.take()?;
+
+            // Estimated from the model rather than measured by trying: the
+            // point is to refuse before the freeze, and a refusal that only
+            // arrives after the solve is not a refusal.
+            let rows = gridwright_build::Lopf::row_counts(&network).total();
+            if rows > MAX_ROWS_IN_PAGE {
+                // Built as a literal rather than through `Failure::new`, which
+                // is private to the worker crate. Its fields are public exactly
+                // so a caller can report something the worker did not produce.
+                return Some(Err(Failure {
+                    kind: "size".into(),
+                    message: format!(
+                        "{rows} rows is past what this page solves inline \
+                         ({MAX_ROWS_IN_PAGE} max). It would freeze the tab for \
+                         several seconds with no way to stop it. Run it natively, \
+                         or wait for the background solver."
+                    ),
+                }));
+            }
+
+            Some(gridwright_worker::solve(&network))
         }
     }
 }
