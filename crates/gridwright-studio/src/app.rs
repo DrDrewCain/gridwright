@@ -26,8 +26,23 @@ pub struct StudioApp {
     load_error: Option<String>,
 }
 
+/// A network to open when there is nothing else to open.
+///
+/// IEEE 14-bus: small enough to read at a glance, real enough to be worth
+/// solving, and the case every power-systems engineer already knows — so the
+/// first thing the studio shows is something the user can check against their
+/// own expectations rather than something they have to take on trust.
+const SAMPLE: &[u8] = include_bytes!("../../../examples/pglib/case14_ieee.m");
+const SAMPLE_NAME: &str = "case14_ieee.m";
+
 impl StudioApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        // Before anything draws. The default egui palette is a fine developer
+        // theme and the wrong thing to ship: two greys a shade apart, and a
+        // blue accent that would compete with amber for the only channel this
+        // interface uses to say something is wrong.
+        crate::theme::apply(&cc.egui_ctx);
+
         Self {
             loaded: None,
             positions: Vec::new(),
@@ -101,27 +116,80 @@ impl StudioApp {
     }
 
     fn side_panel(&mut self, ui: &mut egui::Ui) {
-        ui.heading("gridwright studio");
-        ui.add_space(4.0);
+        use crate::theme;
+
+        // The wordmark, set as two weights of one word rather than as a logo.
+        // "grid" is the subject and "wright" is the claim — a wright builds
+        // things — so the weight break falls where the meaning does.
+        ui.add_space(theme::UNIT);
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("grid")
+                    .size(15.0)
+                    .color(theme::INK_STRONG)
+                    .strong(),
+            );
+            ui.add_space(-6.0);
+            ui.label(egui::RichText::new("wright").size(15.0).color(theme::INK));
+        });
+        ui.add_space(theme::UNIT * 2.0);
 
         match &self.loaded {
             None => {
-                ui.label("No network loaded.");
-                ui.label("Drop a network file onto the canvas.");
+                // An empty state is an instruction, not an apology. Name the
+                // formats, because "a network file" is not a thing anyone has
+                // on disk — `case14_ieee.m` is.
+                ui.label(theme::eyebrow("no network"));
+                ui.add_space(theme::UNIT);
+                ui.label("Drop a file onto the canvas,");
+                ui.add_space(theme::UNIT);
+                // An empty state that can only wait is a dead end. The sample
+                // is embedded rather than fetched so it works offline, from a
+                // file:// URL, and on the first paint — and because a browser
+                // tab has no working directory to open it from.
+                if ui.button("or open the IEEE 14-bus case").clicked() {
+                    self.open_bytes(Some(SAMPLE_NAME), SAMPLE);
+                }
+                ui.add_space(theme::UNIT * 2.0);
+                ui.label(theme::eyebrow("reads"));
+                ui.add_space(theme::UNIT);
+                for line in [
+                    "MATPOWER  .m",
+                    "PSS/E     .raw .rawx",
+                    "CGMES     .xml .zip",
+                    "UCTE      .uct",
+                    "PyPSA     .nc  csv",
+                ] {
+                    ui.label(
+                        egui::RichText::new(line)
+                            .monospace()
+                            .size(11.0)
+                            .color(theme::INK_DIM),
+                    );
+                }
             }
             Some(loaded) => {
-                ui.label(egui::RichText::new(&loaded.name).strong());
+                ui.label(theme::eyebrow("network"));
+                ui.add_space(theme::UNIT);
+                ui.label(
+                    egui::RichText::new(&loaded.name)
+                        .size(13.0)
+                        .color(theme::INK_STRONG)
+                        .strong(),
+                );
             }
         }
 
         if let Some(err) = &self.load_error {
-            ui.colored_label(ui.visuals().error_fg_color, err);
+            ui.add_space(theme::UNIT);
+            ui.label(egui::RichText::new(err).color(theme::TRIP));
         }
 
         let Some(net) = self.network() else { return };
 
-        ui.separator();
-        ui.label(egui::RichText::new("Network").strong());
+        ui.add_space(theme::UNIT * 3.0);
+        ui.label(theme::eyebrow("composition"));
+        ui.add_space(theme::UNIT);
         egui::Grid::new("summary").num_columns(2).show(ui, |ui| {
             count(ui, "Buses", net.buses.len());
             count(ui, "Lines", net.lines.len());
@@ -238,6 +306,117 @@ impl StudioApp {
         }
     }
 
+    /// The one instrument that is always on screen.
+    ///
+    /// A control-room annunciator tells you the state of the plant whether or
+    /// not you asked, and this is the same idea: a lamp, what is loaded, and —
+    /// once something has been solved — the anatomy of that solve.
+    ///
+    /// The anatomy bar is the part worth having. `phase one` is the simplex
+    /// finding *a* feasible point; `phase two` is it finding the *best* one.
+    /// Only the second is the question the user asked. On a real 1,354-bus
+    /// network phase one is 87% of the iterations, which is a fact about this
+    /// solver that no other interface would show you, and it is the argument
+    /// for a warm start rendered as a picture rather than as a paragraph.
+    fn status_strip(&mut self, ui: &mut egui::Ui) {
+        use crate::theme;
+
+        let frame = egui::Frame::new()
+            .fill(theme::SLATE_DEEP)
+            .stroke(egui::Stroke::new(1.0, theme::SLATE_LINE))
+            .inner_margin(egui::Margin::symmetric(
+                (theme::UNIT * 2.0) as i8,
+                theme::UNIT as i8,
+            ));
+
+        egui::Panel::bottom("status")
+            .frame(frame)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (lamp, text) = self.state();
+                    // A filled dot, not a coloured word: the lamp is readable
+                    // at the edge of vision, which is the whole point of an
+                    // annunciator.
+                    let (rect, _) =
+                        ui.allocate_exact_size(egui::Vec2::splat(8.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 3.5, lamp);
+                    ui.label(egui::RichText::new(text).size(11.0).color(theme::INK));
+
+                    if let Some(net) = self.network() {
+                        separator(ui);
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} buses · {} lines · {} snapshots",
+                                thousands(net.buses.len()),
+                                thousands(net.lines.len()),
+                                thousands(net.n_snapshots()),
+                            ))
+                            .monospace()
+                            .size(11.0)
+                            .color(theme::INK_DIM),
+                        );
+                    }
+
+                    if let Some(Ok(solved)) = &self.outcome {
+                        self.anatomy(ui, solved);
+                    }
+                });
+            });
+    }
+
+    /// Lamp colour and one word for the current state.
+    fn state(&self) -> (egui::Color32, &'static str) {
+        use crate::theme;
+        if self.backend.is_busy() {
+            return (theme::ALARM, "solving");
+        }
+        match &self.outcome {
+            Some(Err(_)) => (theme::TRIP, "failed"),
+            Some(Ok(s)) if s.total_shed > 0.0 => (theme::TRIP, "unserved energy"),
+            Some(Ok(_)) => (theme::LIVE, "solved"),
+            None if self.loaded.is_some() => (theme::OFF, "not solved"),
+            None => (theme::OFF, "no network"),
+        }
+    }
+
+    /// Where the last solve's iterations went, as a bar rather than a sentence.
+    fn anatomy(&self, ui: &mut egui::Ui, solved: &Solved) {
+        use crate::theme;
+        let (Some(total), Some(p1)) = (solved.iterations, solved.phase_one_iterations) else {
+            return;
+        };
+        if total == 0 {
+            return;
+        }
+
+        separator(ui);
+        let share = p1 as f32 / total as f32;
+        let (rect, response) =
+            ui.allocate_exact_size(egui::Vec2::new(120.0, 8.0), egui::Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, 1.0, theme::SLATE_FIELD);
+        let mut feasible = rect;
+        feasible.set_width(rect.width() * share);
+        // Amber for phase one because it is, in the sense that matters, wasted
+        // work: a warm start would have skipped it.
+        p.rect_filled(feasible, 1.0, theme::ALARM.gamma_multiply(0.75));
+
+        ui.label(
+            egui::RichText::new(format!("{:.0}% phase one", share * 100.0))
+                .monospace()
+                .size(11.0)
+                .color(theme::INK_DIM),
+        );
+        response.on_hover_text(format!(
+            "{} of {} simplex iterations were spent finding a feasible point \
+             rather than an optimal one. A warm start would reuse the previous \
+             basis and skip most of it.",
+            thousands(p1),
+            thousands(total),
+        ));
+    }
+
     /// Reduce the per-bus, per-snapshot shed to one number per bus.
     ///
     /// Peak rather than total: the view marks *where* the system failed, and a
@@ -271,20 +450,50 @@ impl eframe::App for StudioApp {
                 egui::ScrollArea::vertical().show(ui, |ui| self.side_panel(ui));
             });
 
-        // `no_frame` rather than the default margins: the canvas paints its own
-        // background and should meet the panel edge, and an inset would show as
-        // a border around a view the user is panning.
-        egui::CentralPanel::no_frame().show(ui, |ui| {
+        self.status_strip(ui);
+
+        // No margins: the canvas should meet the panel edge, and an inset would
+        // show as a border around a view the user is panning.
+        //
+        // The fill is the one deliberate inversion in the layout. The work
+        // surface is *lighter* than the furniture around it, so the network is
+        // the brightest thing on screen and the panel recedes. A hairline on
+        // the shared edge keeps the two from bleeding into one another.
+        let canvas = egui::Frame::new()
+            .fill(crate::theme::SLATE_WORK)
+            .stroke(egui::Stroke::new(1.0, crate::theme::SLATE_LINE));
+        egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             let net = self.loaded.as_ref().map(|l| &l.network);
             self.view.ui(ui, net, &self.positions, &self.peak_shed);
         });
     }
 }
 
+/// A label and its count.
+///
+/// The number is monospace and right-aligned so a column of them shares a
+/// decimal position; proportional digits in a summary make the eye re-scan
+/// every row to find where the value starts.
 fn count(ui: &mut egui::Ui, label: &str, n: usize) {
-    ui.label(label);
-    ui.label(n.to_string());
+    ui.label(egui::RichText::new(label).color(crate::theme::INK));
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(crate::theme::number(thousands(n)));
+    });
     ui.end_row();
+}
+
+/// Group digits, because `13659` and `1354` are hard to tell apart at a glance
+/// and `13,659` and `1,354` are not.
+fn thousands(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -295,4 +504,18 @@ fn new_solver(ctx: &egui::Context) -> DefaultSolver {
 #[cfg(target_arch = "wasm32")]
 fn new_solver(_ctx: &egui::Context) -> DefaultSolver {
     DefaultSolver::new()
+}
+
+/// A dim vertical tick between groups in the status strip.
+///
+/// A full-height `ui.separator()` is too loud for a 22px strip; this is a
+/// middot's worth of separation, which is all the eye needs.
+fn separator(ui: &mut egui::Ui) {
+    ui.add_space(crate::theme::UNIT * 2.0);
+    ui.label(
+        eframe::egui::RichText::new("·")
+            .size(11.0)
+            .color(crate::theme::SLATE_LINE),
+    );
+    ui.add_space(crate::theme::UNIT);
 }

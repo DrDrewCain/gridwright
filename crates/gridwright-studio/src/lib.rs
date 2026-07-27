@@ -27,11 +27,13 @@
 mod app;
 mod backend;
 mod layout;
+mod theme;
 mod view;
 
 pub use app::StudioApp;
 pub use backend::{DefaultSolver, SolveBackend};
 pub use layout::layout;
+pub use theme::apply as apply_theme;
 pub use view::NetworkView;
 
 /// The browser entry point.

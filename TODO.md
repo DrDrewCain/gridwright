@@ -260,11 +260,20 @@ concrete in the way, named.
 
       Branch and bound re-solves a slightly changed relaxation at every node,
       and this solver has no warm start at all: `solve` builds a tableau,
-      crashes a basis, runs phase one and then phase two, every time. Phase one
-      is about three quarters of the iterations of a solve — 33,670 of 45,205
-      at 20,736 rows — and for a child node it is entirely wasted, because the
-      parent's basis was already feasible for everything except the one bound
-      that changed.
+      crashes a basis, runs phase one and then phase two, every time. For a
+      child node phase one is entirely wasted, because the parent's basis was
+      already feasible for everything except the one bound that changed.
+
+      **How much is wasted was an estimate and is now a measurement, and the
+      real number is worse.** This entry said "about three quarters", from
+      33,670 of 45,205 iterations at 20,736 rows — a synthetic ring. On
+      `case1354_pegase`, a real European network of 3,345 rows, it is
+      **2,509 of 2,871 iterations, 87.4%**, in a 559 ms solve. Measured
+      directly once the counts stopped being discarded at the worker boundary.
+
+      So on a real network nearly nine tenths of every solve is rediscovering
+      feasibility that a warm start would have preserved. That moves the
+      dual-simplex case from plausible to quantified.
 
       The reason it is missing is structural rather than an oversight.
       Tightening a bound leaves the parent basis dual feasible and primal
