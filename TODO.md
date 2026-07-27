@@ -1151,6 +1151,13 @@ reference it is worth more than any amount of general advice.
       and belongs over model edits rather than in the widget, so that is
       alignment rather than a gap. Groups and a minimap are ours to add.
 
+      **`egui-snarl` culls wires but not nodes.** Its draw loop iterates the
+      entire draw order and builds a full `Ui`, with per-pin sub-`Ui`s, for every
+      node regardless of whether it is on screen. At thousands of nodes that is
+      layout-bound before it is paint-bound. Culling node *construction* is
+      therefore ours to add — see the performance traps below, where this is the
+      general rule rather than a snarl quirk.
+
       Worth watching rather than adopting: **`egui_graph`** from nannou-org,
       very active through 2026, also `Scene`-based, and it already has waypoint
       edge routing, snap-to-grid with alignment guides, and a socket-aware
@@ -1168,6 +1175,55 @@ reference it is worth more than any amount of general advice.
 - [ ] Geographic layout when coordinates exist, force-directed when they do not.
 - [ ] Large-network behaviour: level-of-detail, culling, and a decision about
       what a 13,659-bus network even looks like on screen.
+
+### egui performance traps, found before hitting them
+
+Four of these are specific to a zoomable canvas with text on it, which is
+exactly what Stage 3 is. Worth reading before writing the canvas rather than
+after profiling it.
+
+- [ ] **Quantise font sizes on the canvas. Do not scale text continuously with
+      zoom.** egui replaced its glyph rasteriser in 0.34 — `ab_glyph` out,
+      `skrifa` and `vello_cpu` in — and the glyph cache key hashes the exact
+      float bits of the scale factor. A continuously varying text scale
+      therefore misses the cache **every frame** and re-rasterises from
+      outlines, and the new rasteriser is 3.6× to 6.5× slower per glyph than
+      the old one depending on size. The tracking issue is open, upstream has
+      said dynamically scaling text is not a project priority, and the reporter's
+      own fix was to render all text at one size. So: snap label sizes to a
+      small ladder of discrete steps as the user zooms. This is the single
+      biggest performance decision in the canvas and it is invisible until it
+      is too late to change cheaply.
+- [ ] **Cull at widget construction, not at paint.** Tessellation is **not**
+      cached between frames — egui rebuilds and re-tessellates everything, every
+      frame, deliberately (comparing shapes costs about half of what
+      tessellating them does). But measured on a realistic frame, tessellation
+      is only ~27% of the cost; layout and widget logic dominate. So skipping
+      `Shape`s is not the win — skipping the `ui.add()` call entirely for
+      off-screen nodes is. Compute the visible world rect first and never
+      construct off-screen node UIs at all.
+- [ ] **Draw wires as one mesh, not N shapes.** `Painter::add` returns an index
+      that can be back-patched, so a `Shape::Noop` placeholder can be reserved
+      before nodes are drawn and filled with a single assembled mesh afterwards.
+      That is how wires get painted behind nodes in one primitive rather than
+      thousands.
+- [ ] **Set `subpixel_binning = false` and keep `font_hinting = true`.** Both
+      are new knobs. Binning renders each glyph at up to four fractional offsets
+      for smoother kerning and egui's own docs concede it "lead to text looking
+      more blurry". For a dense technical UI, crisp beats evenly-kerned.
+- [ ] **Ship a real UI font.** egui has no system-font loading, and the bundled
+      proportional default is Ubuntu-Light — a poor fit for dense professional
+      interfaces. Pick one deliberately and register it in `FontDefinitions`.
+- [ ] **Use MiMalloc in the native build.** One reported case went from 120 ms
+      per frame to a stable 60 fps purely by swapping the allocator, with GPU
+      time at 0.8 ms and ~90% of the cost in egui's own layout. egui's own
+      benchmarks pull in MiMalloc for the same reason.
+- [ ] **Pin the egui version and expect quarterly breaks.** Releases are roughly
+      quarterly with breaking changes each time, and 0.35 removed everything
+      previously deprecated, so 0.34 → 0.35 is a hard break for anyone who
+      ignored the warnings. Note also that `egui_plot` is on its **own** version
+      line — 0.36 pairs with egui 0.35 — so version parity cannot be assumed
+      across the ecosystem.
 
 ### Stage 4 — results, and being honest about them
 
@@ -1382,6 +1438,14 @@ ships PR previews for humans to click. Plan around that rather than against it.
 - [ ] **A golden-path integration test** that loads a real PGLib case, edits it,
       solves it, and checks the answer against the same case solved through the
       CLI. That single test catches nearly every plumbing regression.
+- [ ] **`egui_mcp`, new in 0.35, is worth knowing about for this project
+      specifically.** It exposes a running egui app's AccessKit tree over an
+      inspection protocol and accepts synthetic events — launched with
+      `EGUI_INSPECTION=1`, listening on port 5719 — with an MCP server so a
+      coding agent can drive the app and take screenshots. Given how much of
+      this repository's work is agent-assisted, an agent that can actually
+      operate the UI and look at it is a meaningfully better feedback loop than
+      one that can only read the source.
 - [ ] Gotchas already paid for, recorded so nobody pays twice: `kittest.toml`
       uses `[mac]`, and `[macos]` **panics** under `deny_unknown_fields`;
       `wasm-bindgen-cli` in CI must match the `Cargo.lock` version exactly or

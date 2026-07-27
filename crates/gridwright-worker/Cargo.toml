@@ -1,0 +1,39 @@
+[package]
+name = "gridwright-worker"
+description = "The gridwright engine behind a WebAssembly boundary, for a browser Web Worker."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# A cdylib because that is what a browser loads, and an rlib so the protocol
+# types can be tested natively without a browser in the loop.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# `all-formats` rather than the default, and it is not a guess: the feature is
+# documented upstream as "every format that cross-compiles", and it is verified
+# building for wasm32-unknown-unknown in CI. That is what lets a browser tab
+# read MATPOWER, PSS/E, IEEE CDF, UCTE, CSV, JSON, Parquet, Excel, CGMES and
+# netCDF with nothing uploaded anywhere.
+gridwright-io = { workspace = true, default-features = false, features = ["all-formats"] }
+gridwright-net = { workspace = true, features = ["serde"] }
+gridwright-build.workspace = true
+
+# Deliberately not `workspace = true` with default features. The default
+# includes `highs`, which is C++ and cannot reach this target at all; CI asserts
+# highs-sys is absent from the wasm dependency graph. Spelling the features out
+# inline rather than inheriting is also the documented workaround for
+# rust-lang/cargo#11779, where workspace inheritance ignores
+# `default-features = false` inside a target-conditional block.
+gridwright-solve = { workspace = true, default-features = false, features = ["simplex"] }
+
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+# Only on the wasm target. Building this crate natively is how the protocol
+# types get tested without a browser, and that path needs no bindgen.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2.100"
