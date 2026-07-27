@@ -89,6 +89,24 @@ pub const ROW: f32 = 24.0;
 
 /// Install the theme. Called once, before the first frame.
 pub fn apply(ctx: &egui::Context) {
+    // Pin the theme before installing it.
+    //
+    // egui follows the host's light/dark preference by default and re-applies
+    // the corresponding `Visuals` at the start of every frame. Setting
+    // `style.visuals` alone therefore does nothing at all on a machine in light
+    // mode: the assignment is overwritten before anything is painted, and the
+    // result is this palette's dark-tuned greys on a white background — which
+    // reads as a washed-out, half-broken interface rather than as a theme that
+    // failed to load.
+    //
+    // That is exactly what shipped, and it was diagnosed from a screenshot
+    // rather than from the code, because every symptom pointed at opacity.
+    //
+    // There is no light theme yet. When there is, this becomes a preference
+    // and both variants get registered through `set_visuals_of`.
+    ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Dark);
+    ctx.set_visuals_of(egui::Theme::Dark, visuals());
+
     ctx.global_style_mut(|style| {
         style.visuals = visuals();
         spacing(style);
