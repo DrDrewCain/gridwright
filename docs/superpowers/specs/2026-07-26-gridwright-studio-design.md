@@ -232,6 +232,15 @@ must not become a way to regress them.
 - **Feature-unification guard.** A build that accidentally pulls HiGHS into the
   wasm graph fails loudly rather than at link time.
 
+## Relationship to `TODO.md`
+
+`TODO.md` § Interface carries the **staged implementation plan** — the crate
+layout, the `SolveBackend` trait, the cancellation mechanisms, the differential
+test across browser backends, and the stages through infeasibility diagnosis and
+scenarios. This document is the *rationale*: what was measured, what was
+rejected and why. Where the two disagree, `TODO.md` is the plan of record and
+this is the argument behind it.
+
 ## Scope for v1
 
 Load a network, render it, edit a parameter, re-solve, see flows and prices
@@ -283,34 +292,59 @@ field.
 
 Two findings decide it.
 
-**Only Clarabel returns duals among the pure-Rust crates**, and it has no
-integer variables, so it cannot do unit commitment. It is a partial answer at
-best: a faster continuous path, never a replacement.
+**Only Clarabel returns duals among the pure-Rust crates**, and it still is not
+usable here. It has no integer variables, so no unit commitment — but the
+sharper objection is that it is interior-point **with no crossover**. On the
+massively degenerate LPs network dispatch produces it converges to an
+analytic-centre dual rather than a basic one. That is a legitimate dual and it
+is not the number power-systems tooling means by a locational marginal price.
 
 **`glpk.js` is disqualified on licence, not merit.** It is small (294 KB) and
 returns duals, but it is GPL-3.0. This project is AGPL-3.0-only *with commercial
 dual-licensing* (`COMMERCIAL.md`), and dual-licensing requires that every
 component be ours or permissive. A GPL dependency forecloses that permanently.
 
-**`highs-js` is the only credible external option** — MIT, actively maintained
-(last commit 26 July 2026), single-threaded, 826 KB brotli. But its **stable API
-takes CPLEX LP *text***, and generating that text costs ~68 ms and 20 MB of
-characters per million nonzeros before HiGHS parses anything. That is
-disqualifying at our sizes. The `@next` prerelease adds a `createModel` CSC path
-taking `Int32Array`/`Float64Array` directly, which is the one worth having — and
-it is a prerelease with no announced stable date.
+**`highs-js` carries the browser path, and it was measured rather than
+assumed.** An earlier revision of this document deferred it and recommended our
+own simplex for v1. That was wrong, and the numbers that corrected it are
+recorded in `TODO.md` § *HiGHS is available in the browser after all*:
 
-Marshalling itself is **not** the obstacle it was assumed to be: copying between
-two wasm heaps runs at ~47–55 GB/s, so 10 M nonzeros costs 2.57 ms each way.
-Two heaps cannot be shared — two allocators over one address space collide, and
-`highs-js` explicitly declines to expose raw pointers — so it is always a copy,
-and the copy is cheap.
+| Property | Measured |
+| --- | --- |
+| Speed vs **native** HiGHS | **1.10–1.38×**, identical iteration counts and objectives |
+| Duals | every row dual — 319,980 on the larger case |
+| Threading | **single-threaded** |
+| Size | 3.4 MB raw, 826 KB brotli |
+| Marshalling a 10 M-nonzero CSC matrix between heaps | **~2 ms** |
+| Ceiling | Emscripten's **2 GiB heap**, around 2.5–3 M nonzeros |
 
-**Decision for v1: our own simplex, with warm starting.** It already returns
-duals and handles integers, it needs no JS bridge and no prerelease dependency,
-and warm starting is a larger win on the edit→resolve loop than swapping
-solvers. `highs-js@next` behind the `Solver` trait is the planned escape hatch
-once its CSC path stabilises; the trait exists so that swap is not a rewrite.
+Against our simplex's flat 2.7× wasm penalty *on top of* being ~25× slower than
+HiGHS to begin with, this is roughly a fiftyfold move in the in-browser ceiling.
+It is the difference between a tab that handles a regional day and one that
+handles most models a person will actually interact with.
+
+Two consequences worth drawing out. Being **single-threaded, it needs no
+cross-origin isolation at all** — which independently reinforces the no-threads
+decision above rather than complicating it. And the prerelease line exposes the
+full low-level C API: CSC input, **warm starts from a saved basis**, and
+`getIis` for an irreducible infeasible subsystem, which is the engine half of
+infeasibility diagnosis.
+
+The trap is the *stable* API, which is one-shot and takes CPLEX LP **text**:
+serialising 2 M nonzeros to it took 245 ms and produced a 26.9 MB string against
+1 ms for the equivalent CSC copy. **Use the CSC path on the prerelease line,
+never the text path.** Pin the version.
+
+**Decision: both solvers, chosen by problem size.** `highs-js` below the
+Emscripten heap ceiling; our own simplex above it, and whenever the sibling
+module fails to load, so the tool degrades rather than breaks. Warm starting our
+simplex remains valuable for the edit→resolve loop and for the models above the
+ceiling — it is no longer the *only* lever.
+
+A differential test across the two browser backends is required, not optional:
+the same model solved by `highs-js` and by our simplex must agree on objective
+and on every dual, exactly as `differential.rs` already does natively. It is the
+only thing that catches a marshalling bug producing plausible-but-wrong prices.
 
 **Ruled out entirely:** WebGPU compute for LP. WGSL has no `f64` — only `f32`
 and `f16` — and single-precision shadow prices are not usable for nodal pricing.
