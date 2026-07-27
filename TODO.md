@@ -1025,8 +1025,24 @@ design work goes in. If this works, nothing architectural is left to discover.
 
 ### Stage 2 — the studio shell
 
-- [ ] `egui_tiles` docking: a viewport, an inspector, a run/console panel, and
-      a scenario browser, all rearrangeable and persisted between sessions.
+- [ ] **`egui_tiles` 0.16** for docking: a viewport, an inspector, a run/console
+      panel and a scenario browser, rearrangeable and persisted between
+      sessions.
+
+      Chosen over `egui_dock` 0.20 deliberately. `egui_dock` has two things
+      tiles lacks — tear-off floating panels and built-in per-tab scroll areas
+      — but the first matters much less in a browser, where its "floating
+      windows" are egui windows inside the same viewport rather than real OS
+      windows, and the second is a few lines to add yourself. Against that,
+      `egui_tiles` has **n-ary containers including a grid layout** where
+      `egui_dock` has binary splits only, and it is owned and funded by
+      rerun-io with several regular contributors, where `egui_dock` is a
+      one-person project whose author has already renamed their GitHub account
+      once, silently invalidating every hard-coded URL. Rerun ships `egui_tiles`
+      and does not depend on `egui_dock` at all.
+
+      Neither has undo of layout changes. `egui_tiles` at least exposes
+      `Behavior::on_edit(EditAction)` as the hook to build one on.
 - [ ] A command palette. It is the cheapest discoverability mechanism there is
       and it makes every later feature findable without menu archaeology.
 - [ ] Undo/redo as an explicit command stack over model edits. Retrofitting undo
@@ -1039,6 +1055,34 @@ design work goes in. If this works, nothing architectural is left to discover.
 
 - [ ] Canvas with pan/zoom, marquee select, snapping, and a minimap. Rendered
       through `wgpu` in an egui panel so it stays smooth at thousands of nodes.
+
+      **`egui-snarl` 0.11 is the widget to start from**, and the reasoning is
+      worth keeping because the obvious alternative is a trap. It is the only
+      candidate simultaneously on egui 0.35, with real pins, headers, box
+      select and serde, offering **both** bezier and orthogonal wire styles,
+      and doing pan/zoom the modern way through `egui::Scene` and a layer
+      transform rather than by mutating stored node positions.
+
+      **Do not use `egui_node_graph` or `egui_node_graph2`.** The original is
+      gone — the author deleted every repository and **all crates.io versions
+      are yanked**; the fork is pinned to egui 0.29 and last touched in 2024.
+      That lineage's living continuation is `egui_node_editor` on GitLab, but
+      its zoom mutates node positions, which is the correctness smell snarl
+      deliberately moved away from.
+
+      What snarl does not have, and we therefore own: **no undo, no comment
+      frames or node groups, no minimap.** Undo is already Stage 2's problem
+      and belongs over model edits rather than in the widget, so that is
+      alignment rather than a gap. Groups and a minimap are ours to add.
+
+      Worth watching rather than adopting: **`egui_graph`** from nannou-org,
+      very active through 2026, also `Scene`-based, and it already has waypoint
+      edge routing, snap-to-grid with alignment guides, and a socket-aware
+      layered auto-layout — all things we will eventually want. It trails one
+      egui version. If it reaches 0.35 before Stage 3 starts, re-evaluate.
+      `egui_graphs` is a different tool: graph *visualisation* with pluggable
+      force-directed and hierarchical layouts, no pins or wire-dragging. It may
+      still earn a place for auto-layout of large view-only networks.
 - [ ] Node and edge editing: buses, lines, generators, loads, storage. Typed
       inspectors generated from the model types where possible.
 - [ ] **Live rebuild on edit.** This is the thesis the whole engine rests on and
