@@ -57,6 +57,14 @@ pub struct Solved {
     /// Total unserved energy across the whole system. Zero on a healthy model;
     /// anything else means the shed vectors below are worth looking at.
     pub total_shed: f64,
+    /// Simplex iterations, where the backend reports them. `None` from branch
+    /// and bound, which counts nodes rather than iterations.
+    pub iterations: Option<usize>,
+    /// Of those, how many went on reaching feasibility rather than optimality.
+    /// Surfaced because it is where the time goes — about three quarters of a
+    /// solve on these models — and because it is exactly what a warm start
+    /// would remove, which is the next thing an interactive edit loop wants.
+    pub phase_one_iterations: Option<usize>,
     /// Per bus, per snapshot. The dual of a nodal balance row *is* the price of
     /// energy at that bus, which is the output this engine exists to produce.
     pub prices: Vec<Vec<f64>>,
@@ -142,6 +150,8 @@ pub fn solve(network: &Network) -> Result<Solved, Failure> {
         status: format!("{:?}", sol.status),
         objective: (sol.status == Status::Optimal).then_some(sol.objective),
         total_shed: sol.total_shed(&lopf.vars),
+        iterations: sol.iterations,
+        phase_one_iterations: sol.phase_one_iterations,
         prices: (0..network.buses.len())
             .map(|b| owned(sol.price(b, n)))
             .collect(),

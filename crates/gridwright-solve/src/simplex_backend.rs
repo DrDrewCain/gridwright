@@ -90,7 +90,8 @@ impl Solver for SimplexSolver {
         // relaxation. It used to be refused outright, which was honest and left
         // the browser build unable to run unit commitment at all, since a page
         // cannot call HiGHS.
-        let s = if model.is_mip() {
+        let is_mip = model.is_mip();
+        let s = if is_mip {
             let r = gridwright_simplex::solve_mip(
                 problem,
                 &cols.integer,
@@ -128,6 +129,13 @@ impl Solver for SimplexSolver {
             objective: if flip { -s.objective } else { s.objective },
             col_value: s.col_value,
             row_dual: s.row_dual,
+            // Only the LP path reports iterations. The branch and bound branch
+            // above puts its *node* count into the same field of the inner
+            // solution, which is a different unit -- a node is an entire LP
+            // solve -- so forwarding it here would turn a unit conflation into
+            // a number an interface would display.
+            iterations: (!is_mip).then_some(s.iterations),
+            phase_one_iterations: (!is_mip).then_some(s.phase_one_iterations),
         })
     }
 }

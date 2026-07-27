@@ -1,4 +1,4 @@
-/* @ts-self-types="./gridwright_worker_f6880018.d.ts" */
+/* @ts-self-types="./gridwright_worker_879e70fa.d.ts" */
 
 /**
  * Read a file. Returns `Loaded` as JSON, or `Failure` as JSON.
@@ -57,7 +57,7 @@ function __wbg_get_imports() {
     };
     return {
         __proto__: null,
-        "./gridwright_worker_f6880018_bg.js": import0,
+        "./gridwright_worker_879e70fa_bg.js": import0,
     };
 }
 
@@ -228,7 +228,7 @@ async function __wbg_init(module_or_path) {
     }
 
     if (module_or_path === undefined) {
-        module_or_path = new URL('gridwright_worker_f6880018_bg.wasm', import.meta.url);
+        module_or_path = new URL('gridwright_worker_879e70fa_bg.wasm', import.meta.url);
     }
     const imports = __wbg_get_imports();
 

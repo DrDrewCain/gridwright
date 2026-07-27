@@ -230,6 +230,11 @@ impl Solver for HighsSolver {
             objective,
             col_value,
             row_dual,
+            // HiGHS does report a simplex iteration count through its info API,
+            // but this backend does not retrieve it yet, and `None` says that
+            // honestly where `0` would claim the solve was free.
+            iterations: None,
+            phase_one_iterations: None,
         })
     }
 }

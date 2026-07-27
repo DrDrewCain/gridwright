@@ -75,6 +75,23 @@ pub struct Solution {
     /// useful number an energy model produces and it falls out of the solve
     /// for free, so it is always retrieved.
     pub row_dual: Vec<f64>,
+    /// Simplex iterations, where the backend reports them.
+    ///
+    /// `None` rather than zero when a backend does not report, because "did no
+    /// work" and "did not say" are different claims and a interface that shows
+    /// the first when it means the second is lying quietly.
+    ///
+    /// Branch and bound reports `None` here too: it counts *nodes*, and a node
+    /// is a whole LP solve rather than an iteration, so putting one in a field
+    /// named for the other would be a unit error that reads as a number.
+    pub iterations: Option<usize>,
+    /// Of those iterations, how many went on reaching feasibility rather than
+    /// optimality.
+    ///
+    /// Worth surfacing rather than hiding because it is the number that says
+    /// where the time went: it runs at about three quarters of the total on
+    /// these models, and it is precisely the work a warm start would remove.
+    pub phase_one_iterations: Option<usize>,
 }
 
 impl Solution {
