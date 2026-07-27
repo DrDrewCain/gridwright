@@ -883,6 +883,19 @@ narrower claim than "construction is the bottleneck".
       column count and measured in the same process minutes apart, so the pair
       differs in what is modelled rather than in what the machine was doing.
 
+      **n = 2, and this is the one core table not on the n=5 standard the
+      scaling section now sets.** The test takes the better of two passes per
+      rung and prints its own spread column, which read 0 to 1% on the solve
+      figures. Read that spread with the caution this document earned the hard
+      way: two agreeing samples were twice mistaken today for a tight
+      distribution, on the rolling ladder and on the simplex ladder, and both
+      turned out to be coincidences that n=5 dissolved. So 0 to 1% here is not
+      evidence of precision, it is an absence of evidence either way.
+
+      The reason it stayed at two is cost: one pass is fifty minutes, so n=5 is
+      over four hours. It is deferred rather than skipped, and until it is run
+      the ratios below should be read to one significant figure.
+
       | Case | Columns | Real solve | Ring solve | Ratio | nnz/col real | nnz/col ring |
       | --- | --- | --- | --- | --- | --- | --- |
       | case14_ieee | 543,120 | 7.2 s | 5.7 s | 1.27× | 2.21 | 1.66 |

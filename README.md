@@ -621,11 +621,20 @@ PGLib topologies against rings matched to the same column count:
 | IEEE 118 | 787.3 s | 191.6 s | 4.11× | 2.27 | 1.65 |
 
 Real networks carry about 2.25 nonzeros per column against the ring's 1.65, and
-cost between 1.3 and 7 times more to solve at matched size. The ratio is not
-monotone, so read it as "several times" rather than as a trend, and two of those
-rows were taken while the solve itself drove the load above the threshold the
-test sets for itself, so they are upper bounds. Every synthetic scaling number
-elsewhere in this document should be read as optimistic by that much.
+cost between 1.3 and 7 times more to solve at matched size. Every synthetic
+scaling number elsewhere in this document should be read as optimistic by that
+much.
+
+**This is n = 2, and it is the one core table not on the n=5 standard the rest
+of this document now holds itself to.** One pass is fifty minutes, so five is
+over four hours; it is deferred rather than skipped. The test reports its own
+spread, 0 to 1% on the solve figures, but two agreeing samples were mistaken for
+a tight distribution twice elsewhere in this project and both dissolved at n=5,
+so treat that as an absence of evidence rather than as precision. Two rows were
+also taken while the solve itself drove the machine's load above the threshold
+the test sets for itself, making them upper bounds. The ratio is not monotone
+either. Read these as "several times", to one significant figure, and not as a
+trend.
 
 **2. ~~There is no real year of time series on a real network.~~ Assembled.**
 Open Power System Data's 2019 hourly series for the four German control zones
@@ -891,14 +900,24 @@ construction still does not register. What the fast build actually buys is set
 out in [What that actually buys](#what-that-actually-buys-and-what-it-does-not),
 and none of it is "the solve gets faster".
 
-The pure-Rust solver, which is what a browser has:
+The pure-Rust solver, which is what a browser has. **Medians of n = 5**, spread
+1.8 to 5.9%:
 
 | Rows | Time |
 | --- | --- |
-| 864 | 23 ms |
-| 3,456 | 0.27 s |
-| 13,824 | 5.1 s |
-| 20,736 | 11.2 s |
+| 432 | 3.9 ms |
+| 864 | 14.8 ms |
+| 2,592 | 153 ms |
+| 3,456 | 268 ms |
+| 7,776 | 1.68 s |
+| 13,824 | 5.03 s |
+| 20,736 | 11.26 s |
+
+The three largest rungs reproduce their previously published values almost
+exactly (0.27 s, 5.1 s, 11.2 s). The 864-row rung does not: it was published as
+23 ms and measures 14.8 ms, so that figure had gone stale against a later
+improvement rather than being wrong when written. Growth over the whole ladder
+is `rows^2.06`.
 
 Two changes account for most of that. Replacing the dense basis inverse with a
 sparse LU, where the win was not the sparsity itself but the symbolic step that
