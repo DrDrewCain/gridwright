@@ -21,5 +21,23 @@ gridwright-net.workspace = true
 gridwright-io.workspace = true
 gridwright-emissions.workspace = true
 thiserror.workspace = true
-highs-sys = { version = "1.6", optional = true }
 gridwright-simplex = { workspace = true, optional = true }
+
+# HiGHS is declared per-target rather than unconditionally, so that a wasm build
+# works with default features still on.
+#
+# It is C++ built through CMake, and no C++ toolchain targets
+# wasm32-unknown-unknown, so `cargo build --target wasm32-unknown-unknown` used
+# to fail in the build script unless the caller remembered
+# `--no-default-features --features simplex`. Cargo does not object to
+# `dep:highs-sys` naming a dependency that is absent for the target being
+# built; it simply does not pull it.
+#
+# `target_family = "wasm"` rather than `target_arch = "wasm32"` so the WASI
+# targets are covered too.
+#
+# The feature itself stays *enabled* on wasm — only the dependency disappears —
+# so every site that touches `highs_sys` must also be gated on the target. See
+# the `cfg(all(...))` guards in lib.rs.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+highs-sys = { version = "1.6", optional = true }

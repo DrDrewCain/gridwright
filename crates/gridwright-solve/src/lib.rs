@@ -25,13 +25,16 @@ use gridwright_model::Sense;
 pub mod head;
 pub mod rolling;
 
-#[cfg(feature = "highs")]
+// Gated on the target as well as the feature: the feature stays enabled on a
+// wasm build (only the dependency is dropped, see Cargo.toml), so without this
+// the module would still be compiled and fail to find `highs_sys`.
+#[cfg(all(feature = "highs", not(target_family = "wasm")))]
 mod highs_backend;
 
 #[cfg(feature = "simplex")]
 mod simplex_backend;
 
-#[cfg(feature = "highs")]
+#[cfg(all(feature = "highs", not(target_family = "wasm")))]
 pub use highs_backend::HighsSolver;
 
 #[cfg(feature = "simplex")]
@@ -218,7 +221,7 @@ pub(crate) fn sense_code(sense: Sense) -> i32 {
     }
 }
 
-#[cfg(all(test, feature = "highs"))]
+#[cfg(all(test, feature = "highs", not(target_family = "wasm")))]
 mod tests {
     use super::*;
     use gridwright_build::build_lopf;

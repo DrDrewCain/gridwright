@@ -174,13 +174,28 @@ levels and commitment states forward, because a window that assumes every unit
 starts cold invents start-up costs that were already paid.
 
 **Two solver backends.** HiGHS for scale, and a simplex written for this
-project for everywhere HiGHS cannot go. The second exists for one reason: the
-engine needs to run in a browser, HiGHS is C++, and the pure-Rust alternatives
-do not expose duals. A nodal balance row's dual *is* the price of energy at that
-bus, so a browser build without duals would be a model that cannot answer the
-question people run it to ask. Ours returns them, compiles to
+project for everywhere HiGHS cannot go.
+
+The precise version of that claim, since the loose one invites an obvious and
+correct objection. HiGHS *does* compile to WebAssembly — [highs-js](https://github.com/lovasoa/highs-js)
+and [highs-wasm](https://github.com/fuglede/highs-wasm) both ship working
+browser builds. What it cannot do is compile into *this* wasm module: those are
+built with Emscripten, targeting `wasm32-unknown-emscripten`, and that cannot be
+linked into a `wasm32-unknown-unknown` Rust binary. Using them means shipping a
+second wasm module and marshalling the matrix across a JavaScript boundary
+between two separate linear memories. That is a real option and not a free one.
+
+The second backend exists because the pure-Rust alternatives that *can* live in
+this module do not expose duals. A nodal balance row's dual *is* the price of
+energy at that bus, so a browser build without duals would be a model that
+cannot answer the question people run it to ask. Ours returns them, compiles to
 `wasm32-unknown-unknown` with a single dependency, and is checked against HiGHS
 on every IEEE network and on all 118 prices in case118.
+
+Measured in the browser target rather than assumed: the simplex costs **1.3×**
+its native time under wasm, consistently across three orders of magnitude, and
+construction of a full year at 256 buses — 16.3M variables — takes **266 ms**
+inside a wasm module and fits in wasm32's address space.
 
 It used to decline integer problems, which was honest and left a browser build
 unable to run unit commitment at all. It now branches: the same relaxation, with

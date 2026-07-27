@@ -1086,7 +1086,10 @@ narrower claim than "construction is the bottleneck".
 
       That is the strongest argument this project has for having written its own
       solver, and it was found by accident rather than looked for. The reason
-      the solver exists was that HiGHS cannot go in a browser; that it also
+      the solver exists was that HiGHS cannot go in *this* browser module —
+      it compiles to wasm perfectly well through Emscripten, as `highs-js` and
+      `highs-wasm` both demonstrate, but that is `wasm32-unknown-emscripten` and
+      will not link into a `wasm32-unknown-unknown` Rust binary. That it *also*
       solves a case HiGHS declines is a better reason and nobody predicted it.
       Three tests pin it, including one asserting HiGHS still fails, to be
       deleted when an upgrade fixes it.
