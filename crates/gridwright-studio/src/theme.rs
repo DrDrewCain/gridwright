@@ -138,10 +138,19 @@ fn visuals() -> egui::Visuals {
     v.panel_fill = SLATE_DEEP;
     v.window_fill = SLATE_RAISED;
     v.extreme_bg_color = SLATE_FIELD;
-    v.faint_bg_color = SLATE_LINE;
+    // Barely above the panel, not the hairline colour. `faint_bg_color` is what
+    // `Grid` stripes alternate rows with, so setting it to something as light
+    // as SLATE_LINE washes out every table in the application — which is most
+    // of the left panel.
+    v.faint_bg_color = Color32::from_rgb(0x19, 0x1D, 0x23);
     v.window_stroke = Stroke::new(1.0, SLATE_LINE);
 
-    v.override_text_color = Some(INK);
+    // Deliberately NOT `override_text_color`. That setting forces one colour on
+    // every piece of text in the application, and it fights the widget states
+    // below rather than complementing them — a disabled control and an active
+    // one end up the same colour, which is exactly the distinction a dense
+    // panel needs to keep. Colour comes from `fg_stroke` per state instead.
+    v.widgets.noninteractive.fg_stroke.color = INK;
     v.error_fg_color = TRIP;
     v.warn_fg_color = ALARM;
     v.hyperlink_color = INK_STRONG;
