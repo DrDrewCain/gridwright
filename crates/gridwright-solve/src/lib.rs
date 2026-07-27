@@ -20,6 +20,9 @@
 //! data.
 
 use gridwright_build::{Lopf, VarIndex};
+// Only `sense_code` needs this, and that is gated to the HiGHS backend, so the
+// import carries the same gate. `simplex_backend` imports `Sense` itself.
+#[cfg(all(feature = "highs", not(target_family = "wasm")))]
 use gridwright_model::Sense;
 
 pub mod head;

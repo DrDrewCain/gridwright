@@ -943,6 +943,35 @@ specification for one that will, not a reason to add a server.
 
 ### Stage 0 — foundations, before any pixels
 
+**Three engine changes block everything, and all three were verified in the
+source rather than assumed.** Each one is cheap now and a migration later.
+
+- [ ] **`Bus` has no coordinates.** Verified: `gridwright-net/src/lib.rs:210`
+      has `name`, `country`, `synchronous_area`, shunt terms — and no `x`, `y`,
+      `lat` or `lon`. Stage 3 below says "geographic layout when coordinates
+      exist"; they do not exist. Adding a field to a serialised type after
+      people have saved files is a migration, so add it before the first save
+      format ships.
+- [ ] **`Network` indexes by position, which breaks the moment editing lands.**
+      Verified: `buses: Vec<Bus>`, `lines: Vec<Line>` and the rest, all
+      referenced by `usize`. Deleting one bus renumbers every bus after it,
+      which simultaneously invalidates undo commands, the current selection,
+      any probes, and the mapping from solver rows back to components.
+      Generational handles need to exist **before the first edit operation is
+      written**, not after the first bug.
+- [ ] **`Solver::solve()` cannot report progress or be cancelled.** Verified:
+      `gridwright-solve/src/lib.rs:193` is
+      `fn solve(&self, lopf: &Lopf) -> Result<Solution, SolveError>` — one
+      blocking call, no hooks. The simplex already tracks `iterations` and
+      `phase_one_iterations` internally and throws them away; branch and bound
+      already tracks nodes, incumbent and bound. The data exists; there is
+      nowhere to put it.
+
+      This is a **solver decision, not a UI decision**, and it compounds with
+      the `panic = "abort"` constraint recorded below: cancellation has to be a
+      `Result` variant threaded through the loop. Both have to be settled before
+      the loop is written.
+
 - [ ] **CI, first, because everything else rests on it.** There is currently no
       `.github/workflows` at all, and nothing guards the wasm target. It works
       today because it was checked by hand. A workflow that runs the 644-test
@@ -1040,6 +1069,47 @@ reference it is worth more than any amount of general advice.
       semantic fields in RON files, Figma-derived, split into a global colour
       table plus per-theme alias maps. Ours can be smaller, but it must exist
       before the second screen is written, not after the twentieth.
+
+      Concrete starting numbers, so this is not left as taste:
+
+      **Contrast.** WCAG 2's 4.5:1 is *not enough on dark backgrounds* — the
+      formula overstates dark-mode contrast, and `#767676` on white and
+      `#949494` on black score the same 4.5-ish while being 27 APCA Lc apart.
+      Target **≈10:1 for body text on the canvas**, which is where APCA's
+      Lc 75 floor actually lands. VS Code's `#CCCCCC` on `#1F1F1F` is 10.26:1
+      and is the best-validated anchor available. Conform to WCAG 2.2 AA
+      formally; use Lc as the dark-mode sanity check.
+
+      **Surfaces.** Invert the usual elevation model, as VS Code does: chrome
+      *darker* than content, so the canvas is the brightest large surface. And
+      never `#000000` for a large surface — it cannot express elevation.
+
+      **Type.** Dense professional tools live at 11–14 px, not 16. VS Code's
+      editor is 12 px on macOS, Figma's UI is 11 px, Blender is 11 pt, Rerun
+      ships Inter Medium at 12 px with 16 px line height. Body 12, micro 11,
+      header 13, title 16.
+
+      **Spacing.** Base **4 px**, not 8 — the 8-point grid lacks the
+      granularity for a dense tool. Radii 3 for widgets, 6 for panels.
+
+      **Hit targets.** WCAG 2.2 SC 2.5.8 requires **24×24 px minimum**, and it
+      is the hardest constraint on the row heights. A 20 px compact row with a
+      16 px icon button violates it. The lawful fix is to make the *hit rect*
+      24×24 while the painted glyph stays 16×16 — trivial in egui, since
+      allocation and painting are separate.
+- [ ] **Categorical palette: Paul Tol "light", not Okabe–Ito.** This is
+      counter-intuitive and worth recording. Most colourblind-safe palettes were
+      designed for white paper. Measured against a dark canvas, Okabe–Ito's
+      black is **invisible** at 1.2:1 and its blue is marginal; Tol *muted* has
+      three failures. Tol *light* — nine colours — clears 6.5:1 on every one.
+
+      Cap categorical series at **8**; beyond that use small multiples or
+      hover-to-highlight. Encode every series as **hue plus dash plus marker**,
+      never hue alone, and use this as the acceptance gate: **desaturate the
+      chart; if the series are still separable, it ships.** For heatmaps use a
+      lightness-monotonic ramp such as viridis, since lightness survives every
+      form of colour vision deficiency — explicitly *not* the blue-to-red ramp
+      the incumbent power tools use, which is the CVD-hostile case.
 - [ ] **Enforce the tokens with a lint, or they rot.** This is the single most
       copyable idea in that codebase: `clippy.toml` *bans*
       `Color32::from_rgb`, `from_gray`, `hex_color` and every `Rgba`
@@ -1126,6 +1196,40 @@ reference it is worth more than any amount of general advice.
 - [ ] Project save/load, and autosave into OPFS. OPFS is Baseline-wide since
       2023; the File System Access API is Chromium-only in 2026 and must be a
       progressive enhancement, never the load-bearing path.
+
+### On stage order: results before the editor
+
+Stages 3 and 4 below are written editor-first, and there is a good argument for
+inverting them that is worth recording even though the numbering stays.
+
+A results view — table, convergence plot, honest `Status` rendering — proves
+the engine to a user and needs **no editing model, no coordinates, and no undo
+stack**. It also forces the streaming-progress and cancellation path, which is
+the riskiest boundary in the whole design, to be built against the simplest
+possible UI rather than against a half-finished canvas.
+
+The editor is the more impressive demo. The results view is the better first
+milestone.
+
+### One thing we have to invent, because nobody else has needed it
+
+**A visual state for "stale".** Across every tool surveyed — Blender, Houdini,
+Grasshopper, Unreal, Nuke, TouchDesigner — recomputation is fast enough that
+"edited but not yet re-solved" essentially never renders. Houdini has a
+*needs to cook* badge and hides it by default. Node-RED's blue dot for
+undeployed changes is the closest prior art anywhere.
+
+At our solve times — seconds to minutes — **stale is the dominant state**, and
+it should be the loudest non-error signal on the canvas. It is also the honest
+one: a result that no longer matches the model is the single most dangerous
+thing a modelling tool can display, and it is exactly what every incumbent
+does when a run is left open beside an edited network.
+
+Corollary for the architecture: **every `Solution` carries the graph version
+that produced it**, and any component whose version differs renders stale
+rather than wrong. Editing during a solve is always allowed and simply
+supersedes the run — blocking edits during compute is the precise failure the
+worker architecture exists to prevent.
 
 ### Stage 3 — the network editor, which is the actual product
 
