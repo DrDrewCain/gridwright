@@ -18,9 +18,16 @@ crate-type = ["cdylib", "rlib"]
 # building for wasm32-unknown-unknown in CI. That is what lets a browser tab
 # read MATPOWER, PSS/E, IEEE CDF, UCTE, CSV, JSON, Parquet, Excel, CGMES and
 # netCDF with nothing uploaded anywhere.
-gridwright-io = { workspace = true, default-features = false, features = ["all-formats"] }
-gridwright-net = { workspace = true, features = ["serde"] }
-gridwright-build.workspace = true
+#
+# Spelled out by path rather than `workspace = true`, and this is not a style
+# choice: cargo refuses `default-features = false` on an inherited workspace
+# dependency outright — "cannot override workspace's default-features"
+# (rust-lang/cargo#11779). Inheriting here would silently drag in the default
+# feature set, which for gridwright-solve means HiGHS, which cannot compile to
+# this target at all.
+gridwright-io = { path = "../gridwright-io", default-features = false, features = ["all-formats"] }
+gridwright-net = { path = "../gridwright-net", features = ["serde"] }
+gridwright-build = { path = "../gridwright-build" }
 
 # Deliberately not `workspace = true` with default features. The default
 # includes `highs`, which is C++ and cannot reach this target at all; CI asserts
@@ -28,9 +35,9 @@ gridwright-build.workspace = true
 # inline rather than inheriting is also the documented workaround for
 # rust-lang/cargo#11779, where workspace inheritance ignores
 # `default-features = false` inside a target-conditional block.
-gridwright-solve = { workspace = true, default-features = false, features = ["simplex"] }
+gridwright-solve = { path = "../gridwright-solve", default-features = false, features = ["simplex"] }
 
-serde = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 
 # Only on the wasm target. Building this crate natively is how the protocol

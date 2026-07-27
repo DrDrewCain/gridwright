@@ -98,14 +98,26 @@ jobs:
           cargo build --release --target wasm32-unknown-unknown \
             -p gridwright-solve --no-default-features --features simplex
 
+      # Every reader, in the browser. `all-formats` is documented upstream as
+      # "every format that cross-compiles", and this is what holds it to that:
+      # it is the difference between a tab that reads a CGMES archive locally
+      # and one that has to upload it somewhere.
+      - name: Build all readers for wasm
+        run: |
+          cargo build --release --target wasm32-unknown-unknown \
+            -p gridwright-io --no-default-features --features all-formats
+
+      # The worker is the crate a browser actually loads.
+      - name: Build the worker for wasm
+        run: cargo build --release --target wasm32-unknown-unknown -p gridwright-worker
+
       # A guard rather than a build: assert the C++ backend really is excluded.
       # `cargo tree` fails with a non-zero status when the package is absent,
       # so an unexpected success here means HiGHS reached the wasm graph.
       - name: Assert HiGHS is absent from the wasm dependency graph
         run: |
           if cargo tree --target wasm32-unknown-unknown \
-               -p gridwright-solve --no-default-features --features simplex \
-               -i highs-sys 2>/dev/null; then
+               -p gridwright-worker -i highs-sys 2>/dev/null; then
             echo "::error::highs-sys is in the wasm dependency graph; the target-conditional split has regressed"
             exit 1
           fi
