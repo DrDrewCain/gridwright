@@ -76,6 +76,15 @@ impl StudioApp {
         }
     }
 
+    /// Open the bundled IEEE 14-bus case.
+    ///
+    /// Public because the browser entry point reaches for it when the page is
+    /// asked for `#demo`, and because it is the same thing the empty state's
+    /// button does — one code path, so the two cannot drift.
+    pub fn open_sample(&mut self) {
+        self.open_bytes(Some(SAMPLE_NAME), SAMPLE);
+    }
+
     fn network(&self) -> Option<&Network> {
         self.loaded.as_ref().map(|l| &l.network)
     }
@@ -148,7 +157,7 @@ impl StudioApp {
                 // file:// URL, and on the first paint — and because a browser
                 // tab has no working directory to open it from.
                 if ui.button("or open the IEEE 14-bus case").clicked() {
-                    self.open_bytes(Some(SAMPLE_NAME), SAMPLE);
+                    self.open_sample();
                 }
                 ui.add_space(theme::UNIT * 2.0);
                 ui.label(theme::eyebrow("reads"));

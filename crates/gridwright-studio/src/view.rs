@@ -239,35 +239,121 @@ impl NetworkView {
         peak_shed: &[f64],
         response: &eframe::egui::Response,
     ) {
-        // Radius follows zoom weakly rather than not at all: fixed screen size
-        // makes a zoomed-out national model a solid mat of overlapping dots,
-        // and fixed model size makes a zoomed-in one draw circles the size of
-        // the pane.
-        let radius = (self.zoom * 0.006).clamp(1.5, 9.0);
+        // A bus is drawn as a bar, not as a dot.
+        //
+        // This is the one primitive that decides whether the canvas reads as a
+        // power system or as a generic node graph, and it is not a stylistic
+        // preference: in every single-line diagram ever drawn, a busbar is a
+        // bar. Circles say "vertex". Bars say "busbar", and an engineer reads
+        // the second without being told.
+        //
+        // Half-length follows zoom weakly. Fixed screen size turns a national
+        // model into a solid mat at low zoom; fixed model size draws bars the
+        // width of the pane at high zoom.
+        let half = (self.zoom * 0.022).clamp(6.0, 30.0);
+        let thickness = (half * 0.22).clamp(2.5, 6.0);
         let pointer = response.hover_pos();
+
+        // What is attached to each bus, computed once. Asking
+        // `generators.iter().any(...)` inside the bus loop is quadratic, which
+        // is invisible at fourteen buses and is not at thirteen thousand.
+        let mut has_gen = vec![false; net.buses.len()];
+        let mut has_load = vec![false; net.buses.len()];
+        for g in &net.generators {
+            if let Some(f) = has_gen.get_mut(g.bus) {
+                *f = true;
+            }
+        }
+        for l in &net.loads {
+            if let Some(f) = has_load.get_mut(l.bus) {
+                *f = true;
+            }
+        }
 
         let mut best: Option<(usize, f32)> = None;
 
-        for (b, bus) in net.buses.iter().enumerate() {
+        for (b, _bus) in net.buses.iter().enumerate() {
             let Some(&p) = layout.get(b) else { continue };
-            if !visible.expand(radius / self.zoom).contains(p) {
+            if !visible.expand(half / self.zoom).contains(p) {
                 continue;
             }
             let s = self.screen_of(rect, p);
+            let shed = peak_shed.get(b).copied().unwrap_or(0.0) > 0.0;
 
-            painter.circle_filled(s, radius, country_color(&bus.country));
+            // Neutral unless it has something to report. Colouring every bus by
+            // country was decorative: on a single-area case it painted all of
+            // them the same arbitrary hue, which is a colour carrying no
+            // information on a screen where colour is supposed to mean
+            // something.
+            let ink = if shed {
+                SHED_COLOR
+            } else {
+                crate::theme::INK
+            };
+
+            let bar = Rect::from_center_size(s, vec2(half * 2.0, thickness));
+            painter.rect_filled(bar, 0.0, ink);
+
+            // Injection above the bar, withdrawal below — the convention a
+            // one-line diagram uses, and it means a glance tells you where
+            // power enters and where it leaves without reading a legend.
+            if has_gen[b] {
+                painter.circle_filled(
+                    s + vec2(0.0, -(thickness * 0.5 + 4.0)),
+                    (thickness * 0.9).max(2.0),
+                    ink,
+                );
+            }
+            if has_load[b] {
+                let base = s + vec2(0.0, thickness * 0.5);
+                painter.line_segment(
+                    [base, base + vec2(0.0, 5.0)],
+                    Stroke::new(thickness * 0.7, ink),
+                );
+            }
 
             // Where the system failed, which the domain model treats as the
             // useful half of an infeasible answer rather than a footnote.
-            if peak_shed.get(b).copied().unwrap_or(0.0) > 0.0 {
-                painter.circle_stroke(s, radius + 2.0, Stroke::new(1.6, SHED_COLOR));
+            if shed {
+                painter.rect_stroke(
+                    bar.expand(3.0),
+                    1.0,
+                    Stroke::new(1.5, SHED_COLOR),
+                    eframe::egui::StrokeKind::Outside,
+                );
             }
 
             if let Some(ptr) = pointer {
                 let d = s.distance(ptr);
-                if d <= PICK_RADIUS && best.is_none_or(|(_, bd)| d < bd) {
+                if d <= PICK_RADIUS.max(half) && best.is_none_or(|(_, bd)| d < bd) {
                     best = Some((b, d));
                 }
+            }
+        }
+
+        // Names, once the bars are far enough apart to carry them. Below this
+        // they overlap into an unreadable mat, and an unreadable label is worse
+        // than none because it still costs the pixels.
+        if net.buses.len() <= 200 || half >= 14.0 {
+            for (b, bus) in net.buses.iter().enumerate() {
+                let Some(&p) = layout.get(b) else { continue };
+                if !visible.contains(p) {
+                    continue;
+                }
+                let s = self.screen_of(rect, p);
+                let at = s + vec2(0.0, thickness * 0.5 + 19.0);
+                // A knocked-out background rather than a halo stroke. Edges
+                // pass behind labels constantly in a meshed network, and text
+                // with a line through it is unreadable in a way that no amount
+                // of contrast fixes.
+                let galley = painter.layout_no_wrap(
+                    bus.name.clone(),
+                    FontId::proportional(10.0),
+                    crate::theme::INK_DIM,
+                );
+                let box_ = Rect::from_center_size(at, galley.size()).expand2(vec2(3.0, 1.0));
+                painter.rect_filled(box_, 2.0, crate::theme::SLATE_WORK);
+                painter.galley(box_.min + vec2(3.0, 1.0), galley, crate::theme::INK_DIM);
             }
         }
 
@@ -276,17 +362,20 @@ impl NetworkView {
         };
         let bus = &net.buses[picked];
         let s = self.screen_of(rect, layout[picked]);
-        painter.circle_stroke(
-            s,
-            radius + 3.0,
-            Stroke::new(1.5, ui.visuals().strong_text_color()),
+        let half = (self.zoom * 0.022).clamp(6.0, 30.0);
+        let thickness = (half * 0.22).clamp(2.5, 6.0);
+        painter.rect_stroke(
+            Rect::from_center_size(s, vec2(half * 2.0, thickness)).expand(4.0),
+            1.0,
+            Stroke::new(1.5, crate::theme::INK_STRONG),
+            eframe::egui::StrokeKind::Outside,
         );
 
         // A label painted directly rather than an egui tooltip, because the
         // canvas is one allocated widget and a tooltip would attach to the pane
         // rather than to the node the pointer is actually over.
         let label = format!("{} · {} · {}", bus.name, bus.country, bus.carrier);
-        let anchor = s + vec2(radius + 6.0, 0.0);
+        let anchor = s + vec2(half + 10.0, 0.0);
         let color = ui.visuals().strong_text_color();
         let galley = painter.layout_no_wrap(label, FontId::proportional(12.0), color);
         painter.rect_filled(
@@ -315,7 +404,7 @@ impl NetworkView {
         self.centre = pos2((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
         // A tenth of the pane in margin, so nodes on the boundary are not cut
         // in half by the edge they were fitted to.
-        self.zoom = (0.9 * (rect.width() / span.x.max(1e-3)).min(rect.height() / span.y.max(1e-3)))
+        self.zoom = (0.82 * (rect.width() / span.x.max(1e-3)).min(rect.height() / span.y.max(1e-3)))
             .clamp(MIN_ZOOM, MAX_ZOOM);
     }
 }

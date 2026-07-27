@@ -55,6 +55,16 @@ mod web_entry {
     /// WebGL context — and a `#[wasm_bindgen]` export cannot be, so the future
     /// is handed to the browser's microtask queue and the errors it can produce
     /// are reported to the console rather than lost.
+    /// Whether the page was asked for the sample, via `#demo` or `?demo`.
+    fn wants_demo() -> bool {
+        let Some(w) = web_sys::window() else {
+            return false;
+        };
+        let hash = w.location().hash().unwrap_or_default();
+        let search = w.location().search().unwrap_or_default();
+        hash.contains("demo") || search.contains("demo")
+    }
+
     #[wasm_bindgen]
     pub fn mount(canvas_id: &str) -> Result<(), JsValue> {
         let canvas = web_sys::window()
@@ -69,7 +79,18 @@ mod web_entry {
                 .start(
                     canvas,
                     eframe::WebOptions::default(),
-                    Box::new(|cc| Ok(Box::new(crate::StudioApp::new(cc)))),
+                    Box::new(|cc| {
+                        let mut app = crate::StudioApp::new(cc);
+                        // `#demo` opens the bundled sample before the first
+                        // frame. It exists so a link can be shared and land on
+                        // something rather than on an empty canvas, and it is
+                        // the only way to reach a populated screen without a
+                        // file to drop — which includes automated screenshots.
+                        if wants_demo() {
+                            app.open_sample();
+                        }
+                        Ok(Box::new(app))
+                    }),
                 )
                 .await;
 

@@ -24,12 +24,6 @@ export function load_bytes(name, bytes) {
 }
 
 /**
- * Mount the studio onto the canvas with the given element id.
- *
- * Returns immediately. eframe's start-up is async — it has to negotiate a
- * WebGL context — and a `#[wasm_bindgen]` export cannot be, so the future
- * is handed to the browser's microtask queue and the errors it can produce
- * are reported to the console rather than lost.
  * @param {string} canvas_id
  */
 export function mount(canvas_id) {
