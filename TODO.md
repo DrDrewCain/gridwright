@@ -853,13 +853,18 @@ Measured rather than assumed:
 | Marshalling a 10M-nonzero CSC matrix between two wasm heaps | **~2 ms** via `TypedArray.set` |
 | Real ceiling | Emscripten's **2 GiB heap**, reached around 2.5–3M nonzeros |
 
-Two things make this better than a raw speed number. The prerelease line exposes
-the **full low-level C API** — `createModel` taking CSC directly, warm starts
-from a saved basis, ranging, and **`getIis`**, an irreducible infeasible
-subsystem. That last one is the engine half of the infeasibility diagnosis in
-Stage 4, which the domain research flags as the single largest pain point in
-every incumbent tool. And it ships **PDLP**, so first-order methods are
-available for free to test against the biggest models.
+The prerelease line exposes the **full low-level C API** — `createModel` taking
+CSC directly, warm starts from a saved basis, ranging, and `getIis`. It also
+ships **PDLP**, so first-order methods can be tested against the biggest models
+for free.
+
+**A correction to an earlier version of this entry**, which said `getIis` gave
+us "half of the Stage 4 infeasibility work for free". That was too optimistic.
+HiGHS's own documentation says the feature "can only be used for LPs" and is
+"under development… not as robust or efficient as it will be", its tracking
+issue is still open, and segfaults and empty-output bugs were reported through
+late 2025 and early 2026. It is a second-tier tool, not the foundation. The
+foundation is priced slack — see Stage 4.
 
 One trap worth recording: the *stable* API is one-shot and takes CPLEX LP
 **text**. Serialising 2M nonzeros to that format took 245 ms and produced a
@@ -1023,6 +1028,57 @@ design work goes in. If this works, nothing architectural is left to discover.
 - [ ] The identical crate runs as a native desktop window, with HiGHS.
 - [ ] Deployed to Vercel as static output and loading from a cold cache.
 
+### The design system, which is a Stage 0 concern and not a Stage 6 polish pass
+
+The reference implementation to study is Rerun's `re_ui`, because it is the only
+professional-grade egui design system with public source, and it is the same
+shape as what we need. It is **not** a dependency — it hard-codes Rerun's own
+entity types and command set, and is published only so `rerun` can be — but as a
+reference it is worth more than any amount of general advice.
+
+- [ ] **Design tokens in a data file, not in the code.** `re_ui` keeps ~200
+      semantic fields in RON files, Figma-derived, split into a global colour
+      table plus per-theme alias maps. Ours can be smaller, but it must exist
+      before the second screen is written, not after the twentieth.
+- [ ] **Enforce the tokens with a lint, or they rot.** This is the single most
+      copyable idea in that codebase: `clippy.toml` *bans*
+      `Color32::from_rgb`, `from_gray`, `hex_color` and every `Rgba`
+      constructor with the message "Do not hard-code colors — declare them in
+      design_tokens". They also ban `egui::Ui::checkbox` and `Spinner` in favour
+      of their own. A design system with no enforcement mechanism becomes
+      decoration within a month.
+- [ ] **Light theme from day one.** Rerun added theirs roughly two and a half
+      years after the token system, described the work as "a plethora of ugly
+      hacks", and shipped it marked experimental. Retrofitting a second theme
+      through a codebase full of `match theme` is the expensive path, and it is
+      entirely avoidable by having two token files from the first commit.
+- [ ] **One composable list primitive rather than twenty bespoke widgets.**
+      Nearly all of Rerun's panel UI is a single `ListItem` plus a
+      `ListItemContent` trait, with implementations for label, two-column
+      property, and button. Inspectors, trees, scenario browsers and result
+      lists are all the same primitive. Build that first; everything else gets
+      cheaper.
+- [ ] **Two immediate-mode mechanisms egui does not give you and a dense UI
+      needs.** A *frame-lagged layout accumulator*, so a property column can be
+      aligned across a whole nested tree — contents register their desired width
+      in frame *n* and it is applied in frame *n+1*. And a *full-span* mechanism
+      that walks the `UiStack` to find the enclosing panel, so a row highlight
+      can span the full width inside a scroll area inside a margined panel.
+      Both are load-bearing for anything that looks professional, and both are
+      non-obvious enough to be worth knowing before hitting them.
+- [ ] **Token hot-reload in developer builds only**, behind a `build.rs` cfg
+      gate so it costs nothing in release or wasm. Theme iteration goes from a
+      recompile to instant, and that difference decides whether the design
+      actually gets tuned.
+- [ ] **A runnable example app for the design system**, the way `re_ui` ships
+      one. It is the component catalogue, the manual test surface and the
+      screenshot source, and it stops the system drifting from the app.
+- [ ] **Write the copywriting rules down.** Rerun's `DESIGN.md` is short and
+      right: no full stop on single-sentence UI text but always on multi-sentence
+      text; sentence casing, never Title Case except product names; `…` on
+      buttons that need further input; **no colon after labels**; spaced em dash
+      for parentheticals. Cheap to adopt now, invisible-but-pervasive later.
+
 ### Stage 2 — the studio shell
 
 - [ ] **`egui_tiles` 0.16** for docking: a viewport, an inspector, a run/console
@@ -1045,8 +1101,28 @@ design work goes in. If this works, nothing architectural is left to discover.
       `Behavior::on_edit(EditAction)` as the hook to build one on.
 - [ ] A command palette. It is the cheapest discoverability mechanism there is
       and it makes every later feature findable without menu archaeology.
-- [ ] Undo/redo as an explicit command stack over model edits. Retrofitting undo
-      into a canvas editor is a rewrite; designing it in on day one is a trait.
+- [ ] **Undo/redo, scenarios and provenance are one mechanism, not three.**
+      This is the structural insight worth designing around, and it arrived from
+      two directions at once.
+
+      From the domain side: the best scenario management in the incumbent field
+      is Antares Web's variant manager, where **a variant is not a copy of a
+      study — it is the base plus an ordered list of commands**, each with an
+      action and arguments, addressable over an API. That single decision buys
+      real diffs between scenarios, replay onto a new base dataset, storage
+      deduplication, and an audit trail.
+
+      From the tooling side: Rerun gets undo and redo **for free** because their
+      UI state is itself a recording, so undo is time-travel over a log they
+      already had, not a separate stack.
+
+      Same mechanism. So: model edits are named commands appended to a log; undo
+      is a cursor into it; a scenario is a base plus a command sequence; and
+      provenance is the log itself. Retrofitting any one of these later is a
+      rewrite. Designing the log first makes all three nearly free.
+
+      It also answers the API-versus-GUI question below, because every GUI
+      action already *is* a named, printable, scriptable command.
 - [ ] Project save/load, and autosave into OPFS. OPFS is Baseline-wide since
       2023; the File System Access API is Chromium-only in 2026 and must be a
       progressive enhancement, never the load-bearing path.
@@ -1105,52 +1181,213 @@ design work goes in. If this works, nothing architectural is left to discover.
       not converge, and a branch and bound that stopped on its node limit are
       all things the engine reports and an interface would be wrong to hide. A
       result with an `OPEN` gap must look different from a proved optimum.
-- [ ] **Infeasibility diagnosis.** Reportedly the single largest pain point in
-      every incumbent tool. "Infeasible" with no further information is a dead
-      end for a user; the engine should say which constraints conflict.
+- [ ] **Infeasibility diagnosis, built on priced slack rather than on IIS.**
+      The largest, best-defined, least-served problem in this field.
+      Experienced users report spending 15–30 minutes per infeasible model, and
+      their three strategies are: inspect an IIS, toggle constraints off, add
+      slacks.
 
-      Half of this is now cheaper than expected: `highs-js` exposes **`getIis`**,
-      an irreducible infeasible subsystem, so the browser path can get a minimal
-      conflicting constraint set without new solver work. What remains is the
-      part that matters — mapping those row indices back to *things the user
-      recognises*. "Rows 40,117 and 40,118 conflict" is not an answer;
-      "the 14:00 ramp limit on Unit 7 cannot meet the load after you cut the
-      Aachen–Liège line" is. That mapping is ours to build and it is the
-      difference between a diagnostic and a shrug.
-      The pure-Rust path needs its own IIS eventually, or it degrades to
-      Phase-1 infeasibility residuals, which are weaker but not nothing.
+      **Do not build this on IIS.** It is the obvious choice and it is the wrong
+      one. Computing one is "in general not easier than solving the original
+      model"; the result is non-unique, often large, and sometimes flags every
+      constraint; in PyPSA the feature silently requires Gurobi; and HiGHS's
+      implementation is LP-only and self-described as not yet robust. One
+      published worked example had the IIS flag all five constraints and
+      "not clearly point to the actual issue".
+
+      **Build it on elastic slack, which is cheap, solver-agnostic and always
+      available.** Auto-insert priced slacks on demand balance, reserve, CO₂
+      budget, capacity limits and cyclic state-of-charge; solve the elastic
+      problem; report **violation magnitude per bus per timestep**, ranked, and
+      render it straight onto the network and the timeline. That answers "how
+      infeasible, and where", which is the question. PyPSA teaches this by hand
+      with a load-shedding generator; PLEXOS institutionalises it as unserved
+      energy priced at value of lost load. We should make it a button.
+
+      Then two more tiers: **fix-to-a-candidate-and-report-violations**, the
+      cheapest useful diagnostic there is; and IIS as an opt-in second opinion
+      where the solver supports it.
+
+      The part that is genuinely ours either way is translation. "Rows 40,117
+      and 40,118 conflict" is not an answer. "Unit 7's 14:00 ramp limit cannot
+      meet load after you cut Aachen–Liège" is. Nobody currently renders an
+      infeasibility as a highlighted subgraph of the network with the offending
+      timesteps, and that is a real gap rather than a crowded space.
+- [ ] **Treat "solved but wrong" as a first-class failure state.** A real
+      published workflow wrote a results file for a run that returned
+      `Status: ok`, `Termination: suboptimal`, `Objective: 3.14e+37`. Another
+      produced a completed run with all-NaN demand after a year mismatch made
+      every European load null.
+
+      So: never emit a result artefact for a suboptimal status, an absurd
+      objective magnitude, a hit MIP gap or a hit time limit without a loud,
+      structural marker attached to the run **and inherited by every chart
+      derived from it**. A wrong answer with a beautiful stacked bar chart on
+      top of it is the worst thing this tool could ship.
 
 ### Stage 5 — scenarios, which is what makes it a studio
 
-- [ ] Define a scenario as a diff against a base network, not a copy.
-- [ ] Run a sweep and compare runs side by side.
+- [ ] A scenario is a base plus a command sequence, per Stage 2. Never a copy of
+      a file. The failure mode being avoided is documented and universal: when a
+      scenario is a copy, teams end up with "completely separate projects", and
+      then nobody can say what differs between run 7 and run 34.
+- [ ] **Runs as immutable, content-addressed artefacts** carrying their full
+      input configuration, solver log, status, objective, timings and code
+      version. A real published workflow re-ran with changed settings and left
+      the archived config reflecting the *first* run; that class of bug should
+      be impossible by construction rather than caught by discipline.
+- [ ] Cross-run comparison as a query, not as "load ten result files". The scale
+      to design for is **100–1,000 runs** — that is the empirical range in the
+      parameter-space literature, and one real utility resource plan used 67
+      scenarios across 100 simulations. Handle the genuinely hard case too:
+      comparing runs at *different spatial or temporal resolution*.
+- [ ] **Generate the sample set in the tool.** Of twenty-one surveyed
+      parameter-space tools, only four let users create the samples inside the
+      tool; everyone else scripts it by hand. Full-factorial, one-at-a-time
+      sensitivity, Latin hypercube, and near-optimal exploration, with a queue
+      view and parallel dispatch.
 - [ ] The comparison view: what changed, what it cost, which constraints bound.
+- [ ] Emit IAMC-format long tables. It is the lingua franca of model comparison
+      exercises, and a tool that cannot produce it cannot participate in one.
+
+### What the domain research says to build, and what to refuse
+
+Ordered by how much each converts the tool from demo to instrument. Most of
+this is cheap; almost none of it is glamorous.
+
+- [ ] **Validate inputs at the boundary, before the solver sees them. This is
+      the highest-leverage single feature in the entire plan.** The only
+      published usability study of open energy frameworks found the two
+      most-mentioned problems were *input data handling* and *error messages*.
+      The canonical horror: a missing value in an input CSV surfaced to a user
+      as an out-of-memory crash inside the solver layer. Another: a year
+      mismatch made all demand NaN and the run "completed".
+
+      Ship a named, catalogued check suite — min greater than max, ramp-at-start
+      below ramp limit, existing capacity above the cap, NaN or negative
+      availability, name mismatches across tables, cyclic state-of-charge
+      conflicting with a specified initial state, islanded buses carrying load,
+      reserve zones with no firm resource, timezone and DST misalignment, unit
+      inconsistency. **None of these needs a solver**, and each one converts a
+      baffling failure into a sentence.
+- [ ] **Errors must surface at the layer that caused them**, naming the file,
+      row, column and value. Owning the error text end to end is most of the
+      perceived quality of a technical tool.
+- [ ] **Code and GUI as peers.** Of users certain they would adopt a modelling
+      platform, **71% want a programming language as the interaction basis**,
+      18% a web app, 6% a desktop GUI — while policymakers largely will not
+      drive a model directly at all. A GUI-only tool loses the modellers; an
+      API-only tool loses everyone else. The command log resolves this: every
+      GUI action emits a named command the user can read, copy, script and diff.
+- [ ] **Exploit the fast build for a genuinely interactive loop — this is the
+      strategic differentiator and nothing else has it.** Build time is a
+      first-class cost that solver benchmarks hide: one framework takes ten
+      minutes to build a model that solves in two seconds. Our 96 ms build only
+      matters if the interface spends it on perturb-and-resolve rather than on
+      batch runs. Ship a **draft mode** — reduced timesteps, relaxed
+      integrality, representative days — that runs in-page with a visible
+      fidelity contract and one-click promotion to a full run.
+- [ ] **Shadow prices as a first-class, explained output.** The flagship open
+      European model's default plotting pipeline has **no shadow-price map at
+      all**. Duals are how a planner learns *why* the optimum is what it is.
+      Nodal prices on the network, binding-constraint frequency over the year,
+      and the sign convention explained on screen, because misreading it is the
+      most common error.
+
+**And what to refuse, each for a measured reason:**
+
+- [ ] **No single-line diagrams.** Zero occurrences across four major published
+      planning and market documents. It is an operations artefact for a
+      different persona, and it is months of work aimed at the wrong user.
+- [ ] **No contour maps by default.** A study with thirty professional
+      power-system engineers found participants performed *worse* at excursion
+      identification with contours than with glyphs, and were less confident.
+      Contouring also alters the statistical dispersion of bus values and
+      destroys the extremes you were looking for. Opt-in, with the caveat shown.
+- [ ] **The default figure set, and only it**, drawn from a census of what real
+      published documents actually contain: capacity and generation mix as
+      stacked bars by year and scenario; dispatch stack for a chosen window;
+      average hourly profile; geographic network map with flow and capacity
+      glyphs; **sensitivity and tornado charts** — 40% of one real resource
+      plan's figures, and nobody builds them well; load and price duration
+      curves; and an hour-of-day by day-of-year heatmap. Every figure exports to
+      vector **and** to the underlying tidy data, because "reformatting outputs
+      into charts for non-modelling audiences" is a named time sink.
+- [ ] **Do not break the study format.** Every framework surveyed has done it
+      and every one paid in lost reproducibility — one could not load its own
+      previous version's models at all. Content-hash the inputs, version the
+      schema from the first commit, and write the migrator before it is needed.
 
 ### Testing the interface
 
-Untested UI code rots faster than anything else in a codebase, and a canvas app
-resists the usual tools: there is no DOM, so Playwright selectors have nothing
-to grip.
+Untested UI code rots faster than anything else, and a canvas app resists the
+usual tools: there is no DOM, so Playwright selectors have nothing to grip.
 
-- [ ] **`egui_kittest`** for widget and interaction tests — the official harness.
-      Simulated clicks, typing and drags, running headless in CI.
-- [ ] **Snapshot tests** on rendered frames for the editor and each chart type,
-      with a software rasteriser path so results do not vary by GPU.
-- [ ] **`wasm-bindgen-test` in headless Chrome and Firefox** for anything that
-      only fails in the browser: worker round-trips, OPFS, file loading,
-      memory-growth behaviour.
-- [ ] **End-to-end through a test hook rather than the DOM.** Expose a small
-      scripted-command surface from Rust so a browser test can drive the app and
-      assert on model state, instead of pixel-matching a canvas.
-- [ ] **Frame-time budget as a test.** A studio that drops below 60 fps while
-      panning a large network has a bug, and it should fail CI rather than be
-      noticed in a demo.
-- [ ] **Accessibility assertions through AccessKit**, which egui already wires
-      up. Canvas apps are the worst offenders here and it is much cheaper to
-      keep it working than to retrofit it.
+Set expectations honestly first. **Nobody in this ecosystem has solved automated
+browser end-to-end testing for canvas GUIs.** Rerun, the largest egui app in
+existence, has no Playwright at all; its confidence comes from `egui_kittest`
+image comparison run *natively* plus a manual pre-release checklist. egui itself
+ships PR previews for humans to click. Plan around that rather than against it.
+
+- [ ] **`egui_kittest` 0.35 for interaction tests, and make this the bulk of the
+      suite.** It queries an AccessKit tree the way Testing Library queries a
+      DOM — `get_by_label`, `get_by_role_and_label`, then `.click()`,
+      `.type_text()`, `.focus()`. No GPU needed for that path, so it is fast and
+      deterministic.
+- [ ] **Run the identical `egui_kittest` suite against wasm in headless Chrome.**
+      This is the most valuable and least documented fact found in the research,
+      and it was verified by execution rather than read in a doc:
+      `egui_kittest` with default features **compiles to
+      `wasm32-unknown-unknown` and its tests genuinely run in a real browser**
+      under `wasm-bindgen-test`. So the same interaction tests cover both
+      targets, and the wasm run catches the class of breakage a `cargo check`
+      misses — a native-only crate sneaking in, `std::time::Instant`, a thread.
+- [ ] **Snapshot tests, native only.** Also verified by execution:
+      **image snapshots do not work in the browser.** `egui_kittest` removes
+      `Backends::BROWSER_WEBGPU` because its readback path uses blocking
+      `pollster::block_on`, so adapter creation fails in-page. Run snapshots on
+      one platform — lavapipe software rasteriser on Linux, which is
+      deterministic across runners — store the PNGs in git LFS, call
+      `remove_cursor()` and `fit_contents()` before each, and batch with
+      `SnapshotResults` so one run reports every failure rather than the first.
+      Keep the image count small; prefer plain assertions to pixels.
+- [ ] **Accessibility assertions, and note where they do and do not reach.**
+      `ctx.enable_accesskit()` makes role, label, disabled, hidden, toggle state
+      and numeric value directly assertable, and tab-order tests are the
+      cheapest real accessibility guarantee available — press `Tab`, assert
+      focus lands where it should, including wraparound. **But AccessKit has no
+      web adapter**; it is listed as planned. So this is a *native-build*
+      guarantee that we rely on to keep the web build honest by construction,
+      not something assertable in-page. Worth knowing before someone promises
+      screen-reader support on the web.
+- [ ] **Frame convergence as the performance gate, not wall clock.**
+      `Harness::run()` returns the number of frames needed before no repaint is
+      requested and animations settle, and errors past `with_max_steps`
+      (default 4). `assert_eq!(harness.run(), 2)` catches an accidental
+      `request_repaint` loop or a layout that never settles — the usual reason
+      an egui app pins a CPU core. It is deterministic and free.
+
+      Deliberately **not** a wall-clock frame-time assertion. This project has
+      already learned that timing assertions on shared runners are flaky; the
+      whole `measure.sh` apparatus exists because of it. Track Criterion over
+      `run_ui` and `tessellate` separately, alert on ratio rather than absolute,
+      and keep any absolute budget on a dedicated machine.
+- [ ] **Two or three Playwright smoke tests, no more.** App boots, wasm loads, a
+      solve completes. Drive real events at canvas coordinates — eframe does
+      listen on the canvas, so `page.mouse.click` produces genuine input — and
+      assert through a `#[cfg(feature = "test_hooks")]` `#[wasm_bindgen]` state
+      accessor reached via `WebRunner::app_mut`, never by pixel-matching.
+      Export widget rects by stable test id so tests ask "where is
+      `solve_button`" rather than hard-coding coordinates.
 - [ ] **A golden-path integration test** that loads a real PGLib case, edits it,
       solves it, and checks the answer against the same case solved through the
-      CLI. That single test would catch nearly every plumbing regression.
+      CLI. That single test catches nearly every plumbing regression.
+- [ ] Gotchas already paid for, recorded so nobody pays twice: `kittest.toml`
+      uses `[mac]`, and `[macos]` **panics** under `deny_unknown_fields`;
+      `wasm-bindgen-cli` in CI must match the `Cargo.lock` version exactly or
+      failures are cryptic; `actions/checkout` needs `lfs: true` or snapshots
+      fail with `InvalidSignature`; and `with_max_steps` defaults to 4, so
+      anything with a longer animation or an async load needs raising it.
 
 ### Hosting
 
