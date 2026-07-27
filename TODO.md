@@ -767,13 +767,57 @@ nonzeros — assembles inside a wasm32 module in 266 ms. The memory claim this
 project rests on now holds in the target it was always about.
 
 **Threads compile, if we ever want them.** The whole dependency tree builds with
-`+atomics,+bulk-memory,+mutable-globals` and `--shared-memory` on nightly with
-`-Z build-std`, and `memory.buffer instanceof SharedArrayBuffer` is true. So
-the door is open. It is deliberately not being walked through: threads would buy
-2–5× on construction, which is the component that is already fifty times
-cheaper than the solve. That is an optimisation on the wrong thing, bought with
-a nightly toolchain, `-Z build-std`, cross-origin isolation, a Safari risk, and
-two threading crates that have not been published in eighteen months.
+`+atomics` and `--shared-memory` on nightly with `-Z build-std`, and
+`memory.buffer instanceof SharedArrayBuffer` is true. (`+bulk-memory` and
+`+mutable-globals` have been on by default since Rust 1.87; passing them is
+harmless and redundant.) So the door is open, and it is deliberately not being
+walked through.
+
+The first reason is the arithmetic already given: threads buy 2–5× on
+construction, the component that is fifty times cheaper than the solve. But the
+second reason is the state of the toolchain, which was researched rather than
+assumed and is worse than expected:
+
+- **`wasm-bindgen-rayon` 1.3.0 was published December 2024** and has had two
+  commits since, both unreleased. Adopting it means pinning a git revision, not
+  a version.
+- **The documented setup does not currently work.** Its README flags, plus
+  released `wasm-bindgen` 0.2.126, plus current nightly, fail at
+  `wasm-bindgen --target web` with *"failed to find `__heap_base` for injecting
+  thread id"* — a regression from `nightly-2026-05-07` where dlmalloc began
+  using the linker heap range that wasm-bindgen parks bookkeeping in. Exporting
+  `__heap_base` gets past the CLI error but reportedly may still stall during
+  pool bootstrap. The fix is merged and unreleased. Adoption means pinning a
+  nightly *and* a wasm-bindgen git rev *and* a wasm-bindgen-rayon git rev, and
+  re-validating that triple on every bump.
+- **`-Z build-std` is not stabilising soon.** It is an accepted Rust 2026
+  project goal whose objective for this cycle is "start implementation".
+- **The payoff is 1.5–3×, not Nx.** That is Squoosh's measured range across
+  codecs, and the crate author's own demo shows 3.14×. Safari hard-caps
+  `navigator.hardwareConcurrency` at 8 regardless of hardware, and under
+  privacy protection returns a *random* 1–64, so it must never be passed
+  straight to `initThreadPool`.
+- Two open correctness bugs with no fix: a WebKit-only out-of-bounds trap in
+  pool construction, and a rare `Atomics.wait` throw from `crossbeam-channel`
+  during init on the main thread.
+
+**One thing to record now in case threads are ever adopted**, because it is a
+property of our code rather than of the ecosystem, and it is the kind of fault
+that produces a silently sequential build rather than an error:
+
+`gridwright-model/src/csc.rs:185` and `:287` call `rayon::current_num_threads()`,
+which **initialises rayon's global pool on first touch**. `wasm-bindgen-rayon`
+installs its worker pool through `build_global()`, which fails if the registry
+already exists. So any path reaching those two lines before `initThreadPool`
+resolves would install the single-threaded fallback, make `initThreadPool`
+throw, and ship a sequential build that looks threaded. The fix is to move both
+calls behind the init boundary.
+
+Otherwise the shape is unusually favourable: 25 rayon sites across
+`gridwright-build` and `gridwright-model`, every one a `par_iter` variant, and
+**zero** `ThreadPoolBuilder`, `rayon::scope` or `rayon::join`. Since
+`build_global` installs a process-wide registry, none of those call sites would
+need modifying. No fork required — one ordering fix and an audit.
 
 **Therefore, the interactive budget in-page today, no threads, no HiGHS:**
 
