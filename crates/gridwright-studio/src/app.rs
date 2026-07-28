@@ -343,10 +343,23 @@ impl StudioApp {
 
         // Attachments, named rather than counted. "3 generators" tells you
         // nothing you cannot see on the canvas; their names and sizes do.
+        //
+        // Once solved, a machine shows what it ran at against what it could
+        // have run at. That ratio is the question an operator has about a
+        // generator -- a plant sitting at 6 of 60 MW is being told by the
+        // market it is not worth running, and the nameplate alone never says so.
+        let solved = self.outcome.as_ref().and_then(|o| o.as_ref().ok());
         let mut rows = 0;
         egui::Grid::new("inspector").num_columns(2).show(ui, |ui| {
-            for g in net.generators.iter().filter(|g| g.bus == b) {
-                attached(ui, &g.name, format!("{:.0} MW", g.p_nom));
+            for (g_i, g) in net.generators.iter().enumerate().filter(|(_, g)| g.bus == b) {
+                let peak = solved
+                    .and_then(|s| s.dispatch.get(g_i))
+                    .map(|series| series.iter().fold(0.0_f64, |m, v| m.max(*v)));
+                let size = match peak {
+                    Some(p) => format!("{p:.0} / {:.0} MW", g.p_nom),
+                    None => format!("{:.0} MW", g.p_nom),
+                };
+                attached(ui, &g.name, size);
                 rows += 1;
             }
             for l in net.loads.iter().filter(|l| l.bus == b) {
@@ -358,6 +371,17 @@ impl StudioApp {
                 rows += 1;
             }
         });
+
+        // Unserved energy last, and only when there is some. It belongs under
+        // the loads it happened to, and a line reading "0 MW shed" on every
+        // healthy bus would train the reader to stop seeing it.
+        if let Some(shed) = self.peak_shed.get(b).copied().filter(|&v| v > 0.0) {
+            ui.label(
+                egui::RichText::new(format!("{shed:.1} MW unserved at peak"))
+                    .size(11.0)
+                    .color(theme::TRIP),
+            );
+        }
         if rows == 0 {
             ui.label(
                 egui::RichText::new("nothing attached")
