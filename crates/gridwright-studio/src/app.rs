@@ -14,6 +14,9 @@ pub struct StudioApp {
     /// relaxation in [`crate::layout`] is O(n²) and the answer does not depend
     /// on the camera.
     positions: Vec<Pos2>,
+    /// Whether those positions are a projection of geography or an invention.
+    /// Shown to the reader, because the picture cannot tell them apart.
+    origin: crate::layout::Origin,
     view: NetworkView,
     backend: Box<dyn SolveBackend>,
     outcome: Option<Result<Solved, Failure>>,
@@ -59,6 +62,7 @@ impl StudioApp {
         Self {
             loaded: None,
             positions: Vec::new(),
+            origin: crate::layout::Origin::Invented,
             view: NetworkView::default(),
             // The context is taken here rather than at solve time because the
             // native backend needs it to wake the UI from another thread, and
@@ -80,7 +84,9 @@ impl StudioApp {
     pub fn open_bytes(&mut self, name: Option<&str>, bytes: &[u8]) {
         match gridwright_worker::load(name, bytes) {
             Ok(loaded) => {
-                self.positions = layout(&loaded.network);
+                let placed = layout(&loaded.network);
+                self.positions = placed.pos;
+                self.origin = placed.kind;
                 self.view.reset();
                 self.outcome = None;
                 self.peak_shed.clear();
@@ -494,6 +500,24 @@ impl StudioApp {
                         ui.allocate_exact_size(egui::Vec2::splat(8.0), egui::Sense::hover());
                     ui.painter().circle_filled(rect.center(), 3.5, lamp);
                     ui.label(egui::RichText::new(text).size(11.0).color(theme::INK));
+
+                    if self.loaded.is_some() {
+                        separator(ui);
+                        // Whether the picture is a map. Nothing in the diagram
+                        // distinguishes a projection from a relaxation -- both
+                        // are dots joined by lines, and both look equally
+                        // authoritative -- so a reader who assumes the wrong one
+                        // will draw conclusions about distance and geography
+                        // that the picture does not support.
+                        ui.label(
+                            egui::RichText::new(self.origin.label())
+                                .size(11.0)
+                                .color(match self.origin {
+                                    crate::layout::Origin::Geographic => theme::INK,
+                                    _ => theme::INK_DIM,
+                                }),
+                        );
+                    }
 
                     if let Some(net) = self.network() {
                         separator(ui);

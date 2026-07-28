@@ -45,20 +45,36 @@ const MAX_RELAXED: usize = 2_000;
 /// Deterministic, which matters more than it sounds: this runs once per load,
 /// and a randomised seed would mean the same file drawn differently every time
 /// it was opened, so nobody could learn the shape of their own network.
-pub fn layout(net: &Network) -> Vec<Pos2> {
+pub fn layout(net: &Network) -> Placement {
     let n = net.buses.len();
     if n == 0 {
-        return Vec::new();
+        return Placement {
+            pos: Vec::new(),
+            kind: Origin::Invented,
+        };
     }
 
     let placed = project(net);
+    let located = placed.iter().filter(|p| p.is_some()).count();
+
     // Every bus located: there is nothing to invent, so the relaxation is
     // skipped entirely rather than run and then overwritten.
-    if placed.iter().all(Option::is_some) {
+    if located == n {
         let mut pos: Vec<Pos2> = placed.into_iter().map(Option::unwrap).collect();
         normalise(&mut pos);
-        return pos;
+        return Placement {
+            pos,
+            kind: Origin::Geographic,
+        };
     }
+    let kind = if located == 0 {
+        Origin::Invented
+    } else {
+        Origin::Mixed {
+            located,
+            total: n,
+        }
+    };
 
     let mut pos = seed_ring(n);
     // A located bus starts where it belongs and stays there. Seeding the
@@ -73,7 +89,7 @@ pub fn layout(net: &Network) -> Vec<Pos2> {
     }
 
     if !(2..=MAX_RELAXED).contains(&n) {
-        return pos;
+        return Placement { pos, kind };
     }
 
     // Links are drawn as edges too — an electrolyser tying a power bus to a
@@ -142,7 +158,44 @@ pub fn layout(net: &Network) -> Vec<Pos2> {
     }
 
     normalise(&mut pos);
-    pos
+    Placement { pos, kind }
+}
+
+/// Where a bus goes, and whether that is a fact or an invention.
+#[derive(Debug, Clone)]
+pub struct Placement {
+    pub pos: Vec<Pos2>,
+    pub kind: Origin,
+}
+
+/// What the positions on screen are actually derived from.
+///
+/// Carried out of this module rather than kept inside it because the reader has
+/// to be told. A spring embedding looks exactly as authoritative as a map, and
+/// a person who mistakes one for the other will draw conclusions about distance
+/// and geography that the picture does not support. Nothing else in the diagram
+/// can distinguish them, so the interface has to say it in words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    /// Every bus came with a position, and this is a projection of the truth.
+    Geographic,
+    /// No bus came with a position; the arrangement is the topology relaxed.
+    Invented,
+    /// Some came placed and were pinned; the rest were arranged around them.
+    Mixed { located: usize, total: usize },
+}
+
+impl Origin {
+    /// A short phrase for the status strip.
+    pub fn label(&self) -> String {
+        match self {
+            Origin::Geographic => "geographic".into(),
+            Origin::Invented => "schematic".into(),
+            Origin::Mixed { located, total } => {
+                format!("schematic, {located} of {total} placed")
+            }
+        }
+    }
 }
 
 /// Project every located bus, and `None` for the rest.
