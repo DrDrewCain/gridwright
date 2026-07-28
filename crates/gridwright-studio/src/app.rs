@@ -30,6 +30,7 @@ pub struct StudioApp {
     line_load: Vec<f64>,
     /// Which snapshot the canvas is showing, or the whole horizon at once.
     instant: Instant,
+    palette: crate::palette::Palette,
     /// The last thing that went wrong while opening a file. Kept until the next
     /// load rather than shown for a few frames: a person who dropped the wrong
     /// file may not be looking at the screen when it lands.
@@ -75,6 +76,7 @@ impl StudioApp {
             bus_price: Vec::new(),
             line_load: Vec::new(),
             instant: Instant::Horizon,
+            palette: crate::palette::Palette::default(),
             load_error: None,
         }
     }
@@ -691,6 +693,40 @@ impl StudioApp {
         moved
     }
 
+    /// Offer the palette, and do whatever it was told.
+    fn run_palette(&mut self, ctx: &egui::Context) {
+        use crate::palette::Action;
+
+        let names: Vec<String> = self
+            .network()
+            .map(|n| n.buses.iter().map(|b| b.name.clone()).collect())
+            .unwrap_or_default();
+
+        let Some(action) = self.palette.ui(ctx, &names) else {
+            return;
+        };
+        match action {
+            // Selecting *and* moving the camera, not one or the other. A
+            // selection the reader cannot see is a panel describing something
+            // off screen, and a camera move with no selection loses the thing
+            // they searched for the moment they pan.
+            Action::GoTo(b) => self.view.reveal(b),
+            Action::Solve => {
+                if let Some(net) = self.loaded.as_ref().map(|l| &l.network) {
+                    self.backend.submit(net);
+                    self.outcome = None;
+                    self.reduce();
+                }
+            }
+            Action::Fit => self.view.refit(),
+            Action::OpenSample => self.open_sample(),
+            Action::Horizon => {
+                self.instant = Instant::Horizon;
+                self.reduce();
+            }
+        }
+    }
+
     /// Lamp colour and one word for the current state.
     fn state(&self) -> (egui::Color32, &'static str) {
         use crate::theme;
@@ -798,6 +834,10 @@ impl eframe::App for StudioApp {
                     .animated(false)
                     .show(ui, |ui| self.side_panel(ui));
             });
+
+        // Before the panels, so a keystroke aimed at the palette is not first
+        // eaten by a text field behind it.
+        self.run_palette(ui.ctx());
 
         self.status_strip(ui);
         self.timeline(ui);

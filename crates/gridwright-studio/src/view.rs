@@ -75,6 +75,8 @@ pub struct NetworkView {
     hovered: Option<usize>,
     /// Whether the next fit jumps rather than travels. True for a new network.
     snap_next_fit: bool,
+    /// A bus to bring the camera to on the next frame that has a layout.
+    reveal_next: Option<usize>,
 }
 
 impl Default for NetworkView {
@@ -87,6 +89,7 @@ impl Default for NetworkView {
             goal: None,
             hovered: None,
             snap_next_fit: true,
+            reveal_next: None,
         }
     }
 }
@@ -95,6 +98,26 @@ impl NetworkView {
     /// Refit at the next opportunity. Called when the network changes under it.
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Select a bus and bring the camera to it.
+    ///
+    /// Both, not either. A selection the reader cannot see is an inspector
+    /// describing something off screen; a camera move with no selection loses
+    /// the thing they searched for the moment they pan away from it.
+    ///
+    /// The camera *glides* rather than cutting, because this is the case the
+    /// easing exists for: the reader did not steer this move and has no idea
+    /// where on the network they are about to end up. Watching it travel is
+    /// what tells them.
+    pub fn reveal(&mut self, bus: usize) {
+        self.selected = Some(bus);
+        self.reveal_next = Some(bus);
+    }
+
+    /// Refit at the next frame, travelling rather than cutting.
+    pub fn refit(&mut self) {
+        self.needs_fit = true;
     }
 
     /// Which bus is selected, for whoever draws the inspector.
@@ -129,6 +152,16 @@ impl NetworkView {
         if self.needs_fit {
             self.fit(rect, layout);
             self.needs_fit = false;
+        }
+
+        // Deferred to here because centring on a bus needs its position, and
+        // the palette that asked for it has no layout to look in.
+        if let Some(b) = self.reveal_next.take()
+            && let Some(&p) = layout.get(b)
+        {
+            // Zoomed in enough to read the bus and its neighbours, but not so
+            // far that the reader loses which part of the network they are in.
+            self.goal = Some((p, self.zoom.max(220.0)));
         }
 
         self.handle_camera(ui, &response, rect);

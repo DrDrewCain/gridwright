@@ -109,7 +109,8 @@ fn bonus(raw: &[char], h: &[char], j: usize) -> i32 {
 }
 
 /// Whether `needle` matches at all.
-pub fn matches(needle: &str, haystack: &str) -> bool {
+#[cfg(test)]
+fn matches(needle: &str, haystack: &str) -> bool {
     score(needle, haystack).is_some()
 }
 

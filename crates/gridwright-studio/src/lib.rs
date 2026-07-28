@@ -27,6 +27,7 @@
 mod app;
 mod backend;
 mod fuzzy;
+mod palette;
 mod layout;
 mod theme;
 mod view;
