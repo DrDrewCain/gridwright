@@ -145,8 +145,24 @@ impl NetworkView {
         // substation of a national model that is most of the network.
         let visible = self.visible(rect);
 
-        self.draw_edges(&painter, rect, visible, net, layout, overlay.loading);
-        self.draw_buses(ui, &painter, net, layout, overlay, &response);
+        let on_circuit = self.draw_edges(
+            &painter,
+            rect,
+            visible,
+            net,
+            layout,
+            overlay.loading,
+            response.hover_pos(),
+        );
+        let on_bus = self.draw_buses(ui, &painter, net, layout, overlay, &response);
+
+        // A bus wins a tie. The pointer sits within picking distance of both
+        // whenever it is near a tap point, and the bus is the thing that can be
+        // selected -- offering a readout for the circuit there would contradict
+        // the cursor.
+        if let Some((c, at)) = on_circuit.filter(|_| !on_bus) {
+            self.circuit_readout(ui, &painter, net, overlay.loading, c, at);
+        }
         self.draw_key(&painter, rect, overlay.prices);
     }
 
@@ -282,7 +298,18 @@ impl NetworkView {
         net: &Network,
         layout: &[Pos2],
         loading: &[f64],
-    ) {
+        pointer: Option<Pos2>,
+    ) -> Option<(Circuit, Pos2)> {
+        let mut near: Option<(Circuit, Pos2, f32)> = None;
+        let mut consider = |c: Circuit, path: &[Pos2]| {
+            if let Some(ptr) = pointer
+                && let Some((at, d)) = nearest_on(path, ptr)
+                && d <= PICK_RADIUS
+                && near.is_none_or(|(_, _, best)| d < best)
+            {
+                near = Some((c, at, d));
+            }
+        };
         // Width carries rating, so the corridors that matter read first. Square
         // root rather than linear because transfer capacities span three orders
         // of magnitude within one network, and a linear map turns everything
@@ -330,6 +357,7 @@ impl NetworkView {
                 )
             };
             let path = self.tapped(a, b);
+            consider(Circuit::Line(e), &path);
             painter.add(eframe::egui::Shape::line(
                 path.clone(),
                 Stroke::new(width, color),
@@ -355,11 +383,12 @@ impl NetworkView {
             };
             let (a, b) = taps.place(a, b, link.bus0, link.bus1, Circuit::Link(e), self.bar_half());
             let width = 0.8 + 2.0 * (link.p_nom.abs() / max_p_nom).sqrt() as f32;
-            painter.add(eframe::egui::Shape::line(
-                self.tapped(a, b),
-                Stroke::new(width, LINK_COLOR),
-            ));
+            let path = self.tapped(a, b);
+            consider(Circuit::Link(e), &path);
+            painter.add(eframe::egui::Shape::line(path, Stroke::new(width, LINK_COLOR)));
         }
+
+        near.map(|(c, at, _)| (c, at))
     }
 
     /// Two short strokes across a corridor at its limit.
@@ -528,7 +557,7 @@ impl NetworkView {
         layout: &[Pos2],
         overlay: Overlay<'_>,
         response: &eframe::egui::Response,
-    ) {
+    ) -> bool {
         let rect = response.rect;
         let visible = self.visible(rect);
         let Overlay {
@@ -718,7 +747,7 @@ impl NetworkView {
         }
 
         let Some((picked, _)) = best else {
-            return;
+            return false;
         };
         let bus = &net.buses[picked];
         let s = self.screen_of(rect, layout[picked]);
@@ -731,19 +760,49 @@ impl NetworkView {
             eframe::egui::StrokeKind::Outside,
         );
 
-        // A label painted directly rather than an egui tooltip, because the
-        // canvas is one allocated widget and a tooltip would attach to the pane
-        // rather than to the node the pointer is actually over.
         let label = format!("{} · {} · {}", bus.name, bus.country, bus.carrier);
-        let anchor = s + vec2(half + 10.0, 0.0);
-        let color = ui.visuals().strong_text_color();
-        let galley = painter.layout_no_wrap(label, FontId::proportional(12.0), color);
-        painter.rect_filled(
-            Rect::from_min_size(anchor, galley.size()).expand(3.0),
-            3.0,
-            ui.visuals().panel_fill,
-        );
-        painter.galley(anchor, galley, color);
+        callout(ui, painter, s + vec2(half + 10.0, 0.0), label);
+        true
+    }
+
+    /// What a corridor is rated for and what it carried.
+    ///
+    /// The rating alone is on the diagram already, as the stroke width. The
+    /// number worth surfacing on hover is the one the picture can only
+    /// approximate: how close to that rating the solve actually pushed it.
+    fn circuit_readout(
+        &self,
+        ui: &Ui,
+        painter: &eframe::egui::Painter,
+        net: &Network,
+        loading: &[f64],
+        c: Circuit,
+        at: Pos2,
+    ) {
+        let label = match c {
+            Circuit::Line(e) => {
+                let Some(line) = net.lines.get(e) else { return };
+                let used = loading.get(e).copied().unwrap_or(f64::NAN);
+                let kind = if line.is_transport() { "transport" } else { "ac" };
+                if used.is_nan() {
+                    format!("{} · {kind} · {:.0} MW", line.name, line.s_nom)
+                } else {
+                    format!(
+                        "{} · {kind} · {:.0} of {:.0} MW · {:.0}%",
+                        line.name,
+                        used * line.s_nom,
+                        line.s_nom,
+                        used * 100.0,
+                    )
+                }
+            }
+            Circuit::Link(e) => {
+                let Some(link) = net.links.get(e) else { return };
+                format!("{} · link · {:.0} MW", link.name, link.p_nom)
+            }
+        };
+        painter.circle_filled(at, 2.5, crate::theme::INK_STRONG);
+        callout(ui, painter, at + vec2(10.0, 6.0), label);
     }
 
     fn screen_of(&self, rect: Rect, p: Pos2) -> Pos2 {
@@ -1048,5 +1107,92 @@ mod tests {
             assert!(now >= last, "step {i} darkened: {last} then {now}");
             last = now;
         }
+    }
+}
+
+/// A label painted directly rather than as an egui tooltip.
+///
+/// The canvas is one allocated widget, so a real tooltip would attach to the
+/// pane and appear wherever egui likes rather than beside the thing the pointer
+/// is actually over.
+fn callout(ui: &Ui, painter: &Painter, anchor: Pos2, label: String) {
+    let color = ui.visuals().strong_text_color();
+    let galley = painter.layout_no_wrap(label, FontId::proportional(12.0), color);
+    painter.rect_filled(
+        Rect::from_min_size(anchor, galley.size()).expand(3.0),
+        3.0,
+        ui.visuals().panel_fill,
+    );
+    painter.galley(anchor, galley, color);
+}
+
+/// The closest point on a polyline to `p`, and how far away it is.
+///
+/// Used for picking circuits, which are routed as three-segment taps rather
+/// than as straight chords -- distance to the chord would miss the pointer on
+/// the stubs, which is exactly where a reader points when two circuits run
+/// alongside each other between the same pair of buses.
+fn nearest_on(path: &[Pos2], p: Pos2) -> Option<(Pos2, f32)> {
+    path.windows(2)
+        .map(|w| {
+            let (a, b) = (w[0], w[1]);
+            let seg = b - a;
+            let len2 = seg.length_sq();
+            let t = if len2 <= f32::EPSILON {
+                0.0
+            } else {
+                ((p - a).dot(seg) / len2).clamp(0.0, 1.0)
+            };
+            let at = a + seg * t;
+            (at, at.distance(p))
+        })
+        .min_by(|x, y| x.1.total_cmp(&y.1))
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+
+    #[test]
+    fn nearest_lands_on_the_leg_the_pointer_is_beside() {
+        // A tapped route: down off one bar, across, up onto the next.
+        let path = [
+            pos2(0.0, 0.0),
+            pos2(0.0, 10.0),
+            pos2(100.0, 10.0),
+            pos2(100.0, 20.0),
+        ];
+        let (at, d) = nearest_on(&path, pos2(50.0, 14.0)).unwrap();
+        assert_eq!(at, pos2(50.0, 10.0));
+        assert!((d - 4.0).abs() < 1e-4, "distance was {d}");
+    }
+
+    #[test]
+    fn nearest_finds_the_stubs_not_just_the_chord() {
+        // The point of picking against the route rather than the chord: a
+        // pointer beside a vertical stub is nowhere near the straight line
+        // between the two bus centres.
+        let path = [pos2(0.0, 0.0), pos2(0.0, 40.0), pos2(200.0, 40.0)];
+        let (at, d) = nearest_on(&path, pos2(3.0, 20.0)).unwrap();
+        assert_eq!(at, pos2(0.0, 20.0));
+        assert!((d - 3.0).abs() < 1e-4, "distance was {d}");
+    }
+
+    #[test]
+    fn nearest_clamps_to_the_ends() {
+        let path = [pos2(0.0, 0.0), pos2(10.0, 0.0)];
+        let (at, _) = nearest_on(&path, pos2(-50.0, 0.0)).unwrap();
+        assert_eq!(at, pos2(0.0, 0.0));
+    }
+
+    #[test]
+    fn a_degenerate_path_picks_nothing_rather_than_dividing_by_zero() {
+        assert!(nearest_on(&[], pos2(0.0, 0.0)).is_none());
+        assert!(nearest_on(&[pos2(1.0, 1.0)], pos2(0.0, 0.0)).is_none());
+        // Two coincident points: a zero-length segment, which the projection
+        // would divide by.
+        let (at, d) = nearest_on(&[pos2(4.0, 0.0), pos2(4.0, 0.0)], pos2(0.0, 0.0)).unwrap();
+        assert_eq!(at, pos2(4.0, 0.0));
+        assert!((d - 4.0).abs() < 1e-4);
     }
 }
