@@ -902,12 +902,23 @@ pub fn write_network(net: &Network, dir: impl AsRef<Path>) -> Result<(), IoError
 
     let bus = |i: usize| q(&net.buses[i].name);
 
-    let mut out = String::from("name,country,synchronous_area,carrier,v_nom,v_min,v_max,g_shunt,b_shunt\n");
+    // `x` and `y` last, and named PyPSA's way rather than ours, so the file
+    // this writes is one PyPSA can read back. An unplaced bus writes empty
+    // cells rather than zeroes: zero is a position, and a round trip that turns
+    // "not stated" into "null island" has lost the distinction the type was
+    // added to keep.
+    let mut out = String::from(
+        "name,country,synchronous_area,carrier,v_nom,v_min,v_max,g_shunt,b_shunt,x,y\n",
+    );
     for b in &net.buses {
+        let (x, y) = match b.position {
+            Some(c) => (f(c.lon), f(c.lat)),
+            None => (String::new(), String::new()),
+        };
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{}\n",
             q(&b.name), q(&b.country), q(&b.synchronous_area), q(&b.carrier),
-            f(b.v_nom), f(b.v_min), f(b.v_max), f(b.g_shunt), f(b.b_shunt)
+            f(b.v_nom), f(b.v_min), f(b.v_max), f(b.g_shunt), f(b.b_shunt), x, y
         ));
     }
     write_csv(dir, "buses.csv", &out)?;
@@ -1178,6 +1189,35 @@ mod tests {
         let net = load_network(d.path()).unwrap();
         assert!(net.buses[0].position.is_some());
         assert!(net.buses[1].position.is_some());
+    }
+
+    #[test]
+    fn positions_survive_a_write_and_read() {
+        let d = fixture();
+        d.write("buses.csv", "name,country,x,y\nDE,DE,13.405,52.52\nFR,FR,2.35,48.86\n");
+        let net = load_network(d.path()).unwrap();
+
+        let out = tempdir::Dir::new();
+        write_network(&net, out.path()).unwrap();
+        let back = load_network(out.path()).unwrap();
+
+        assert_eq!(back.buses[0].position, net.buses[0].position);
+        assert_eq!(back.buses[1].position, net.buses[1].position);
+    }
+
+    #[test]
+    fn an_unplaced_bus_does_not_come_back_at_null_island() {
+        // The whole reason the writer emits empty cells rather than zeroes. A
+        // round trip that turns "not stated" into "on the equator off Ghana"
+        // has thrown away the distinction the type exists to keep.
+        let net = load_network(fixture().path()).unwrap();
+        assert!(net.buses.iter().all(|b| b.position.is_none()));
+
+        let out = tempdir::Dir::new();
+        write_network(&net, out.path()).unwrap();
+        let back = load_network(out.path()).unwrap();
+
+        assert!(back.buses.iter().all(|b| b.position.is_none()));
     }
 
     #[test]
