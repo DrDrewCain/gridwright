@@ -27,7 +27,7 @@
 use std::path::Path;
 
 use gridwright_net::{
-    Generator, Line, Load, NetError, Network, Snapshots, StorageUnit, TimeSeries,
+    Coord, Generator, Line, Load, NetError, Network, Snapshots, StorageUnit, TimeSeries,
 };
 
 pub mod csv;
@@ -372,6 +372,21 @@ pub fn assemble(src: &dyn TableSource) -> Result<Network, IoError> {
         net.buses[idx].v_max = bf("v_max", 1.1)?;
         net.buses[idx].carrier = buses.text_or(r, "carrier", "AC");
         net.buses[idx].synchronous_area = buses.text_or(r, "synchronous_area", "main");
+        // PyPSA's `x` and `y` are longitude and latitude, in that order. A file
+        // that never set them has zeroes in both, which `Coord::new` accepts as
+        // a real place; the sweep below discards those once the whole table is
+        // read, because a single row cannot tell "unset" from "on the equator".
+        net.buses[idx].position = Coord::new(bf("x", 0.0)?, bf("y", 0.0)?);
+    }
+    // If nothing was placed anywhere but the origin, nothing was placed.
+    if net
+        .buses
+        .iter()
+        .all(|b| b.position.is_none_or(|c| c.lon == 0.0 && c.lat == 0.0))
+    {
+        for b in &mut net.buses {
+            b.position = None;
+        }
     }
     let bus_of: std::collections::HashMap<String, usize> = net
         .buses
@@ -1124,6 +1139,45 @@ mod tests {
         // Absent optional files leave their components empty rather than
         // failing, so a dispatch-only model needs four files.
         assert!(net.storage.is_empty());
+    }
+
+    #[test]
+    fn pypsa_x_and_y_become_a_position() {
+        let d = fixture();
+        d.write("buses.csv", "name,country,x,y\nDE,DE,13.405,52.52\nFR,FR,2.35,48.86\n");
+        let net = load_network(d.path()).unwrap();
+        let berlin = net.buses[0].position.unwrap();
+        // x is longitude and y is latitude, not the other way round. Getting
+        // this backwards puts Berlin in the Arabian Sea and typechecks.
+        assert_eq!(berlin.lon, 13.405);
+        assert_eq!(berlin.lat, 52.52);
+    }
+
+    #[test]
+    fn a_file_with_no_coordinates_places_nothing() {
+        // The default fixture has no x or y columns at all.
+        let net = load_network(fixture().path()).unwrap();
+        assert!(net.buses.iter().all(|b| b.position.is_none()));
+    }
+
+    #[test]
+    fn coordinate_columns_left_at_zero_place_nothing() {
+        // The case the sweep exists for: the columns are present and every
+        // value is zero, which is a network that never set them rather than a
+        // network in the Gulf of Guinea.
+        let d = fixture();
+        d.write("buses.csv", "name,country,x,y\nDE,DE,0,0\nFR,FR,0,0\n");
+        let net = load_network(d.path()).unwrap();
+        assert!(net.buses.iter().all(|b| b.position.is_none()));
+    }
+
+    #[test]
+    fn one_bus_at_the_origin_does_not_discard_the_others() {
+        let d = fixture();
+        d.write("buses.csv", "name,country,x,y\nDE,DE,0,0\nFR,FR,2.35,48.86\n");
+        let net = load_network(d.path()).unwrap();
+        assert!(net.buses[0].position.is_some());
+        assert!(net.buses[1].position.is_some());
     }
 
     #[test]

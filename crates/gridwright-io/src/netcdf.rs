@@ -44,7 +44,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use gridwright_net::{Generator, Line, Load, Network, Snapshots, StorageUnit, TimeSeries};
+use gridwright_net::{
+    Coord, Generator, Line, Load, Network, Snapshots, StorageUnit, TimeSeries,
+};
 
 use crate::Case;
 
@@ -245,6 +247,14 @@ fn read(nc: Nc, name: &str) -> Result<Case, NetcdfError> {
     let v_nom = column(&nc, "buses_v_nom", n_bus, 0.0)?;
     let v_min = column(&nc, "buses_v_mag_pu_min", n_bus, 0.9)?;
     let v_max = column(&nc, "buses_v_mag_pu_max", n_bus, 1.1)?;
+    // PyPSA's `x` and `y`, which its documentation defines as longitude and
+    // latitude in that order. Defaulted to zero here and then handed to
+    // `Coord::new`, which is what turns a network that simply never set them
+    // into no position rather than into thirteen thousand buses stacked on
+    // null island.
+    let lon = column(&nc, "buses_x", n_bus, 0.0)?;
+    let lat = column(&nc, "buses_y", n_bus, 0.0)?;
+    let placed = lon.iter().zip(&lat).any(|(&x, &y)| x != 0.0 || y != 0.0);
     let mut index_of: HashMap<String, usize> = HashMap::new();
     for (i, name) in bus_names.iter().enumerate() {
         let idx = net.add_bus(name.clone(), countries[i].clone());
@@ -253,6 +263,13 @@ fn read(nc: Nc, name: &str) -> Result<Case, NetcdfError> {
         if v_max[i] > v_min[i] && v_min[i] > 0.0 {
             net.buses[idx].v_min = v_min[i];
             net.buses[idx].v_max = v_max[i];
+        }
+        // Only when the file placed *something*. A network with the columns
+        // present and every value left at zero is not a network of buses in
+        // the Gulf of Guinea, and one bus legitimately at (0, 0) is not worth
+        // the other case.
+        if placed {
+            net.buses[idx].position = Coord::new(lon[i], lat[i]);
         }
         index_of.insert(name.clone(), idx);
     }
