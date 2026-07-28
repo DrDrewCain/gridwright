@@ -66,6 +66,13 @@ gridwright-build.workspace = true
 # repeating that feature selection and being able to get it wrong.
 gridwright-worker.workspace = true
 
+# Native only, and only for the binary: a PyPSA network is a *directory* of CSV
+# files, so opening one needs a filesystem reader that `gridwright-worker`'s
+# bytes-in interface cannot express. The browser has no filesystem and will
+# always go through bytes, so this never reaches the wasm build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+gridwright-io.workspace = true
+
 # Only on wasm. The native binary mounts nothing and needs none of this.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 wasm-bindgen = "0.2.100"

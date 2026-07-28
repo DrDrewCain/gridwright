@@ -28,6 +28,8 @@ pub struct StudioApp {
     /// One utilisation per line, as a fraction of its rating. NaN where the
     /// line has no rating to be a fraction of.
     line_load: Vec<f64>,
+    /// Which snapshot the canvas is showing, or the whole horizon at once.
+    instant: Instant,
     /// The last thing that went wrong while opening a file. Kept until the next
     /// load rather than shown for a few frames: a person who dropped the wrong
     /// file may not be looking at the screen when it lands.
@@ -72,6 +74,7 @@ impl StudioApp {
             peak_shed: Vec::new(),
             bus_price: Vec::new(),
             line_load: Vec::new(),
+            instant: Instant::Horizon,
             load_error: None,
         }
     }
@@ -83,38 +86,57 @@ impl StudioApp {
     /// never a filesystem location.
     pub fn open_bytes(&mut self, name: Option<&str>, bytes: &[u8]) {
         match gridwright_worker::load(name, bytes) {
-            Ok(loaded) => {
-                let placed = layout(&loaded.network);
-                self.positions = placed.pos;
-                self.origin = placed.kind;
-                self.view.reset();
-                self.outcome = None;
-                self.peak_shed.clear();
-            self.bus_price.clear();
-            self.line_load.clear();
-                self.bus_price.clear();
-                self.line_load.clear();
-                self.load_error = None;
-
-                // Solve immediately when it is cheap enough to be
-                // imperceptible. Asking someone to press a button to find out
-                // something that takes ten milliseconds is friction with no
-                // purpose, and the answer is what they opened the file for.
-                //
-                // The threshold is deliberately far below what the backend will
-                // accept: this is "so fast the user will not notice", not "as
-                // much as we can get away with". Anything larger stays explicit,
-                // because a solve you did not ask for and then have to wait for
-                // is worse than a button.
-                let rows = gridwright_build::Lopf::row_counts(&loaded.network).total();
-                if rows <= AUTO_SOLVE_ROWS && self.backend.is_ready() {
-                    self.backend.submit(&loaded.network);
-                }
-
-                self.loaded = Some(loaded);
-            }
+            Ok(loaded) => self.adopt(loaded),
             Err(f) => self.load_error = Some(format!("{}: {}", f.kind, f.message)),
         }
+    }
+
+    /// Everything that happens once a network has been read, however it was.
+    fn adopt(&mut self, loaded: gridwright_worker::Loaded) {
+        let placed = layout(&loaded.network);
+        self.positions = placed.pos;
+        self.origin = placed.kind;
+        self.view.reset();
+        self.outcome = None;
+        self.peak_shed.clear();
+        self.bus_price.clear();
+        self.line_load.clear();
+        self.load_error = None;
+        // A new file has a new horizon, and an instant chosen against the old
+        // one is a position in a timeline that no longer exists. Reset rather
+        // than clamp: silently landing on the last hour of a shorter year looks
+        // like the scrubber moved itself.
+        self.instant = Instant::Horizon;
+
+        // Solve immediately when it is cheap enough to be imperceptible.
+        // Asking someone to press a button to find out something that takes ten
+        // milliseconds is friction with no purpose, and the answer is what they
+        // opened the file for.
+        //
+        // The threshold is deliberately far below what the backend will accept:
+        // this is "so fast the user will not notice", not "as much as we can
+        // get away with". Anything larger stays explicit, because a solve you
+        // did not ask for and then have to wait for is worse than a button.
+        let rows = gridwright_build::Lopf::row_counts(&loaded.network).total();
+        if rows <= AUTO_SOLVE_ROWS && self.backend.is_ready() {
+            self.backend.submit(&loaded.network);
+        }
+
+        self.loaded = Some(loaded);
+    }
+
+    /// Take a network that was read elsewhere.
+    ///
+    /// The native binary reads directories, which `open_bytes` cannot: a PyPSA
+    /// network is a directory of CSV files and there is no single blob to hand
+    /// over. Everything after the read is the same, so this is the shared tail
+    /// of both paths rather than a second way of loading.
+    pub fn open_network(&mut self, network: gridwright_net::Network, name: &str) {
+        self.adopt(gridwright_worker::Loaded {
+            name: name.into(),
+            notes: Vec::new(),
+            network,
+        });
     }
 
     /// Open the bundled IEEE 14-bus case.
@@ -541,6 +563,116 @@ impl StudioApp {
             });
     }
 
+    /// The timeline, when there is one.
+    ///
+    /// Absent on a single-snapshot network, which most test cases are. A
+    /// scrubber over one position is a control that cannot be moved, and a
+    /// disabled control teaches a reader that the feature is broken rather than
+    /// that their file has no time axis in it.
+    fn timeline(&mut self, ui: &mut egui::Ui) {
+        use crate::theme;
+
+        let Some(n) = self.network().map(|n| n.n_snapshots()).filter(|&n| n > 1) else {
+            return;
+        };
+
+        let frame = egui::Frame::new()
+            .fill(theme::SLATE_DEEP)
+            .stroke(egui::Stroke::new(1.0, theme::SLATE_LINE))
+            .inner_margin(egui::Margin::symmetric(
+                (theme::UNIT * 2.0) as i8,
+                theme::UNIT as i8,
+            ));
+
+        let mut changed = false;
+        egui::Panel::bottom("timeline")
+            .frame(frame)
+            .show_separator_line(false)
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    // The horizon is a mode, not position zero on the track.
+                    // "Everything at once" is a different question from "this
+                    // hour", and putting it at one end of a slider would make
+                    // stepping off it look like scrubbing.
+                    let whole = matches!(self.instant, Instant::Horizon);
+                    if ui.selectable_label(whole, "horizon").clicked() {
+                        self.instant = Instant::Horizon;
+                        changed = true;
+                    }
+
+                    separator(ui);
+
+                    let mut t = match self.instant {
+                        Instant::At(t) => t,
+                        Instant::Horizon => 0,
+                    };
+                    let slider = egui::Slider::new(&mut t, 0..=(n - 1))
+                        .show_value(false)
+                        .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 0.4 });
+                    if ui.add(slider).changed() {
+                        self.instant = Instant::At(t);
+                        changed = true;
+                    }
+
+                    ui.label(
+                        egui::RichText::new(self.instant.label())
+                            .monospace()
+                            .size(11.0)
+                            .color(if whole { theme::INK_DIM } else { theme::INK }),
+                    );
+                });
+            });
+
+        if self.step_keys(ui.ctx(), n) || changed {
+            self.reduce();
+        }
+    }
+
+    /// Arrow keys walk the horizon one snapshot at a time.
+    ///
+    /// Scrubbing a slider finds a region; stepping finds an hour. Both are
+    /// needed, and a person comparing two adjacent snapshots cannot do it by
+    /// dragging -- the pointer moves several snapshots per pixel on a year.
+    ///
+    /// Returns whether anything moved.
+    fn step_keys(&mut self, ctx: &egui::Context, n: usize) -> bool {
+        use egui::Key;
+
+        if ctx.memory(|m| m.focused()).is_some() {
+            return false;
+        }
+        let (back, fwd, first, last) = ctx.input(|i| {
+            (
+                i.key_pressed(Key::ArrowLeft),
+                i.key_pressed(Key::ArrowRight),
+                i.key_pressed(Key::Comma),
+                i.key_pressed(Key::Period),
+            )
+        });
+
+        let t = match self.instant {
+            Instant::At(t) => t,
+            // Stepping off the horizon lands at the start rather than
+            // somewhere in the middle, so the first press is predictable.
+            Instant::Horizon if back || fwd || first || last => 0,
+            Instant::Horizon => return false,
+        };
+
+        let next = match (back, fwd, first, last) {
+            (_, _, true, _) => 0,
+            (_, _, _, true) => n - 1,
+            // Saturating rather than wrapping. Walking off the end of a year
+            // and arriving in January is a jump the reader did not ask for.
+            (true, false, ..) => t.saturating_sub(1),
+            (false, true, ..) => (t + 1).min(n - 1),
+            _ => return false,
+        };
+
+        let moved = self.instant != Instant::At(next);
+        self.instant = Instant::At(next);
+        moved
+    }
+
     /// Lamp colour and one word for the current state.
     fn state(&self) -> (egui::Color32, &'static str) {
         use crate::theme;
@@ -609,50 +741,26 @@ impl StudioApp {
     /// system failed, and a bus that sheds heavily for one hour is as much a
     /// failure of that bus as one that sheds lightly all year.
     fn absorb(&mut self, outcome: Result<Solved, Failure>) {
-        self.peak_shed.clear();
-        self.bus_price.clear();
-        self.line_load.clear();
-
-        if let Ok(solved) = &outcome {
-            self.peak_shed = solved
-                .shed
-                .iter()
-                .map(|per_snapshot| per_snapshot.iter().copied().fold(0.0_f64, f64::max))
-                .collect();
-            // Mean over the horizon, not peak. Shed is an event -- one bad hour
-            // is the story -- but price is a condition, and a single congested
-            // hour should not repaint a bus that is ordinary the rest of the
-            // year.
-            self.bus_price = solved
-                .prices
-                .iter()
-                .map(|series| match series.len() {
-                    0 => 0.0,
-                    n => series.iter().sum::<f64>() / n as f64,
-                })
-                .collect();
-            // Peak, unlike price: a corridor that binds for one hour of the
-            // year is a constrained corridor, and averaging that away hides
-            // the hour the network was actually short of transfer capacity.
-            //
-            // NaN rather than zero where a line has no rating. Zero would draw
-            // an unrated line as idle, which is a claim about a quantity the
-            // model never had.
-            if let Some(loaded) = &self.loaded {
-                self.line_load = solved
-                    .flows
-                    .iter()
-                    .zip(&loaded.network.lines)
-                    .map(|(series, line)| {
-                        let peak = series.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
-                        let rating = line.s_nom.abs();
-                        if rating > 0.0 { peak / rating } else { f64::NAN }
-                    })
-                    .collect();
-            }
-        }
-
         self.outcome = Some(outcome);
+        self.reduce();
+    }
+
+    /// Collapse the solve's per-snapshot series to the one number per component
+    /// that the canvas can draw.
+    ///
+    /// Re-run whenever the instant changes rather than folded into drawing,
+    /// because it is a pass over the whole horizon and the picture it produces
+    /// does not change between frames.
+    fn reduce(&mut self) {
+        let reduced = match (&self.outcome, &self.loaded) {
+            (Some(Ok(solved)), Some(loaded)) => {
+                reduce(solved, &loaded.network, self.instant)
+            }
+            _ => Reduced::default(),
+        };
+        self.peak_shed = reduced.shed;
+        self.bus_price = reduced.price;
+        self.line_load = reduced.load;
     }
 }
 
@@ -674,6 +782,7 @@ impl eframe::App for StudioApp {
             });
 
         self.status_strip(ui);
+        self.timeline(ui);
 
         // No margins: the canvas should meet the panel edge, and an inset would
         // show as a border around a view the user is panning.
@@ -784,4 +893,265 @@ fn attached(ui: &mut egui::Ui, name: &str, size: String) {
         },
     );
     ui.end_row();
+}
+
+/// One number per component, ready to draw.
+#[derive(Debug, Default, PartialEq)]
+struct Reduced {
+    /// Per bus: unserved energy.
+    shed: Vec<f64>,
+    /// Per bus: nodal price.
+    price: Vec<f64>,
+    /// Per line: flow as a fraction of rating, NaN where unrated.
+    load: Vec<f64>,
+}
+
+/// Collapse a solve's per-snapshot series at the chosen instant.
+///
+/// A free function rather than a method so it can be tested without a window.
+/// The choice of reduction per quantity is the whole content of it, and getting
+/// one of them wrong produces a picture that is plausible and false.
+fn reduce(solved: &Solved, net: &gridwright_net::Network, at: Instant) -> Reduced {
+    Reduced {
+        // Shed reduces by peak. It is an *event*: one bad hour is the story,
+        // and a mean would divide the failure by the length of the year until
+        // it disappeared.
+        shed: solved.shed.iter().map(|s| at.peak(s)).collect(),
+
+        // Price reduces by mean, because it is a *condition* rather than an
+        // event. One congested hour should not repaint a bus that is ordinary
+        // for the rest of the year.
+        price: solved.prices.iter().map(|s| at.mean(s)).collect(),
+
+        // Corridors reduce by peak, like shed and unlike price. A line that
+        // binds for one hour of the year is a constrained line, and averaging
+        // that away hides the hour the network was short of transfer capacity.
+        //
+        // NaN rather than zero where a line has no rating: zero would draw an
+        // unrated line as idle, which is a claim about a quantity the model
+        // never had.
+        load: solved
+            .flows
+            .iter()
+            .zip(&net.lines)
+            .map(|(series, line)| {
+                let rating = line.s_nom.abs();
+                if rating > 0.0 {
+                    at.peak_abs(series) / rating
+                } else {
+                    f64::NAN
+                }
+            })
+            .collect(),
+    }
+}
+
+/// Which part of the horizon the canvas is showing.
+///
+/// A year of hourly snapshots reduced to one number per bus is the only thing
+/// the diagram can draw, and until now that reduction was always over the whole
+/// horizon. That answers "was this network ever short of capacity" and cannot
+/// answer "what did it look like at 18:00 on the coldest day", which is the
+/// question a congested hour actually raises.
+///
+/// The literature is unambiguous that scrubbing is the right primitive here.
+/// Amini et al. (2015) found that a good 2D temporal view "relies significantly
+/// on scrubbing the timeline", and that much of a 3D space-time view's measured
+/// advantage was a proxy for having any temporal interaction at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Instant {
+    /// Every snapshot at once, reduced.
+    Horizon,
+    /// One snapshot, shown as it is.
+    At(usize),
+}
+
+impl Instant {
+    /// The largest value, or the value at this instant.
+    fn peak(self, series: &[f64]) -> f64 {
+        match self {
+            Instant::Horizon => series.iter().copied().fold(0.0_f64, f64::max),
+            Instant::At(t) => series.get(t).copied().unwrap_or(0.0),
+        }
+    }
+
+    /// The largest magnitude, for quantities that are signed.
+    ///
+    /// Flow has a direction, and a corridor running at its rating in the
+    /// negative direction is exactly as constrained as one running at its
+    /// rating in the positive direction.
+    fn peak_abs(self, series: &[f64]) -> f64 {
+        match self {
+            Instant::Horizon => series.iter().fold(0.0_f64, |m, v| m.max(v.abs())),
+            Instant::At(t) => series.get(t).copied().unwrap_or(0.0).abs(),
+        }
+    }
+
+    /// The mean over the horizon, or the value at this instant.
+    fn mean(self, series: &[f64]) -> f64 {
+        match self {
+            Instant::Horizon => match series.len() {
+                0 => 0.0,
+                n => series.iter().sum::<f64>() / n as f64,
+            },
+            Instant::At(t) => series.get(t).copied().unwrap_or(0.0),
+        }
+    }
+
+    /// A short phrase naming what is on screen.
+    fn label(self) -> String {
+        match self {
+            Instant::Horizon => "whole horizon".into(),
+            Instant::At(t) => format!("snapshot {}", t + 1),
+        }
+    }
+}
+
+#[cfg(test)]
+mod instant_tests {
+    use super::Instant;
+
+    const SERIES: [f64; 4] = [10.0, -30.0, 20.0, 0.0];
+
+    #[test]
+    fn the_horizon_reduces_across_every_snapshot() {
+        assert_eq!(Instant::Horizon.peak(&SERIES), 20.0);
+        assert_eq!(Instant::Horizon.peak_abs(&SERIES), 30.0);
+        assert_eq!(Instant::Horizon.mean(&SERIES), 0.0);
+    }
+
+    #[test]
+    fn an_instant_reduces_to_the_value_there() {
+        // All three reductions collapse to the same thing at a point, except
+        // that magnitude drops the sign. That is the property that makes the
+        // scrubber honest: what is drawn at snapshot t is the number at
+        // snapshot t, not a window around it.
+        assert_eq!(Instant::At(1).peak(&SERIES), -30.0);
+        assert_eq!(Instant::At(1).mean(&SERIES), -30.0);
+        assert_eq!(Instant::At(1).peak_abs(&SERIES), 30.0);
+    }
+
+    #[test]
+    fn magnitude_is_taken_before_the_maximum_not_after() {
+        // Flow is signed, and a corridor at its rating in the negative
+        // direction is exactly as constrained as one at its rating in the
+        // positive direction. Folding with `max` before `abs` would report this
+        // series as 20% loaded when it reached 30.
+        assert_eq!(Instant::Horizon.peak_abs(&SERIES), 30.0);
+        assert_ne!(Instant::Horizon.peak(&SERIES), 30.0);
+    }
+
+    #[test]
+    fn an_instant_past_the_end_reads_as_nothing_rather_than_panicking() {
+        // The horizon length comes from the network and the series length from
+        // the solve, and a stale result paired with a freshly loaded file is a
+        // real sequence rather than a hypothetical one.
+        assert_eq!(Instant::At(99).peak(&SERIES), 0.0);
+        assert_eq!(Instant::At(99).mean(&SERIES), 0.0);
+        assert_eq!(Instant::At(99).peak_abs(&SERIES), 0.0);
+    }
+
+    #[test]
+    fn an_empty_series_has_a_mean_rather_than_a_division_by_zero() {
+        assert_eq!(Instant::Horizon.mean(&[]), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod reduce_tests {
+    use super::*;
+    use gridwright_net::{Bus, Line, Network, Snapshots};
+
+    /// One line rated 100, two buses, three snapshots.
+    fn scene() -> (Network, Solved) {
+        let mut net = Network::new(Snapshots::hourly(3));
+        for name in ["a", "b"] {
+            net.buses.push(Bus {
+                name: name.into(),
+                ..Default::default()
+            });
+        }
+        net.lines.push(Line {
+            name: "a-b".into(),
+            bus0: 0,
+            bus1: 1,
+            s_nom: 100.0,
+            ..Default::default()
+        });
+        let solved = Solved {
+            status: "Optimal".into(),
+            objective: Some(1.0),
+            total_shed: 5.0,
+            iterations: None,
+            phase_one_iterations: None,
+            prices: vec![vec![10.0, 40.0, 10.0], vec![10.0, 10.0, 10.0]],
+            dispatch: Vec::new(),
+            flows: vec![vec![50.0, -100.0, 0.0]],
+            shed: vec![vec![0.0, 5.0, 0.0], vec![0.0, 0.0, 0.0]],
+            built: Vec::new(),
+        };
+        (net, solved)
+    }
+
+    #[test]
+    fn the_horizon_hides_the_hour_the_instant_reveals() {
+        // The entire point of the scrubber. Over the whole horizon bus `a`
+        // averages 20/MWh and the corridor reads fully loaded; at snapshot 1
+        // the price is 40 and the shed is real. Neither picture is wrong and
+        // neither one can be read off the other.
+        let (net, solved) = scene();
+
+        let whole = reduce(&solved, &net, Instant::Horizon);
+        assert_eq!(whole.price[0], 20.0);
+        assert_eq!(whole.shed[0], 5.0);
+
+        let peak_hour = reduce(&solved, &net, Instant::At(1));
+        assert_eq!(peak_hour.price[0], 40.0);
+        assert_eq!(peak_hour.shed[0], 5.0);
+
+        let quiet_hour = reduce(&solved, &net, Instant::At(2));
+        assert_eq!(quiet_hour.price[0], 10.0);
+        assert_eq!(quiet_hour.shed[0], 0.0);
+    }
+
+    #[test]
+    fn a_corridor_at_its_rating_backwards_reads_as_fully_loaded() {
+        let (net, solved) = scene();
+        // -100 on a line rated 100 is a line at its limit. Reducing without
+        // taking magnitude first would report it as 50% loaded over the
+        // horizon and as *negative* at the instant.
+        assert_eq!(reduce(&solved, &net, Instant::Horizon).load[0], 1.0);
+        assert_eq!(reduce(&solved, &net, Instant::At(1)).load[0], 1.0);
+        assert_eq!(reduce(&solved, &net, Instant::At(0)).load[0], 0.5);
+    }
+
+    #[test]
+    fn an_unrated_line_is_not_reported_as_idle() {
+        let (mut net, solved) = scene();
+        net.lines[0].s_nom = 0.0;
+        assert!(reduce(&solved, &net, Instant::Horizon).load[0].is_nan());
+    }
+
+    #[test]
+    fn a_result_from_a_longer_horizon_does_not_panic_on_a_shorter_one() {
+        // A stale solve paired with a freshly loaded file: the instant is
+        // valid for the network and past the end of the result.
+        let (net, solved) = scene();
+        let r = reduce(&solved, &net, Instant::At(50));
+        assert_eq!(r.price[0], 0.0);
+        assert_eq!(r.shed[0], 0.0);
+    }
+
+    #[test]
+    fn a_result_with_fewer_lines_than_the_network_stops_at_the_shorter_one() {
+        // `zip` is load-bearing here rather than incidental: indexing would
+        // panic on the mismatch, which a dropped file can produce.
+        let (mut net, solved) = scene();
+        net.lines.push(Line {
+            name: "extra".into(),
+            s_nom: 10.0,
+            ..Default::default()
+        });
+        assert_eq!(reduce(&solved, &net, Instant::Horizon).load.len(), 1);
+    }
 }

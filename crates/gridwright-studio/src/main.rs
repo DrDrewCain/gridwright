@@ -28,17 +28,38 @@ fn main() -> eframe::Result {
         Box::new(move |cc| {
             let mut app = gridwright_studio::StudioApp::new(cc);
             if let Some(path) = path {
-                match std::fs::read(&path) {
-                    // The file name is passed along because it is what format
-                    // detection looks at first; content sniffing only takes over
-                    // when the name is absent or unhelpful.
-                    Ok(bytes) => app.open_bytes(Some(path.as_str()), &bytes),
-                    Err(e) => eprintln!("{path}: {e}"),
+                if let Err(e) = open(&mut app, &path) {
+                    eprintln!("{path}: {e}");
                 }
             }
             Ok(Box::new(app))
         }),
     )
+}
+
+/// Open a file, or a directory of them.
+///
+/// A PyPSA network is a *directory* -- `buses.csv`, `lines.csv`, and one file
+/// per time series -- so a studio that only accepts single files cannot open
+/// the one format in the reader set that carries geography and a real horizon.
+/// The browser has no filesystem and will always go through bytes, so this
+/// lives here rather than in the library.
+#[cfg(not(target_arch = "wasm32"))]
+fn open(app: &mut gridwright_studio::StudioApp, path: &str) -> std::io::Result<()> {
+    if std::fs::metadata(path)?.is_dir() {
+        return match gridwright_io::load_network(std::path::Path::new(path)) {
+            Ok(net) => {
+                app.open_network(net, path);
+                Ok(())
+            }
+            Err(e) => Err(std::io::Error::other(e.to_string())),
+        };
+    }
+    // The file name is passed along because it is what format detection looks
+    // at first; content sniffing only takes over when the name is absent or
+    // unhelpful.
+    app.open_bytes(Some(path), &std::fs::read(path)?);
+    Ok(())
 }
 
 /// The wasm build compiles this file too — a `[[bin]]` target is not

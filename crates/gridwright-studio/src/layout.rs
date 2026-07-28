@@ -162,7 +162,7 @@ pub fn layout(net: &Network) -> Placement {
 }
 
 /// Where a bus goes, and whether that is a fact or an invention.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Placement {
     pub pos: Vec<Pos2>,
     pub kind: Origin,
@@ -297,7 +297,7 @@ mod tests {
     #[test]
     fn deterministic() {
         let net = ring_network(24);
-        assert_eq!(layout(&net), layout(&net));
+        assert_eq!(layout(&net).pos, layout(&net).pos);
     }
 
     /// `NetworkView::fit` divides by the bounding-box span, so an unbounded or
@@ -306,7 +306,7 @@ mod tests {
     #[test]
     fn finite_and_bounded() {
         for n in [1, 2, 3, 40, 300] {
-            let pos = layout(&ring_network(n));
+            let pos = layout(&ring_network(n)).pos;
             assert_eq!(pos.len(), n);
             for p in &pos {
                 assert!(p.x.is_finite() && p.y.is_finite(), "n = {n}");
@@ -324,14 +324,14 @@ mod tests {
         for i in 0..50 {
             net.add_bus(format!("island{i}"), "XX");
         }
-        for p in layout(&net) {
+        for p in layout(&net).pos {
             assert!(p.x.is_finite() && p.y.is_finite());
         }
     }
 
     #[test]
     fn empty_network_has_no_positions() {
-        assert!(layout(&Network::new(Snapshots::hourly(1))).is_empty());
+        assert!(layout(&Network::new(Snapshots::hourly(1))).pos.is_empty());
     }
 }
 
@@ -359,14 +359,14 @@ mod geographic_tests {
         // glaring on a recognisable coastline and invisible on a synthetic case
         // -- so it is worth a test rather than an eye.
         let net = placed(&[Some((0.0, 60.0)), Some((0.0, 40.0))]);
-        let pos = layout(&net);
+        let pos = layout(&net).pos;
         assert!(pos[0].y < pos[1].y, "the northern bus was drawn below");
     }
 
     #[test]
     fn east_is_right() {
         let net = placed(&[Some((-5.0, 50.0)), Some((5.0, 50.0))]);
-        let pos = layout(&net);
+        let pos = layout(&net).pos;
         assert!(pos[0].x < pos[1].x, "the eastern bus was drawn to the left");
     }
 
@@ -380,7 +380,7 @@ mod geographic_tests {
             Some((1.0, 50.0)),
             Some((0.0, 50.0 + 0.6428)),
         ]);
-        let pos = layout(&net);
+        let pos = layout(&net).pos;
         let horizontal = (pos[1] - pos[0]).length();
         let vertical = (pos[2] - pos[0]).length();
         assert!(
@@ -392,7 +392,7 @@ mod geographic_tests {
     #[test]
     fn an_unplaced_network_still_gets_a_layout() {
         let net = placed(&[None, None, None]);
-        let pos = layout(&net);
+        let pos = layout(&net).pos;
         assert_eq!(pos.len(), 3);
         assert!(pos.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
     }
@@ -403,7 +403,7 @@ mod geographic_tests {
         // located ones are the frame everything else is arranged around, and a
         // map that is nearly right is worse than one that is plainly schematic.
         let net = placed(&[Some((0.0, 50.0)), Some((2.0, 50.0)), None, None]);
-        let pos = layout(&net);
+        let pos = layout(&net).pos;
 
         // Both anchors kept the same latitude, so they must still share a row.
         assert!(
@@ -421,7 +421,7 @@ mod geographic_tests {
         // a non-finite position that survives into the bounding box and
         // collapses every other bus onto one point.
         let net = placed(&[Some((0.0, 90.0)), Some((0.0, 50.0)), Some((1.0, 50.0))]);
-        let pos = layout(&net);
+        let pos = layout(&net).pos;
         assert!(
             pos.iter().all(|p| p.x.is_finite() && p.y.is_finite()),
             "a pole produced {pos:?}",

@@ -1501,6 +1501,7 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "gridwright-build",
+ "gridwright-io",
  "gridwright-net",
  "gridwright-worker",
  "wasm-bindgen",
