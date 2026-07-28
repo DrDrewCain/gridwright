@@ -220,6 +220,13 @@ impl StudioApp {
 
         let Some(net) = self.network() else { return };
 
+        // Above the summary, because it is about what the user just clicked and
+        // the summary is about the file. A selection that appears below a
+        // fixed block of statistics is a selection nobody notices.
+        if self.inspector(ui) {
+            ui.add_space(theme::UNIT * 3.0);
+        }
+
         ui.add_space(theme::UNIT * 3.0);
         ui.label(theme::eyebrow("composition"));
         ui.add_space(theme::UNIT);
@@ -266,6 +273,89 @@ impl StudioApp {
 
         ui.separator();
         self.results_area(ui);
+    }
+
+    /// What is attached to the selected bus, and what the solve said about it.
+    ///
+    /// Returns whether anything was drawn, so the caller can space around it
+    /// without leaving a hole when nothing is selected.
+    fn inspector(&self, ui: &mut egui::Ui) -> bool {
+        use crate::theme;
+
+        let Some(net) = self.network() else {
+            return false;
+        };
+        let Some(b) = self.view.selected().filter(|&b| b < net.buses.len()) else {
+            return false;
+        };
+        let bus = &net.buses[b];
+
+        ui.add_space(theme::UNIT * 3.0);
+        ui.label(theme::eyebrow("selected bus"));
+        ui.add_space(theme::UNIT);
+        ui.label(
+            egui::RichText::new(&bus.name)
+                .size(13.0)
+                .color(theme::INK_STRONG)
+                .strong(),
+        );
+
+        // The price first, because it is the answer this engine exists to
+        // produce and the reason to click a bus at all. A dual on a nodal
+        // balance row *is* the marginal cost of energy there.
+        if let Some(Ok(solved)) = &self.outcome
+            && let Some(series) = solved.prices.get(b)
+            && let Some(first) = series.first()
+        {
+            let (lo, hi) = series
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+            ui.add_space(theme::UNIT);
+            ui.horizontal(|ui| {
+                ui.label(theme::number(format!("{first:.2}")));
+                ui.label(
+                    egui::RichText::new("/MWh")
+                        .size(11.0)
+                        .color(theme::INK_DIM),
+                );
+            });
+            // A range only when there is one. On a single snapshot the low and
+            // high are the same number and printing both is noise.
+            if hi - lo > 1e-9 {
+                ui.label(
+                    egui::RichText::new(format!("{lo:.2} to {hi:.2} over the horizon"))
+                        .size(11.0)
+                        .color(theme::INK_DIM),
+                );
+            }
+        }
+
+        // Attachments, named rather than counted. "3 generators" tells you
+        // nothing you cannot see on the canvas; their names and sizes do.
+        let mut rows = 0;
+        egui::Grid::new("inspector").num_columns(2).show(ui, |ui| {
+            for g in net.generators.iter().filter(|g| g.bus == b) {
+                attached(ui, &g.name, format!("{:.0} MW", g.p_nom));
+                rows += 1;
+            }
+            for l in net.loads.iter().filter(|l| l.bus == b) {
+                attached(ui, &l.name, format!("{:.0} MW", l.p_set));
+                rows += 1;
+            }
+            for st in net.storage.iter().filter(|s| s.bus == b) {
+                attached(ui, &st.name, format!("{:.0} MW", st.p_nom));
+                rows += 1;
+            }
+        });
+        if rows == 0 {
+            ui.label(
+                egui::RichText::new("nothing attached")
+                    .size(11.0)
+                    .color(theme::INK_DIM),
+            );
+        }
+
+        true
     }
 
     fn results_area(&mut self, ui: &mut egui::Ui) {
@@ -553,4 +643,25 @@ fn separator(ui: &mut egui::Ui) {
             .color(crate::theme::SLATE_LINE),
     );
     ui.add_space(crate::theme::UNIT);
+}
+
+/// One attached component: what it is on the left, how big on the right.
+fn attached(ui: &mut egui::Ui, name: &str, size: String) {
+    ui.label(
+        eframe::egui::RichText::new(name)
+            .size(11.0)
+            .color(crate::theme::INK),
+    );
+    ui.with_layout(
+        eframe::egui::Layout::right_to_left(eframe::egui::Align::Center),
+        |ui| {
+            ui.label(
+                eframe::egui::RichText::new(size)
+                    .monospace()
+                    .size(11.0)
+                    .color(crate::theme::INK_DIM),
+            );
+        },
+    );
+    ui.end_row();
 }
