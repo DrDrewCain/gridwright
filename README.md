@@ -534,6 +534,27 @@ assembled in order to rebuild it inside someone else's representation.
 | `gridwright-io` | Every data format, in and out, and result export. |
 | `gridwright-emissions` | Production and consumption carbon accounting, average and marginal. |
 | `gridwright-cli` | The `gw` binary. |
+| `gridwright-worker` | Reading and solving behind one bytes-in interface, so the browser and the native app share a path. |
+| `gridwright-studio` | The interactive shell: a network view and a solve, in a window or a tab. |
+
+## The studio
+
+There is an interface now, and it runs in a browser with no server: the model is
+built and solved in the tab, which is the whole reason the simplex in
+`gridwright-simplex` exists.
+
+```sh
+cargo run -p gridwright-studio -- examples/pglib/case14_ieee.m   # a window
+./crates/gridwright-studio/build-web.sh                          # a tab
+```
+
+It draws buses as busbars with circuits tapping onto them, generators and loads
+as their IEC symbols, and — once solved — nodal price on the busbars and
+utilisation on the corridors, with a scrubber for networks that have a horizon.
+`⌘K` goes to any bus by name.
+
+See [`crates/gridwright-studio/README.md`](crates/gridwright-studio/README.md),
+which also lists what it does not do yet.
 
 ## Build
 
