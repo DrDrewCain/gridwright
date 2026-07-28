@@ -2404,11 +2404,48 @@ code rather than in the plan.
   because a camera lagging a pointer reads as lag rather than as motion.
 - An empty state that names the action and offers the sample case.
 
-Still missing, in rough order of how much they are missed: a legend for the
-corridor colours (AC, transport, link are three hues nothing explains), any
-plot at all, a font that is not Ubuntu-Light, and multi-snapshot navigation —
-every reduction on the canvas is currently over the whole horizon because
-there is no way to ask for one hour of it.
+Since then, and evidenced rather than guessed — each of these has its reasoning
+in the research sections above:
+
+- **A timeline.** Arrow keys step, shift-arrow steps a day, `horizon` shows
+  everything at once, and every reduction on the canvas follows. This turns out
+  to be close to unique in the field: an interactive scrubber over a geographic
+  network was found in exactly one other tool, which has twelve stars and has
+  not been touched since 2024, and the gap it fills has been named as open by
+  this field's own literature since 2002.
+- **A palette.** `⌘K` over every bus name and every command, with shortcuts
+  shown inline. Overbye's argument for it is quoted above and is better than
+  any I would have written.
+- **Geographic layout** where the file carries coordinates, with the origin
+  said out loud in the status strip, because a projection and a relaxation look
+  equally authoritative and nothing in the picture distinguishes them.
+- **Voltage colouring** in OpenInfraMap's scale, minus two bands moved so a
+  healthy corridor cannot be mistaken for an alarm.
+- **A corridor legend**, generated from the same table the canvas draws from.
+- **Decluttered labels**, which replaced a rule that counted buses rather than
+  looking at whether two labels overlapped.
+- **An unproven answer that looks unproven**, and a solve duration measured by
+  the backend rather than by the frame clock.
+
+Still missing, in rough order of how much they are missed:
+
+- **Any plot at all.** The evidence is unambiguous that the hour-of-day by
+  day-of-year heatmap is the workhorse chart of this field, applied to prices,
+  utilisation and state of charge alike — one component serving three domains.
+  Then dispatch stacks and duration curves.
+- **A network diff.** Requested by a PyPSA maintainer, blocked there on a
+  stated technical reason, and unbuilt anywhere. Three parts, three
+  presentations: topology, scalars, and time series as duration curves.
+- **Infeasibility diagnosis** built on HiGHS's `getIis` plus the priced slack
+  that already exists here, translated back into named components. The
+  incumbents either require a Gurobi licence or hand you an LP file.
+- **A font that is not Ubuntu Light**, which needs a face this repo does not
+  vendor.
+- **The other two terms of the time control.** The slider addresses the whole
+  horizon and selects a point; ArcGIS keeps the addressable *extent* and a
+  two-handled *visible span* as separate things, and both are useful on a year.
+- **Small multiples**, which every replication in the literature prefers to
+  animation for analysis, and which nothing here offers.
 
 ### Stage 4 — results, and being honest about them
 
