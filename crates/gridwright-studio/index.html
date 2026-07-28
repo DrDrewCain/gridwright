@@ -12,10 +12,8 @@
   URL behind a trivial server, or a corporate intranet that will not set
   response headers for you.
 
-  Build with:
-    cargo build -p gridwright-studio --lib --release --target wasm32-unknown-unknown
-    wasm-bindgen --target web --out-dir pkg \
-      target/wasm32-unknown-unknown/release/gridwright_studio.wasm
+  Build with ./build-web.sh, which is those two commands plus the flags that
+  are easy to forget.
 -->
 <html lang="en">
   <head>
