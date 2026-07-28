@@ -1605,6 +1605,157 @@ design work goes in. If this works, nothing architectural is left to discover.
 - [ ] The identical crate runs as a native desktop window, with HiGHS.
 - [ ] Deployed to Vercel as static output and loading from a cold cache.
 
+### What studio interfaces get wrong, and the four patterns worth taking
+
+Researched against vendor documentation, engineering blogs, HN threads with
+verified comment IDs, McNeel and Blender developer forums, and academic papers.
+
+#### The failure modes, named
+
+- **The alien keymap.** Blender before 2.8 selected on right-click. *"If the
+  first thing you have to do to a software is customize it, you've already lost
+  on usability."* The fix was to ship the conventional default and offer an
+  "Industry Compatible" keymap explicitly *"not aimed at existing Blender
+  users"*.
+- **Zero discoverability.** *"It is an efficient, streamlined and, honestly,
+  superior interface. You cannot explore it, and that's the problem. RTFM is
+  required."* Blender's own 2016 UI workshop write-up conceded: *"Blender's
+  current keymap suffers from one major issue: **It is totally overloaded**"*
+  and *"many modal operators have options, and it's pretty hard to discover
+  them."*
+- **The redesign breaks the experts it kept.** The same 2.8 release that fixed
+  discoverability cost throughput: *"Things that were a single key stroke away
+  are now an extra one or two."* Its keymap change list marks several removals
+  "NO REPLACEMENT". The "UI Paper Cuts" thread opened during the beta now has
+  **4,020 posts**.
+- **Node-graph spaghetti with no abstraction.** *"Any sufficiently advanced
+  program has non-planar dataflow graph... we still don't have a reliable way to
+  layout a non-trivial graph so that it doesn't look like a spaghetti bowl."*
+  Grasshopper's own author, on a 2,725-object definition: *"GH1 doesn't provide
+  a huge amount of tools to alleviate these problems, so you're pretty much
+  stuck between a rock and a hard place."* The root cause is the absence of
+  abstraction — Enso's co-founder: *"Most visual programming languages do not
+  scale well because they don't let users express abstractions... you never have
+  more than 10-20 nodes on the stage."* **Epic is deprecating Blueprints in
+  UE6** for exactly this reason.
+- **Encapsulation that leaks.** Grasshopper has clusters and practitioners
+  refuse to use them, because an errored component inside a cluster does not
+  mark the cluster, and custom previews break at the boundary. They want groups
+  with named ports, not real encapsulation — the boundary without losing
+  observability.
+- **Layout metadata poisons the diff.** Canvas positions live interleaved with
+  logic, so nothing merges. A four-person Grasshopper team: *"version control
+  and collaboration... is currently a big mess."* The named fix nobody has
+  shipped: *"Layout-info etc should be kept separately... so it would be easy to
+  strip out, and to merge again on file open."* The bar, stated: *"If your
+  visual tool can't provide a superior diff experience, then it's dead on
+  arrival for most serious projects."*
+- **Hidden state.** Pimentel et al. (MSR 2019) ran **1,159,166 notebooks** from
+  264,023 repositories: of those executed, **only 24.11% ran without errors and
+  only 4.03% reproduced their stored results**; **36.36% had cells out of
+  order**; 76.90% showed execution-counter skips. `NameError` was 14.53% of
+  failures — the signature of state you cannot see.
+- **Synchronous UI thread.** The most relevant failure mode for a solver-backed
+  tool. QGIS: *"Many long operations seem to take place synchronously on the UI
+  thread, so the whole app is unresponsive while they take place... and didn't
+  have progress bars."* ArcGIS Pro: *"there's no predictability in whether Pro
+  will just sit there."*
+- **Artifact sprawl.** Grafana names it in its own documentation: *"Avoid
+  dashboard sprawl... Duplicating dashboards and changing 'one thing' is the
+  easiest kind of sprawl"*, and *"You miss out on updates to the original."* The
+  cause is a missing primitive — issue #1959, "reuse template variable
+  definitions across dashboards", **opened 2015 and still open**, with a
+  maintainer replying *"just define them for one dashboard and then copy that
+  dashboard. Not ideal."*
+- **Overconfident modelling.** Panko's survey: **94% of 88 audited spreadsheets
+  contained errors**; in one study every one of nine experienced developers made
+  at least one error, and *"when asked about their confidence in the correctness
+  of their spreadsheets, their median score was 'very confident'."*
+
+#### The correction worth remembering
+
+Blender's UI designer, on the supposed tradeoff: *"**Learnable, intuitive UIs
+are not inherently polar opposite to fast interfaces. It's not an either or.**
+If you are thoughtful and careful, it's possible to make something intuitive and
+speedy."* And the commitment that came with it: *"We are committed to keeping
+Blender's efficient keyboard-focused workflow... The only difference is that now
+it's actually possible to use Blender **without** the shortcuts."*
+
+That is the standard to hold this to. Not "add a menu", but "every keyboard
+path also has a visible one".
+
+#### Pattern 1 — one list, many concerns (ArcGIS Pro's Contents pane)
+
+The single best structural idea found. One list of entities is reused as the
+control surface for several orthogonal concerns, switched by tab: **Drawing
+Order, Data Source, Selection, Editing, Snapping, Labeling.** Per tab, three
+things change:
+
+- **The rows change** — each tab filters to only the entities that participate.
+  Raster layers *"do not allow interactive selection"* and are simply listed
+  without a checkbox on the Selection tab.
+- **The checkbox means something different** — visible, selectable, editable,
+  snappable.
+- **The tree changes shape** — Drawing Order is drag-reorderable; Data Source
+  groups by source; Labeling expands each layer into its label classes.
+
+Bulk operation is uniform across all of them: ctrl-click a checkbox to set every
+row at once. Orthogonally there is a name search and a single-active filter.
+
+For this project the analogy is direct: one component list, switchable between
+*draw order · source · selection · included in solve · labelled · binding a
+constraint*, with the checkbox column meaning something different in each.
+
+#### Pattern 2 — a bookmark stores where *and when*
+
+ArcGIS Pro bookmarks are *"a navigation shortcut to a position on a map"* — and
+they also store *"time- or range-enabled layer properties"*. So a bookmark
+captures camera **plus** the temporal slice **plus** the position on any numeric
+range. Here that is: camera, selected bus, and the instant.
+
+The related idea is the **range slider**, which is the time slider generalised
+to any numeric field: *"an on-screen control to help you filter and step through
+numeric data ranges"*, with **named ranges binding several layers to one
+control**. For a grid that maps onto load level, voltage band, cost tier,
+contingency index.
+
+#### Pattern 3 — the three terms of a time control
+
+ArcGIS keeps these separate and they are genuinely different:
+
+1. **Slider extent** — the addressable range, settable to all time-aware layers,
+   only the visible ones, one specific layer, or a custom span.
+2. **Visible span** — the filter actually applied, which can be a *range* with
+   two handles rather than a point. Disabling one handle means "all time before"
+   or "all time after".
+3. **Step interval** — the increment the forward and back buttons move by.
+
+Ours currently conflates all three into a point. The step interval is the one
+that matters next: stepping a year by one hour is not a control anybody can use.
+
+Also worth stealing: *"Each time step is cached so the next time you play the
+visualization, it pulls from the cache."*
+
+#### Pattern 4 — reactive dataflow with an invalidation hook
+
+Observable runs cells as a DAG rather than a sequence: *"only the referencing
+cells run, then their referencing cells, and so on — other cells are
+unaffected."* The part that matters for a solver-backed UI is **invalidation
+promises**, which clean up when a cell re-runs. That is the cancellation hook,
+and it is the shape the third engine blocker needs.
+
+Its view contract is also refreshingly small: a view is any element with a
+`.value` that dispatches an `input` event. No framework, no registration.
+
+#### Two smaller things
+
+- **Progressive disclosure has a hard limit.** Nielsen: *"designs that go beyond
+  2 disclosure levels typically have low usability because users often get lost
+  when moving between the levels."*
+- **The 80/20 rule does not apply to expert tools.** Spolsky: *"Unfortunately,
+  it's never the same 20%. Everybody uses a different set of features."* Which is
+  the argument for the palette rather than for a smaller feature set.
+
 ### The design system, which is a Stage 0 concern and not a Stage 6 polish pass
 
 The reference implementation to study is Rerun's `re_ui`, because it is the only
