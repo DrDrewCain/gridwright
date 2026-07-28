@@ -729,6 +729,107 @@ after them is downstream of what the browser can actually do.
       It is now measured, in the actual target rather than extrapolated from
       native numbers. See *What the browser target actually costs* below.
 
+### A third dimension is affordable, and it is not a renderer
+
+Measured against vendored egui/eframe/epaint 0.35 sources and real benchmark
+crates, not recalled. Numbers are native Apple Silicon, release, single
+threaded, at 2x pixels-per-point.
+
+**The recommendation is software axonometric projection into a cached
+`Arc<Mesh>`, drawn with the `egui::Painter` already in use.** No second
+renderer, no shader-version matrix, no new dependency, and behaviour identical
+between native and web.
+
+| what | cost |
+| --- | --- |
+| project 132,000 vertices, 3D to 2D affine | 0.093 ms |
+| depth-sort 33,000 faces and rebuild 198,000 indices | 0.534 ms |
+| re-emit the cached `Arc<Mesh>` (clone only) | ~0 ms |
+| **static camera, full 13k-bus network** | **0.10 ms/frame, 1 draw call** |
+| **camera moving** | **0.73 ms/frame, 1 draw call** |
+| the naive alternative: 33k individual shapes | 1.75 ms/frame |
+
+Budget wasm at 2-4x native, so roughly 2-3 ms on a camera-change frame. That is
+comfortable inside a 16 ms budget for a network larger than anything the solver
+can handle in a tab.
+
+`Shape::Mesh` holds an `Arc<Mesh>`, which is what makes the caching free: build
+the projected mesh when the camera moves, clone the `Arc` every other frame.
+
+**Two measured cliffs to stay off.**
+
+- **Feathering is the dominant cost.** Anti-aliasing roughly triples the
+  triangle count on strokes: 20k line segments tessellate in 2.22 ms with it and
+  0.63 ms without. `ctx.tessellation_options_mut(|o| o.feathering = false)` for
+  bulk geometry is a 3.5x win.
+- **Circle radius has a sharp threshold.** epaint serves small discs from a
+  prerasterized atlas as four-vertex quads and falls back to path tessellation
+  above that: 13,000 circles cost 0.53 ms at r=3 and **5.77 ms and 17 MB of
+  vertex buffer** at r=9. Bus glyphs stay small, or get drawn as our own quads.
+
+**Ordering is exactly the guarantee a painter's algorithm needs.** `PaintList`
+is a `Vec<ClippedShape>` and the tessellator documents that shapes are
+tessellated in the order given, so within a layer emission order *is* z-order.
+`Painter::add` returns a `ShapeIdx` and `Painter::set` overwrites in place
+preserving position — so slots can be reserved and filled later, but nothing can
+be reordered after emission. Sort before emitting.
+
+**Text can rotate, and it is free.** `TextShape` has `pub angle: f32` and a
+`.with_angle()` builder; 2,000 labels cost 0.14 ms rotated or not. What is not
+available is *shear* — `TSTransform` is uniform scale plus translation only — so
+true axonometric type sheared into the ground plane is out. That is the right
+answer anyway: sheared type is unreadable, and every real map billboards its
+labels.
+
+**The painter's-algorithm caveat, which decides this.** A per-face depth sort is
+*exact* only for geometry monotone in depth. A ground plane with vertical
+extrusions is; interpenetrating geometry is not, and with 20k line segments
+there will be cyclic overlaps no sort can order correctly. **Confirm the layout
+is depth-monotone before committing to this**, because it is the one thing the
+GL path would fix.
+
+#### The escape hatch, and the trap in it
+
+`egui_glow::CallbackFn` is there if per-pixel depth, transparency sorting or
+>100k elements are ever needed. Three failure modes, all silent or confusing:
+
+1. **The depth buffer is inverted from the obvious assumption.** On web,
+   eframe requests the WebGL2 context with no attributes dictionary, so the
+   Khronos default `depth = true` applies and a depth buffer is there — while
+   `WebOptions::depth_buffer` is inert and documents itself as unused. Natively,
+   `NativeOptions::depth_buffer` defaults to **0**, so there is **no depth
+   attachment at all**, and `glEnable(GL_DEPTH_TEST)` plus
+   `glClear(GL_DEPTH_BUFFER_BIT)` then **succeed with no GL error and do
+   nothing**. Web works and native silently does not. Set `depth_buffer: 24` and
+   assert the attachment at startup rather than trusting it.
+2. **`WebGlContextOption` defaults to `BestFirst`**, which can land on WebGL1,
+   where `#version 300 es` will not compile. Force `WebGl2`, and take the
+   `#version` line from `ShaderVersion::get(gl).version_declaration()` rather
+   than from a `cfg!(target_arch = "wasm32")` guess.
+3. **Capturing an `Arc<glow::Context>` in the callback compiles natively and
+   fails on wasm.** On wasm `glow::Context` holds `RefCell<SlotMap<..>>` and is
+   `!Send + !Sync`, while `CallbackFn::new` demands both. Take the context from
+   `painter.gl()` *inside* the closure and capture only the handles, which are
+   plain `Copy` keys on both targets.
+
+egui restores its own state after every callback and never clears depth; the
+scissor rect is still set, so clearing depth inside the callback is correctly
+confined to the widget.
+
+#### What was ruled out
+
+- **`three-d` 0.19** is genuinely compatible — it re-exports the same glow 0.17,
+  and `Context::from_gl_context` exists to adopt a foreign context. Verified by
+  building it against eframe 0.35 for both targets. Only worth it for a real
+  scene graph and lighting; its `Context` is also `!Send` on wasm and has to
+  live in a `thread_local!`, and `RenderTarget::screen` binds framebuffer 0 so
+  clears need scoping to the viewport.
+- **`rerun`/`re_renderer` and `bevy_egui`** are wgpu-only and would fight eframe
+  for the context.
+- **`egui_plot`** has no 3D at all.
+- **`transform-gizmo-egui`** is architecturally ideal — backend-agnostic, CPU to
+  `epaint::Mesh` — and pinned to egui 0.34. Revisit after it bumps.
+
 ### What the browser target actually costs
 
 Measured 26 July 2026, warm, n=5, identical code compiled twice. These numbers
