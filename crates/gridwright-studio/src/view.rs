@@ -24,25 +24,6 @@ const MAX_ZOOM: f32 = 40_000.0;
 /// hit on the circle itself would make hovering a test of aim.
 const PICK_RADIUS: f32 = 9.0;
 
-/// Distinct rather than pretty, and fixed rather than generated.
-///
-/// Country is the axis this engine reports cross-border flows on, so it is the
-/// grouping worth seeing at a glance. A generated hue-per-string would give two
-/// neighbouring countries near-identical colours often enough to matter; a short
-/// hand-picked ramp collides less in the cases anyone looks at, and collides
-/// visibly rather than subtly when it does.
-const COUNTRY_COLORS: [Color32; 10] = [
-    Color32::from_rgb(0x4c, 0x9f, 0xe0),
-    Color32::from_rgb(0xe0, 0x8b, 0x4c),
-    Color32::from_rgb(0x6d, 0xc2, 0x6d),
-    Color32::from_rgb(0xd0, 0x62, 0x9a),
-    Color32::from_rgb(0xc9, 0xb4, 0x3f),
-    Color32::from_rgb(0x8f, 0x7d, 0xd6),
-    Color32::from_rgb(0x4f, 0xc0, 0xb8),
-    Color32::from_rgb(0xd9, 0x5f, 0x5f),
-    Color32::from_rgb(0x9a, 0xa5, 0xb1),
-    Color32::from_rgb(0xa8, 0x7c, 0x52),
-];
 
 /// AC corridors and transport corridors are different objects, not different
 /// ratings of one, so they are told apart before anything else on the canvas.
@@ -51,7 +32,6 @@ const COUNTRY_COLORS: [Color32; 10] = [
 const AC_COLOR: Color32 = Color32::from_rgb(0x6a, 0x74, 0x82);
 const TRANSPORT_COLOR: Color32 = Color32::from_rgb(0x3f, 0x93, 0x8c);
 const LINK_COLOR: Color32 = Color32::from_rgb(0x86, 0x6c, 0xa8);
-const SHED_COLOR: Color32 = Color32::from_rgb(0xff, 0x5c, 0x4d);
 
 pub struct NetworkView {
     /// Screen points per model unit.
@@ -540,7 +520,7 @@ impl NetworkView {
             // information on a screen where colour is supposed to mean
             // something.
             let ink = if shed {
-                SHED_COLOR
+                crate::theme::TRIP
             } else {
                 crate::theme::INK
             };
@@ -588,7 +568,7 @@ impl NetworkView {
                 painter.rect_stroke(
                     bar.expand(3.0),
                     1.0,
-                    Stroke::new(1.5, SHED_COLOR),
+                    Stroke::new(1.5, crate::theme::TRIP),
                     eframe::egui::StrokeKind::Outside,
                 );
             }
@@ -721,20 +701,6 @@ impl NetworkView {
             self.goal = Some((centre, zoom));
         }
     }
-}
-
-/// FNV-1a over the country code.
-///
-/// Any stable hash would do. What matters is that it does not depend on process
-/// state: `DefaultHasher` is seeded per process in some std versions, which
-/// would repaint the same network in different colours on each launch.
-pub fn country_color(country: &str) -> Color32 {
-    let mut h: u32 = 0x811c_9dc5;
-    for byte in country.as_bytes() {
-        h ^= u32::from(*byte);
-        h = h.wrapping_mul(0x0100_0193);
-    }
-    COUNTRY_COLORS[h as usize % COUNTRY_COLORS.len()]
 }
 
 /// Identifies one circuit, so a bus can order the things attached to it.

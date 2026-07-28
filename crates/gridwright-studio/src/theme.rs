@@ -80,13 +80,6 @@ pub const OFF: Color32 = Color32::from_rgb(0x5A, 0x64, 0x72);
 /// Base spacing unit. Four rather than eight: an inspector at eight is a form,
 /// and this is an instrument.
 pub const UNIT: f32 = 4.0;
-
-/// Row height for lists and table rows.
-///
-/// Twenty-four because it is on the spacing grid *and* is exactly WCAG 2.2's
-/// minimum target size, so a row is a legal hit target without special pleading.
-pub const ROW: f32 = 24.0;
-
 /// Install the theme. Called once, before the first frame.
 pub fn apply(ctx: &egui::Context) {
     // Pin the theme before installing it.
