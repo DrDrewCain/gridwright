@@ -7,7 +7,9 @@
 //! anything heavier would be paying for a retained scene that changes every time
 //! the camera moves anyway.
 
-use eframe::egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2};
+use eframe::egui::{
+    Align2, Color32, FontId, Painter, Pos2, Rect, Sense, Stroke, Ui, Vec2, pos2, vec2,
+};
 use gridwright_net::Network;
 
 /// Screen points per model unit at the widest sensible view, and at the closest.
@@ -475,6 +477,10 @@ impl NetworkView {
         // width of the pane at high zoom.
         let half = (self.zoom * 0.022).clamp(6.0, 30.0);
         let thickness = (half * 0.30).clamp(3.0, 8.0);
+        // Symbols scale with the bar but stop growing sooner. A generator ring
+        // as tall as the busbar is wide stops reading as a machine hanging off
+        // a conductor and starts reading as a lollipop.
+        let glyph = (half * 0.34).clamp(2.5, 9.0);
         let pointer = response.hover_pos();
 
         // What is attached to each bus, computed once. Asking
@@ -489,6 +495,12 @@ impl NetworkView {
         }
         for l in &net.loads {
             if let Some(f) = has_load.get_mut(l.bus) {
+                *f = true;
+            }
+        }
+        let mut has_store = vec![false; net.buses.len()];
+        for st in &net.storage {
+            if let Some(f) = has_store.get_mut(st.bus) {
                 *f = true;
             }
         }
@@ -548,18 +560,14 @@ impl NetworkView {
             // one-line diagram uses, and it means a glance tells you where
             // power enters and where it leaves without reading a legend.
             if has_gen[b] {
-                painter.circle_filled(
-                    s + vec2(0.0, -(thickness * 0.5 + 4.0)),
-                    (thickness * 0.9).max(2.0),
-                    ink,
-                );
+                generator(painter, s - vec2(0.0, thickness * 0.5), glyph, ink);
+            }
+            if has_store[b] {
+                let x = if has_gen[b] { glyph * 2.6 } else { 0.0 };
+                storage(painter, s + vec2(x, -thickness * 0.5), glyph, ink);
             }
             if has_load[b] {
-                let base = s + vec2(0.0, thickness * 0.5);
-                painter.line_segment(
-                    [base, base + vec2(0.0, 5.0)],
-                    Stroke::new(thickness * 0.7, ink),
-                );
+                load(painter, s + vec2(0.0, thickness * 0.5), glyph, ink);
             }
 
             // Where the system failed, which the domain model treats as the
@@ -794,4 +802,73 @@ fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
         f(a.g(), b.g()),
         f(a.b(), b.b()),
     )
+}
+
+/// A generator: a circle on a stem, with a sine inside it for AC.
+///
+/// This is the IEC symbol, and it is worth the four extra shapes. A filled dot
+/// says "something is here"; a circle with a sine in it says "a rotating
+/// machine feeding alternating current is here", which is the same amount of
+/// ink telling a power engineer something they can act on.
+fn generator(painter: &Painter, bar_top: Pos2, r: f32, ink: Color32) {
+    let centre = bar_top - vec2(0.0, r + 5.0);
+    painter.line_segment(
+        [bar_top, bar_top - vec2(0.0, 5.0)],
+        Stroke::new(1.2, ink),
+    );
+    painter.circle_stroke(centre, r, Stroke::new(1.2, ink));
+
+    // Below about five pixels of radius the sine is three pixels of noise
+    // inside a ring, so the symbol falls back to a filled disc -- still a
+    // generator by position, just no longer claiming to show its waveform.
+    if r < 5.0 {
+        painter.circle_filled(centre, r * 0.55, ink);
+        return;
+    }
+    let w = r * 0.62;
+    let pts: Vec<Pos2> = (0..=12)
+        .map(|i| {
+            let t = i as f32 / 12.0;
+            centre + vec2(-w + 2.0 * w * t, -(t * std::f32::consts::TAU).sin() * r * 0.34)
+        })
+        .collect();
+    painter.add(eframe::egui::Shape::line(pts, Stroke::new(1.1, ink)));
+}
+
+/// A load: a solid arrowhead on a stem, pointing away from the bar.
+///
+/// The arrow is the whole point of the symbol -- it is the one thing on the
+/// diagram that states a direction, and withdrawal is the only quantity here
+/// whose direction is fixed rather than solved for.
+fn load(painter: &Painter, bar_bottom: Pos2, r: f32, ink: Color32) {
+    let tip = bar_bottom + vec2(0.0, r * 2.2 + 4.0);
+    painter.line_segment(
+        [bar_bottom, tip - vec2(0.0, r * 1.5)],
+        Stroke::new(1.2, ink),
+    );
+    painter.add(eframe::egui::Shape::convex_polygon(
+        vec![
+            tip,
+            tip - vec2(r * 0.75, r * 1.5),
+            tip + vec2(r * 0.75, -r * 1.5),
+        ],
+        ink,
+        Stroke::NONE,
+    ));
+}
+
+/// Storage: the battery symbol, a long plate and a short one.
+///
+/// Drawn on the injection side even though storage withdraws too. It is the
+/// only component on the diagram that does both, and the convention has no
+/// place for that -- putting it above at least groups it with the other things
+/// that can be dispatched.
+fn storage(painter: &Painter, bar_top: Pos2, r: f32, ink: Color32) {
+    let stroke = Stroke::new(1.2, ink);
+    let stem = bar_top - vec2(0.0, 4.0);
+    painter.line_segment([bar_top, stem], stroke);
+    for (i, w) in [r * 1.1, r * 0.55].into_iter().enumerate() {
+        let y = stem.y - i as f32 * 3.5;
+        painter.line_segment([pos2(stem.x - w, y), pos2(stem.x + w, y)], stroke);
+    }
 }
