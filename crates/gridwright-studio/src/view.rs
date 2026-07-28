@@ -828,30 +828,59 @@ impl NetworkView {
             }
         }
 
-        // Names, once the bars are far enough apart to carry them. Below this
-        // they overlap into an unreadable mat, and an unreadable label is worse
-        // than none because it still costs the pixels.
-        if net.buses.len() <= 200 || half >= 14.0 {
-            for (b, bus) in net.buses.iter().enumerate() {
-                let Some(&p) = layout.get(b) else { continue };
-                if !visible.contains(p) {
-                    continue;
-                }
-                let s = self.screen_of(rect, p);
-                let at = s + vec2(0.0, thickness * 0.5 + 19.0);
-                // A knocked-out background rather than a halo stroke. Edges
-                // pass behind labels constantly in a meshed network, and text
-                // with a line through it is unreadable in a way that no amount
-                // of contrast fixes.
-                let galley = painter.layout_no_wrap(
-                    bus.name.clone(),
-                    FontId::proportional(10.0),
-                    crate::theme::INK_DIM,
-                );
-                let box_ = Rect::from_center_size(at, galley.size()).expand2(vec2(3.0, 1.0));
-                painter.rect_filled(box_, 2.0, crate::theme::SLATE_WORK);
-                painter.galley(box_.min + vec2(3.0, 1.0), galley, crate::theme::INK_DIM);
+        // Names, decluttered.
+        //
+        // The old rule was "label everything under two hundred buses", which is
+        // a claim about the file rather than about the picture: a hundred and
+        // eighteen buses zoomed out is a solid mat of overlapping text, and one
+        // bus zoomed in has room for a paragraph. What decides legibility is
+        // whether two labels land on top of each other, so that is what is
+        // tested.
+        //
+        // This is what every map renderer calls declutter, and the ordering is
+        // the part that matters: labels are placed in a fixed sequence, so the
+        // same bus wins the same collision on every frame. Sorting by anything
+        // that changes with the camera would make names flicker in and out as
+        // the reader pans, which is worse than losing them consistently.
+        let mut placed: Vec<Rect> = Vec::new();
+        for (b, bus) in net.buses.iter().enumerate() {
+            let Some(&p) = layout.get(b) else { continue };
+            if !visible.contains(p) {
+                continue;
             }
+            let s = self.screen_of(rect, p);
+            let at = s + vec2(0.0, thickness * 0.5 + 19.0);
+            let galley = painter.layout_no_wrap(
+                bus.name.clone(),
+                FontId::proportional(10.0),
+                crate::theme::INK_DIM,
+            );
+            let box_ = Rect::from_center_size(at, galley.size()).expand2(vec2(3.0, 1.0));
+
+            // The selected bus is labelled whatever else is in the way. It is
+            // the one the reader asked about, and losing its name to a
+            // collision with a neighbour they did not ask about is the one
+            // failure this rule must not have.
+            let mine = self.selected == Some(b);
+            if !mine && placed.iter().any(|r| r.intersects(box_)) {
+                continue;
+            }
+            placed.push(box_);
+
+            // A knocked-out background rather than a halo stroke. Edges pass
+            // behind labels constantly in a meshed network, and text with a
+            // line through it is unreadable in a way no amount of contrast
+            // fixes.
+            painter.rect_filled(box_, 2.0, crate::theme::SLATE_WORK);
+            painter.galley(
+                box_.min + vec2(3.0, 1.0),
+                galley,
+                if mine {
+                    crate::theme::INK_STRONG
+                } else {
+                    crate::theme::INK_DIM
+                },
+            );
         }
 
         // A click takes the bus under the pointer, or clears when there is
