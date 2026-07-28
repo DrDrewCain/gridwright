@@ -97,7 +97,14 @@ impl NetworkView {
     /// by the caller rather than derived here: it is a reduction over every
     /// snapshot, and doing that per frame would make the cost of drawing scale
     /// with the length of the horizon for a picture that does not change.
-    pub fn ui(&mut self, ui: &mut Ui, net: Option<&Network>, layout: &[Pos2], peak_shed: &[f64]) {
+    pub fn ui(
+        &mut self,
+        ui: &mut Ui,
+        net: Option<&Network>,
+        layout: &[Pos2],
+        peak_shed: &[f64],
+        prices: &[f64],
+    ) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
         let painter = painter.with_clip_rect(rect);
@@ -135,8 +142,9 @@ impl NetworkView {
 
         self.draw_edges(&painter, rect, visible, net, layout);
         self.draw_buses(
-            ui, &painter, rect, visible, net, layout, peak_shed, &response,
+            ui, &painter, rect, visible, net, layout, peak_shed, prices, &response,
         );
+        self.draw_key(&painter, rect, prices);
     }
 
     fn handle_camera(&mut self, ui: &Ui, response: &eframe::egui::Response, rect: Rect) {
@@ -295,6 +303,71 @@ impl NetworkView {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// The price ramp, spelled out.
+    ///
+    /// An unlabelled colour ramp is decoration: the reader can see that two
+    /// buses differ but not by how much, or even in which direction. The ends
+    /// carry numbers so the encoding is readable without being explained.
+    fn draw_key(&self, painter: &eframe::egui::Painter, rect: Rect, prices: &[f64]) {
+        use crate::theme;
+
+        if prices.is_empty() {
+            return;
+        }
+        let (lo, hi) = prices
+            .iter()
+            .fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+        let font = eframe::egui::FontId::proportional(10.0);
+
+        if hi - lo < 1e-9 {
+            // A network with no congestion has one price everywhere, and a ramp
+            // across a range of zero would imply variation that is not there.
+            painter.text(
+                rect.left_bottom() + vec2(12.0, -12.0),
+                eframe::egui::Align2::LEFT_BOTTOM,
+                format!("{lo:.2} /MWh at every bus"),
+                font,
+                theme::INK_DIM,
+            );
+            return;
+        }
+
+        let bar = Rect::from_min_size(rect.left_bottom() + vec2(12.0, -26.0), vec2(108.0, 5.0));
+        // Painted in steps rather than as a gradient mesh: at this size the
+        // banding is invisible, and it keeps the paint list to plain rects.
+        let steps = 24;
+        for i in 0..steps {
+            let t = i as f32 / (steps - 1) as f32;
+            let cell = Rect::from_min_size(
+                bar.min + vec2(bar.width() * t, 0.0),
+                vec2(bar.width() / steps as f32 + 1.0, bar.height()),
+            );
+            painter.rect_filled(cell, 0.0, lerp_color(theme::INK_DIM, theme::INK_STRONG, t));
+        }
+
+        painter.text(
+            bar.left_top() + vec2(0.0, -3.0),
+            eframe::egui::Align2::LEFT_BOTTOM,
+            format!("{lo:.0}"),
+            font.clone(),
+            theme::INK_DIM,
+        );
+        painter.text(
+            bar.right_top() + vec2(0.0, -3.0),
+            eframe::egui::Align2::RIGHT_BOTTOM,
+            format!("{hi:.0} /MWh"),
+            font.clone(),
+            theme::INK_DIM,
+        );
+        painter.text(
+            bar.left_bottom() + vec2(0.0, 3.0),
+            eframe::egui::Align2::LEFT_TOP,
+            "mean nodal price",
+            font,
+            theme::INK_DIM,
+        );
+    }
+
     fn draw_buses(
         &mut self,
         ui: &Ui,
@@ -304,6 +377,7 @@ impl NetworkView {
         net: &Network,
         layout: &[Pos2],
         peak_shed: &[f64],
+        prices: &[f64],
         response: &eframe::egui::Response,
     ) {
         // A bus is drawn as a bar, not as a dot.
@@ -337,6 +411,17 @@ impl NetworkView {
             }
         }
 
+        // The spread across the network, so the ramp uses its whole range. An
+        // absolute scale would render a healthy system as one flat colour,
+        // since prices in a network without congestion are all nearly equal --
+        // and the interesting thing about nodal prices is precisely where they
+        // stop being equal.
+        let price_span = (!prices.is_empty()).then(|| {
+            prices
+                .iter()
+                .fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)))
+        });
+
         let mut best: Option<(usize, f32)> = None;
 
         for (b, _bus) in net.buses.iter().enumerate() {
@@ -356,6 +441,22 @@ impl NetworkView {
                 SHED_COLOR
             } else {
                 crate::theme::INK
+            };
+
+            // Price raises the bar's lightness rather than introducing a hue.
+            //
+            // Deliberate: hue in this interface means state -- amber is stale,
+            // red is unserved energy -- and a price heatmap in a fourth colour
+            // would compete with those for the channel that carries meaning.
+            // Lightness is the free axis, and it is also the one that survives
+            // every form of colour vision deficiency, which a blue-to-red ramp
+            // does not. Expensive buses glow; cheap ones recede.
+            let ink = match price_span.zip(prices.get(b)) {
+                Some(((lo, hi), &v)) if !shed => {
+                    let t = ((v - lo) / (hi - lo).max(1e-9)).clamp(0.0, 1.0) as f32;
+                    lerp_color(crate::theme::INK_DIM, crate::theme::INK_STRONG, t)
+                }
+                _ => ink,
             };
 
             let bar = Rect::from_center_size(s, vec2(half * 2.0, thickness));
@@ -594,4 +695,14 @@ impl TapSlots {
         let span = half * 1.5;
         -span * 0.5 + span * (i as f32 + 0.5) / n as f32
     }
+}
+
+/// Blend two colours, for the price ramp.
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color32::from_rgb(
+        f(a.r(), b.r()),
+        f(a.g(), b.g()),
+        f(a.b(), b.b()),
+    )
 }

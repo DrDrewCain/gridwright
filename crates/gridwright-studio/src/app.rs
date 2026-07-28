@@ -20,6 +20,8 @@ pub struct StudioApp {
     /// Peak unserved energy per bus over the horizon, for the view to mark.
     /// Reduced once when a result arrives; see `NetworkView::ui`.
     peak_shed: Vec<f64>,
+    /// One price per bus, for the canvas ramp. Empty until a solve returns.
+    bus_price: Vec<f64>,
     /// The last thing that went wrong while opening a file. Kept until the next
     /// load rather than shown for a few frames: a person who dropped the wrong
     /// file may not be looking at the screen when it lands.
@@ -61,6 +63,7 @@ impl StudioApp {
             backend: Box::new(new_solver(&cc.egui_ctx)),
             outcome: None,
             peak_shed: Vec::new(),
+            bus_price: Vec::new(),
             load_error: None,
         }
     }
@@ -77,6 +80,8 @@ impl StudioApp {
                 self.view.reset();
                 self.outcome = None;
                 self.peak_shed.clear();
+            self.bus_price.clear();
+                self.bus_price.clear();
                 self.load_error = None;
 
                 // Solve immediately when it is cheap enough to be
@@ -554,6 +559,23 @@ impl StudioApp {
                 .collect(),
             Err(_) => Vec::new(),
         };
+        // Mean over the horizon, not peak. Shed is an event -- one bad hour is
+        // the story -- but price is a condition, and a single congested hour
+        // should not repaint a bus that is ordinary the rest of the year.
+        self.bus_price = match &outcome {
+            Ok(solved) => solved
+                .prices
+                .iter()
+                .map(|series| {
+                    if series.is_empty() {
+                        0.0
+                    } else {
+                        series.iter().sum::<f64>() / series.len() as f64
+                    }
+                })
+                .collect(),
+            Err(_) => Vec::new(),
+        };
         self.outcome = Some(outcome);
     }
 }
@@ -589,7 +611,8 @@ impl eframe::App for StudioApp {
             .stroke(egui::Stroke::new(1.0, crate::theme::SLATE_LINE));
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             let net = self.loaded.as_ref().map(|l| &l.network);
-            self.view.ui(ui, net, &self.positions, &self.peak_shed);
+            self.view
+                .ui(ui, net, &self.positions, &self.peak_shed, &self.bus_price);
         });
     }
 }
