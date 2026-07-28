@@ -122,3 +122,35 @@ jobs:
             exit 1
           fi
           echo "highs-sys correctly absent from the wasm graph"
+
+      # The studio is what a person actually opens, and it broke twice during
+      # development in ways nothing here would have caught: once when a
+      # `gridwright-io` dependency was added for reading directories, which has
+      # no meaning in a browser and had to be made target-conditional, and once
+      # when a warning became an error under `-D warnings`.
+      #
+      # `--lib` only. The crate also has a `[[bin]]` for the native window, and
+      # a bin target is not target-conditional -- building it for wasm fails on
+      # the winit event loop rather than on anything to do with the bundle.
+      - name: Build the studio for wasm
+        run: cargo build --release --target wasm32-unknown-unknown -p gridwright-studio --lib
+
+      # The same guard as the worker's, applied to the crate a browser actually
+      # loads. The studio reaches the solver by its own path, and a feature
+      # unification that pulled HiGHS in through *that* path would leave the
+      # worker's guard green while breaking every real build.
+      #
+      # Note what is deliberately *not* guarded here: `gridwright-io` does reach
+      # the studio's wasm graph, through the worker, and that is correct -- the
+      # readers are meant to run in the browser. The studio's own direct,
+      # target-conditional dependency on it is for reading *directories*, which
+      # a browser has no concept of. A tree check cannot tell those two paths
+      # apart, so the build step above is what covers it.
+      - name: Assert HiGHS is absent from the studio's wasm graph
+        run: |
+          if cargo tree --target wasm32-unknown-unknown \
+               -p gridwright-studio -i highs-sys 2>/dev/null; then
+            echo "::error::highs-sys reached the studio's wasm graph"
+            exit 1
+          fi
+          echo "highs-sys correctly absent from the studio's wasm graph"
