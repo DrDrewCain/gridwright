@@ -158,6 +158,7 @@ impl NetworkView {
             self.circuit_readout(ui, &painter, net, overlay.loading, c, at);
         }
         self.draw_key(&painter, rect, overlay.prices);
+        self.draw_keys_hint(&painter, rect);
     }
 
     fn handle_camera(&mut self, ui: &Ui, response: &eframe::egui::Response, rect: Rect) {
@@ -277,6 +278,25 @@ impl NetworkView {
             ui.ctx().request_repaint();
         }
         let _ = rect;
+    }
+
+    /// What the keyboard does, where the keyboard is used.
+    ///
+    /// Shortcuts nobody is told about are shortcuts nobody has. Putting this in
+    /// a menu or a help dialog would mean a reader has to already suspect the
+    /// keys exist before they can find out that they do.
+    ///
+    /// Opposite corner from the price key so the two do not stack, and in the
+    /// dimmest ink in the palette: it is a thing you notice once and then stop
+    /// seeing, which is the correct life cycle for an instruction.
+    fn draw_keys_hint(&self, painter: &eframe::egui::Painter, rect: Rect) {
+        painter.text(
+            rect.right_bottom() + vec2(-12.0, -12.0),
+            Align2::RIGHT_BOTTOM,
+            "scroll zoom · drag pan · F fit · esc clear",
+            FontId::proportional(10.0),
+            crate::theme::INK_DIM,
+        );
     }
 
     /// The canvas with nothing on it.
