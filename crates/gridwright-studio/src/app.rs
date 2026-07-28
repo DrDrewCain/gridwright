@@ -31,6 +31,12 @@ pub struct StudioApp {
     /// Which snapshot the canvas is showing, or the whole horizon at once.
     instant: Instant,
     palette: crate::palette::Palette,
+    /// How long the last solve took, in seconds, as reported by the backend.
+    ///
+    /// Asked of the backend rather than measured here, because only it knows
+    /// whether it solved on a thread or inline inside one frame. See
+    /// [`SolveBackend::took`].
+    solve_took: Option<f64>,
     /// The last thing that went wrong while opening a file. Kept until the next
     /// load rather than shown for a few frames: a person who dropped the wrong
     /// file may not be looking at the screen when it lands.
@@ -77,6 +83,7 @@ impl StudioApp {
             line_load: Vec::new(),
             instant: Instant::Horizon,
             palette: crate::palette::Palette::default(),
+            solve_took: None,
             load_error: None,
         }
     }
@@ -109,6 +116,7 @@ impl StudioApp {
         // than clamp: silently landing on the last hour of a shorter year looks
         // like the scrubber moved itself.
         self.instant = Instant::Horizon;
+        self.solve_took = None;
 
         // Solve immediately when it is cheap enough to be imperceptible.
         // Asking someone to press a button to find out something that takes ten
@@ -527,6 +535,31 @@ impl StudioApp {
                         },
                     );
                     reading(ui, "Total shed", format!("{:.3}", solved.total_shed));
+                    if let Some(t) = self.solve_took {
+                        // Three scales, because this number spans four orders
+                        // of magnitude. The 14-bus case solves in a fraction of
+                        // a millisecond and a thousand-bus one takes seconds,
+                        // and a single format makes one of those two read as
+                        // zero -- which is a measurement reported as an absence.
+                        let ms = t * 1000.0;
+                        reading(
+                            ui,
+                            "Took",
+                            match ms {
+                                // Browsers coarsen `performance.now()` as a
+                                // side-channel defence -- Chrome to about a
+                                // tenth of a millisecond without cross-origin
+                                // isolation -- and the 14-bus case solves
+                                // faster than that. Saying so beats printing a
+                                // zero, which claims a measurement of nothing
+                                // rather than nothing measurable.
+                                _ if ms < 0.05 => "< 0.1 ms".to_string(),
+                                _ if ms < 10.0 => format!("{ms:.1} ms"),
+                                _ if ms < 1000.0 => format!("{ms:.0} ms"),
+                                _ => format!("{t:.1} s"),
+                            },
+                        );
+                    }
                     if !solved.built.is_empty() {
                         reading(ui, "Capacity built", thousands(solved.built.len()));
                     }
@@ -891,6 +924,7 @@ impl eframe::App for StudioApp {
         self.take_dropped(ui.ctx());
 
         if let Some(outcome) = self.backend.take_result() {
+            self.solve_took = self.backend.took();
             self.absorb(outcome);
         }
 

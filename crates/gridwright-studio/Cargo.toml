@@ -79,4 +79,12 @@ wasm-bindgen = "0.2.100"
 # eframe's web start-up is async, and a `#[wasm_bindgen]` entry point cannot be,
 # so the future has to be handed somewhere that will drive it.
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Document", "Element", "HtmlCanvasElement", "Window"] }
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Element",
+    "HtmlCanvasElement",
+    "Window",
+    # `performance.now()`, which is the only monotonic clock a wasm sandbox has.
+    # `std::time::Instant` panics there.
+    "Performance",
+] }

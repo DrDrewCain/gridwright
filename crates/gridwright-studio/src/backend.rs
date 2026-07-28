@@ -39,6 +39,17 @@ pub trait SolveBackend {
     /// True between [`submit`](SolveBackend::submit) and the result appearing.
     fn is_busy(&self) -> bool;
 
+    /// How long the last solve took, in seconds.
+    ///
+    /// Measured by the backend rather than by the caller, because only the
+    /// backend knows whether it solved on a thread or inline. The web backend
+    /// solves *within* one frame, so a caller timing it against the frame clock
+    /// measures zero however long it actually took -- which is a wrong number
+    /// stated confidently, the one thing this interface is careful not to do.
+    fn took(&self) -> Option<f64> {
+        None
+    }
+
     /// The result, once, when there is one. Never blocks.
     fn take_result(&mut self) -> Option<Result<Solved, Failure>>;
 }
@@ -70,11 +81,18 @@ mod native {
         /// happened to move the mouse — which looks exactly like a hang.
         ctx: egui::Context,
         rx: Option<Receiver<Result<Solved, Failure>>>,
+        started: Option<std::time::Instant>,
+        took: Option<f64>,
     }
 
     impl ThreadSolver {
         pub fn new(ctx: egui::Context) -> Self {
-            Self { ctx, rx: None }
+            Self {
+                ctx,
+                rx: None,
+                started: None,
+                took: None,
+            }
         }
     }
 
@@ -86,6 +104,8 @@ mod native {
         fn submit(&mut self, network: &Network) {
             let (tx, rx) = channel();
             self.rx = Some(rx);
+            self.started = Some(std::time::Instant::now());
+            self.took = None;
 
             // Cloned rather than shared behind a lock. The alternative is for
             // the UI to hold a network it cannot edit while a solve runs, and
@@ -108,10 +128,15 @@ mod native {
             self.rx.is_some()
         }
 
+        fn took(&self) -> Option<f64> {
+            self.took
+        }
+
         fn take_result(&mut self) -> Option<Result<Solved, Failure>> {
             match self.rx.as_ref()?.try_recv() {
                 Ok(out) => {
                     self.rx = None;
+                    self.took = self.started.take().map(|t| t.elapsed().as_secs_f64());
                     Some(out)
                 }
                 Err(TryRecvError::Empty) => None,
@@ -121,6 +146,7 @@ mod native {
                 // produced nothing.
                 Err(TryRecvError::Disconnected) => {
                     self.rx = None;
+                    self.started = None;
                     Some(Err(Failure {
                         kind: "solve".into(),
                         message: "the solver thread stopped without returning a result".into(),
@@ -165,6 +191,7 @@ mod web {
         /// "solving" state before the thread stops answering, so a slow solve
         /// looks like work rather than like a hang.
         pending: Option<Network>,
+        took: Option<f64>,
     }
 
     /// Rows above which the in-page solve is refused rather than attempted.
@@ -182,9 +209,24 @@ mod web {
         }
     }
 
+    /// Milliseconds since the page loaded, from the browser's own clock.
+    ///
+    /// `std::time::Instant` panics on `wasm32-unknown-unknown` -- there is no
+    /// monotonic clock in the sandbox -- so this goes through
+    /// `performance.now()`, which is the one the platform provides. Absent in a
+    /// context with no `window`, which is why it returns an `Option` rather
+    /// than pretending.
+    fn now_ms() -> Option<f64> {
+        web_sys::window()?.performance().map(|p| p.now())
+    }
+
     impl SolveBackend for WorkerSolver {
         fn is_ready(&self) -> bool {
             true
+        }
+
+        fn took(&self) -> Option<f64> {
+            self.took
         }
 
         fn submit(&mut self, network: &Network) {
@@ -197,6 +239,7 @@ mod web {
 
         fn take_result(&mut self) -> Option<Result<Solved, Failure>> {
             let network = self.pending.take()?;
+            let started = now_ms();
 
             // Estimated from the model rather than measured by trying: the
             // point is to refuse before the freeze, and a refusal that only
@@ -217,7 +260,13 @@ mod web {
                 }));
             }
 
-            Some(gridwright_worker::solve(&network))
+            let out = gridwright_worker::solve(&network);
+            // Around the solve itself, not around the frame. The frame clock
+            // cannot see this: `submit` and the answer land inside one paint,
+            // so a caller timing against `input.time` measures zero however
+            // long it took.
+            self.took = started.zip(now_ms()).map(|(a, b)| (b - a) / 1000.0);
+            Some(out)
         }
     }
 }
