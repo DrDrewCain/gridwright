@@ -69,6 +69,13 @@ pub struct NetworkView {
     /// inspector driven by hover cannot be read, because reading it means
     /// moving the pointer off the thing it describes.
     selected: Option<usize>,
+    /// Where the camera is heading, when it was told rather than dragged.
+    goal: Option<(Pos2, f32)>,
+    /// The bus under the pointer last frame, so the cursor can stop offering to
+    /// pan over something that is offering to be clicked.
+    hovered: Option<usize>,
+    /// Whether the next fit jumps rather than travels. True for a new network.
+    snap_next_fit: bool,
 }
 
 impl Default for NetworkView {
@@ -78,6 +85,9 @@ impl Default for NetworkView {
             centre: Pos2::ZERO,
             needs_fit: true,
             selected: None,
+            goal: None,
+            hovered: None,
+            snap_next_fit: true,
         }
     }
 }
@@ -148,8 +158,21 @@ impl NetworkView {
     }
 
     fn handle_camera(&mut self, ui: &Ui, response: &eframe::egui::Response, rect: Rect) {
+        self.keys(ui, rect);
+        self.glide(ui, rect);
+
         if response.dragged() {
+            // Direct manipulation is never animated. A camera that eases behind
+            // the pointer during a drag feels like lag, not like motion; the
+            // easing is reserved for movement the user commanded but did not
+            // steer, which is fit and the keyboard zoom.
             self.centre -= response.drag_delta() / self.zoom;
+            self.goal = None;
+        }
+        if response.dragged() {
+            ui.ctx().set_cursor_icon(eframe::egui::CursorIcon::Grabbing);
+        } else if response.hovered() && self.hovered.is_none() {
+            ui.ctx().set_cursor_icon(eframe::egui::CursorIcon::Grab);
         }
 
         if !response.hovered() {
@@ -166,12 +189,91 @@ impl NetworkView {
         }
 
         let anchor = ui.input(|i| i.pointer.hover_pos()).unwrap_or(rect.center());
+        self.zoom_about(anchor, factor, rect);
+        self.goal = None;
+    }
+
+    /// Zoom by `factor`, holding the model point under `anchor` still.
+    ///
+    /// Holding that point is what makes zooming feel like moving a camera
+    /// rather than resizing a picture.
+    fn zoom_about(&mut self, anchor: Pos2, factor: f32, rect: Rect) {
         let before = self.model_of(rect, anchor);
         self.zoom = (self.zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
         let after = self.model_of(rect, anchor);
-        // Hold the model point under the cursor still, which is what makes
-        // zooming feel like moving a camera rather than resizing a picture.
         self.centre += before - after;
+    }
+
+    /// The keyboard, for the operators who will not reach for a trackpad.
+    ///
+    /// This is a tool people keep open for hours. Every camera move having to
+    /// go through a pointer is the difference between an instrument and a demo.
+    fn keys(&mut self, ui: &Ui, rect: Rect) {
+        use eframe::egui::Key;
+
+        // Only when the canvas owns the keyboard. Otherwise `f` typed into a
+        // future filter box would fling the camera across the network.
+        if ui.memory(|m| m.focused()).is_some() {
+            return;
+        }
+
+        let (fit, clear, zoom_in, zoom_out) = ui.input(|i| {
+            (
+                i.key_pressed(Key::F) || i.key_pressed(Key::Home),
+                i.key_pressed(Key::Escape),
+                i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals),
+                i.key_pressed(Key::Minus),
+            )
+        });
+
+        if fit {
+            self.needs_fit = true;
+        }
+        if clear {
+            self.selected = None;
+        }
+        // A fixed step rather than the scroll factor, so a held key walks the
+        // zoom at a predictable rate and each press is undone by one press of
+        // the other key.
+        if zoom_in != zoom_out {
+            let step = if zoom_in { 1.0 / 0.8 } else { 0.8 };
+            self.zoom_about(rect.center(), step, rect);
+            self.goal = None;
+        }
+    }
+
+    /// Ease the camera toward a commanded position.
+    ///
+    /// Framing a network is a change of place, and cutting between two places
+    /// with no motion between them makes the reader re-find where they were.
+    /// Watching the camera travel costs a fifth of a second and answers it.
+    fn glide(&mut self, ui: &Ui, rect: Rect) {
+        let Some((centre, zoom)) = self.goal else {
+            return;
+        };
+
+        // Exponential decay, framerate-independent: the fraction of the
+        // remaining distance covered per second is constant, so the motion is
+        // the same on a 60Hz panel and a 120Hz one.
+        let dt = ui.input(|i| i.stable_dt).min(0.1);
+        let t = 1.0 - (-12.0 * dt).exp();
+
+        // Interpolated in log space, because zoom is multiplicative -- a linear
+        // walk from 40 to 400 spends most of its time already zoomed out.
+        self.zoom = (self.zoom.ln() + (zoom.ln() - self.zoom.ln()) * t).exp();
+        self.centre += (centre - self.centre) * t;
+
+        let close = (self.zoom / zoom).ln().abs() < 0.002
+            && (centre - self.centre).length() * self.zoom < 0.5;
+        if close {
+            self.centre = centre;
+            self.zoom = zoom;
+            self.goal = None;
+        } else {
+            // Nothing else is asking for frames, so the animation has to.
+            ui.ctx().request_repaint();
+        }
+        let _ = rect;
     }
 
     fn draw_edges(
@@ -532,6 +634,13 @@ impl NetworkView {
         if response.clicked() {
             self.selected = best.map(|(b, _)| b);
         }
+        // Recorded for the cursor: over a bus the pointer should promise a
+        // click, not a pan.
+        self.hovered = best.map(|(b, _)| b);
+        if self.hovered.is_some() && !response.dragged() {
+            ui.ctx()
+                .set_cursor_icon(eframe::egui::CursorIcon::PointingHand);
+        }
 
         // The selection is drawn whether or not the pointer is still on it.
         if let Some(sel) = self.selected.filter(|&b| b < net.buses.len())
@@ -592,11 +701,25 @@ impl NetworkView {
             hi = hi.max(p.to_vec2());
         }
         let span = hi - lo;
-        self.centre = pos2((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
-        // A tenth of the pane in margin, so nodes on the boundary are not cut
-        // in half by the edge they were fitted to.
-        self.zoom = (0.82 * (rect.width() / span.x.max(1e-3)).min(rect.height() / span.y.max(1e-3)))
+        let centre = pos2((lo.x + hi.x) * 0.5, (lo.y + hi.y) * 0.5);
+        // Margin enough that a bus on the boundary is not cut in half by the
+        // edge it was fitted to, and that its label -- which hangs below the
+        // bar and is not in `layout` -- still lands inside the pane.
+        let zoom = (0.88 * (rect.width() / span.x.max(1e-3)).min(rect.height() / span.y.max(1e-3)))
             .clamp(MIN_ZOOM, MAX_ZOOM);
+
+        // A network arriving snaps; a refit glides. There is nothing on screen
+        // to stay oriented to when a file opens, so motion there would be an
+        // intro rather than a continuity cue -- and the reader is made to wait
+        // for their own data.
+        if self.snap_next_fit {
+            self.snap_next_fit = false;
+            self.centre = centre;
+            self.zoom = zoom;
+            self.goal = None;
+        } else {
+            self.goal = Some((centre, zoom));
+        }
     }
 }
 
