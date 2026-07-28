@@ -903,6 +903,139 @@ And the standing motivation of the IEEE VIS EnergyVis workshop:
 > one-line diagrams and contour plots being over-extended by the data they are
 > being applied to**."
 
+### Drawing conventions, from the drawings themselves
+
+Read out of primary artefacts: IEEE 315-1975 full text, ENTSO-E's printed map
+and its live Mapbox style, NESO's ETYS appendix as PDF vector strokes, the Swiss
+federal geoportal legend, PowSyBl's shipped source, and PowerWorld's public
+help.
+
+**The framing point: there is no standard for the thing being designed here.**
+IEC 60617 and IEEE 315 standardise *symbols*. Nothing standardises voltage
+colours, line weights, geoschematic distortion or flow annotation, and the major
+TSOs actively contradict each other on all four.
+
+#### The best single idea found anywhere in this research
+
+Swissgrid, on their redrawn national map: **"Red is a signal colour and is no
+longer used when the grid is in its normal state in the new representation."**
+Irregularities use yellow and orange, giving *"clear priority levels that can be
+easily identified by operators."*
+
+That is a rule this project can adopt outright, and it immediately indicts
+something: the OpenInfraMap voltage band for 220 kV is `#C73030`, a red, used to
+draw a perfectly healthy corridor. A red that means "220 kV" competes directly
+with a red that means "unserved energy", and the second one is the one that must
+win.
+
+#### Line weight is explicitly non-semantic, and half the maps leave it unused
+
+IEEE 315 §A4.3, verbatim: *"The width of a line does not affect the meaning of
+the symbol. In specific cases, a wider (heavier) line may be used for
+emphasis."*
+
+Measured across published maps: ENTSO-E's print map uses one weight for all
+seven voltage bands; its web map varies width by **zoom only**; Transpower and
+Esri/HIFLD use one weight throughout. NESO's ETYS is *non-monotonic* — 220 kV is
+its thickest stroke at 0.920 pt while 400 kV is 0.568 — which is legibility
+tuning, not semantics. Only the Swiss geoportal and OpenInfraMap tie width to
+voltage.
+
+**And no published legend anywhere ties thickness to capacity.** The
+recommendation from the survey is explicit: *"Don't spend thickness on voltage.
+In an optimization tool it's better spent on flow or capacity, with voltage on
+hue."* Which is what this already does — corridor width is the square root of
+rating — so that choice is now evidenced rather than merely defended.
+
+#### Dashing is overloaded, and there is a published way out
+
+Four incompatible meanings are in live use: **future or planned** (IEEE 315
+§A4.10 makes this a *"shall"* — the only such rule about dashing in the
+standard; also WAPA, ENTSO-E, NESO), **underground cable** (Swiss BFE, whose
+legend is literally a two-column matrix of overhead-solid against
+cable-dashed at the same colour; also Transpower, OpenInfraMap), **device
+status** on historic EMS displays, and **administrative boundary** on NESO's GB
+schematic.
+
+ENTSO-E's interactive map is the only source that disambiguates both at once,
+and its answer is worth copying wholesale: **dash means under construction; a
+white blurred halo drawn underneath the line means underground.**
+
+#### Voltage palettes, measured
+
+| | 400 kV | 220 kV | HVDC |
+| --- | --- | --- | --- |
+| ENTSO-E print | `#FF0000` | `#38A700` | `#ED81ED` |
+| NESO ETYS (GB) | `#0000FF` | `#00A0E3` | `#814897` |
+| Swiss geoportal | `#E7298A` (380) | `#1B9E77` | — |
+| VDE FNN (DE) | `#E84B04` | `#0C9564` | `#A30F7F` |
+
+**The UK puts blue on its top voltage and red on its second; ENTSO-E puts red on
+400 kV and blue on 750 kV.** If a network ever spans both, that is a live
+hazard rather than a stylistic difference.
+
+Two things are near-universal across every independent source: **violet or
+magenta means HVDC**, without exception, and 400 kV is red with 220 kV green on
+both the pan-European and German charts.
+
+Worth knowing as precedent: **the Swiss federal geoportal's six voltage colours
+are exact members of ColorBrewer Dark2** — a national mapping agency took a
+standard, colour-vision-considered qualitative palette off the shelf rather than
+inventing one. And **WAPA publishes an actual government voltage-colour
+standard** for control-room mimic bus strips, which is a *monotone spectral ramp*
+from blue at 480 V through green, yellow, orange and red to purple at 500 kV and
+gold at 750 kV — with **DC drawn as the AC colour dashed with white**, an
+elegant solution nobody else uses.
+
+#### Multi-circuit and the substation-scale layered layout
+
+The parallel-offset trick for a tower carrying several voltages is used by both
+ENTSO-E's web map and OpenInfraMap, and both gate it behind a zoom threshold so
+the strokes collapse to one line when zoomed out. ENTSO-E's print map instead
+uses **cross tick-marks** on the line to count circuits.
+
+At *substation* scale the stacked-plane idea is real and published — one paper
+describes buses of different voltage occupying their own **"voltage regions"**,
+with *"the relative placement of different voltage regions depend[ing] on the
+magnitude of the voltage level"* and the canvas splitting into upper and lower
+levels connected by transformers. At *network* scale no major TSO uses exploded
+planes; voltage is carried by colour and the transformer symbol marks where the
+level changes.
+
+#### Flow and loading annotation, as PowerWorld actually specifies it
+
+- **Sign convention**: a line field's value is *"MW flow into the line at the
+  near bus"* — positive means into the branch at the end the label sits on.
+- **Arrows**: size proportional to MW, and speed switchable between proportional
+  to actual flow and proportional to **percentage loading**. Note the earlier
+  finding that the speed encoding did not validate experimentally.
+- **Pie charts**: one per terminal, fill equals percent loading, completely full
+  at 100%. The numeric percentage appears *inside* the pie above a threshold
+  defaulting to 80%. Size and colour escalate at two published thresholds — at
+  85% of the emergency limit, ten times normal size and orange; above 100%,
+  twelve times and red. An **X drawn through the pie** marks out of service.
+- **Breakers**: *"closed circuit breakers are shown as solid red squares, while
+  open circuit breakers are shown as a green square outline"* — note the double
+  coding, closed is red *and filled*, open is green *and outline only*. That
+  redundancy is the colour-vision-safe part.
+
+#### Two structural recommendations worth recording
+
+**Keep three topology views live over one model rather than converting between
+them**, which is what PowSyBl does: node-breaker (every switch explicit),
+bus-breaker (closed switches collapsed, *retained* switches kept), and bus (all
+switches eliminated). A split busbar shows as two buses joined by a retained
+coupler in the middle view and as one node in the third. This is the real answer
+to "a bus is one node", and it is twenty years old.
+
+**For a geoschematic layout, use greedy spacing rather than force-directed.**
+Birchfield and Overbye measured both: greedy moved *"more than 90% of
+substations... not at all"* and never more than 5 km, where force-directed moved
+some by 30 km and left *"almost no substations untouched"*. Their published
+quality metrics are a ready-made acceptance suite — nearest-neighbour spacing at
+least 0.9x node width, drawn length within about 1.2x straight-line, bends
+counted at more than one degree, and bends over sixty degrees treated as defects.
+
 ### What the standards actually say about colour and status
 
 Read from primary sources: IEEE 315-1975 (R1993), IEC 60617 via its identically
