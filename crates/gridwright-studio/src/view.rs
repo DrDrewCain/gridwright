@@ -35,6 +35,23 @@ const AC_COLOR: Color32 = Color32::from_rgb(0x6a, 0x74, 0x82);
 const TRANSPORT_COLOR: Color32 = Color32::from_rgb(0x3f, 0x93, 0x8c);
 const LINK_COLOR: Color32 = Color32::from_rgb(0x86, 0x6c, 0xa8);
 
+/// What the last solve found, in the shape the canvas draws it.
+///
+/// Reduced by the caller rather than here: each field is a reduction over every
+/// snapshot, and redoing that per frame would make the cost of drawing scale
+/// with the length of the horizon, for a picture that does not change between
+/// frames. Grouped because they arrive together, are empty together, and are
+/// the only reason the drawing functions need to know a solve happened.
+#[derive(Clone, Copy, Default)]
+pub struct Overlay<'a> {
+    /// Per bus: the worst unserved energy at any snapshot.
+    pub peak_shed: &'a [f64],
+    /// Per bus: the mean nodal price over the horizon.
+    pub prices: &'a [f64],
+    /// Per line: peak flow as a fraction of rating, NaN where unrated.
+    pub loading: &'a [f64],
+}
+
 pub struct NetworkView {
     /// Screen points per model unit.
     zoom: f32,
@@ -85,18 +102,14 @@ impl NetworkView {
         self.selected
     }
 
-    /// `peak_shed` is per bus, empty when nothing has been solved. Precomputed
-    /// by the caller rather than derived here: it is a reduction over every
-    /// snapshot, and doing that per frame would make the cost of drawing scale
-    /// with the length of the horizon for a picture that does not change.
+    /// The overlay carries what the last solve found, and is empty until there
+    /// is one.
     pub fn ui(
         &mut self,
         ui: &mut Ui,
         net: Option<&Network>,
         layout: &[Pos2],
-        peak_shed: &[f64],
-        prices: &[f64],
-        loading: &[f64],
+        overlay: Overlay<'_>,
     ) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
@@ -130,14 +143,11 @@ impl NetworkView {
         // dropped before a shape is built. Egui pays per emitted shape whether
         // or not it lands in the clip rect, and at a zoom that shows one
         // substation of a national model that is most of the network.
-        let visible =
-            Rect::from_min_max(self.model_of(rect, rect.min), self.model_of(rect, rect.max));
+        let visible = self.visible(rect);
 
-        self.draw_edges(&painter, rect, visible, net, layout, loading);
-        self.draw_buses(
-            ui, &painter, rect, visible, net, layout, peak_shed, prices, &response,
-        );
-        self.draw_key(&painter, rect, prices);
+        self.draw_edges(&painter, rect, visible, net, layout, overlay.loading);
+        self.draw_buses(ui, &painter, net, layout, overlay, &response);
+        self.draw_key(&painter, rect, overlay.prices);
     }
 
     fn handle_camera(&mut self, ui: &Ui, response: &eframe::egui::Response, rect: Rect) {
@@ -257,6 +267,11 @@ impl NetworkView {
             ui.ctx().request_repaint();
         }
         let _ = rect;
+    }
+
+    /// Model-space bounds of what is on screen.
+    fn visible(&self, rect: Rect) -> Rect {
+        Rect::from_min_max(self.model_of(rect, rect.min), self.model_of(rect, rect.max))
     }
 
     fn draw_edges(
@@ -509,14 +524,18 @@ impl NetworkView {
         &mut self,
         ui: &Ui,
         painter: &eframe::egui::Painter,
-        rect: Rect,
-        visible: Rect,
         net: &Network,
         layout: &[Pos2],
-        peak_shed: &[f64],
-        prices: &[f64],
+        overlay: Overlay<'_>,
         response: &eframe::egui::Response,
     ) {
+        let rect = response.rect;
+        let visible = self.visible(rect);
+        let Overlay {
+            peak_shed,
+            prices,
+            loading: _,
+        } = overlay;
         // A bus is drawn as a bar, not as a dot.
         //
         // This is the one primitive that decides whether the canvas reads as a
