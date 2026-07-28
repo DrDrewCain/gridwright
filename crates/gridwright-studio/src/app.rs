@@ -266,7 +266,7 @@ impl StudioApp {
             && !loaded.notes.is_empty()
         {
             ui.separator();
-            ui.label(egui::RichText::new("Reader notes").strong());
+            ui.label(theme::eyebrow("reader notes"));
             egui::ScrollArea::vertical()
                 .max_height(140.0)
                 .show(ui, |ui| {
@@ -364,7 +364,8 @@ impl StudioApp {
     }
 
     fn results_area(&mut self, ui: &mut egui::Ui) {
-        ui.label(egui::RichText::new("Results").strong());
+        ui.label(crate::theme::eyebrow("results"));
+        ui.add_space(crate::theme::UNIT);
 
         let ready = self.backend.is_ready();
         let busy = self.backend.is_busy();
@@ -399,28 +400,21 @@ impl StudioApp {
             }
             Some(Ok(solved)) => {
                 egui::Grid::new("results").num_columns(2).show(ui, |ui| {
-                    ui.label("Status");
-                    ui.label(&solved.status);
-                    ui.end_row();
-
-                    ui.label("Objective");
+                    reading(ui, "Status", solved.status.clone());
                     // Absent unless optimal, and shown as absent rather than as
                     // zero: a cost read off a non-optimal answer is a wrong
                     // number that looks like a right one.
-                    match solved.objective {
-                        Some(v) => ui.label(format!("{v:.2}")),
-                        None => ui.label("—"),
-                    };
-                    ui.end_row();
-
-                    ui.label("Total shed");
-                    ui.label(format!("{:.3}", solved.total_shed));
-                    ui.end_row();
-
+                    reading(
+                        ui,
+                        "Objective",
+                        match solved.objective {
+                            Some(v) => format!("{v:.2}"),
+                            None => "—".into(),
+                        },
+                    );
+                    reading(ui, "Total shed", format!("{:.3}", solved.total_shed));
                     if !solved.built.is_empty() {
-                        ui.label("Capacity built");
-                        ui.label(format!("{} components", solved.built.len()));
-                        ui.end_row();
+                        reading(ui, "Capacity built", thousands(solved.built.len()));
                     }
                 });
 
@@ -626,6 +620,19 @@ fn count(ui: &mut egui::Ui, label: &str, n: usize) {
     ui.label(egui::RichText::new(label).color(crate::theme::INK));
     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
         ui.label(crate::theme::number(thousands(n)));
+    });
+    ui.end_row();
+}
+
+/// A label and a solved value, in the same shape as the composition counts.
+///
+/// Split from `count` rather than generalised over it: these are readings off
+/// an answer and those are facts about a file, and the two blocks happening to
+/// share a layout is not a reason to make one function decide which it is.
+fn reading(ui: &mut egui::Ui, label: &str, value: String) {
+    ui.label(egui::RichText::new(label).color(crate::theme::INK));
+    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        ui.label(crate::theme::number(value));
     });
     ui.end_row();
 }
