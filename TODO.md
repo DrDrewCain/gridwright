@@ -729,6 +729,180 @@ after them is downstream of what the browser can actually do.
       It is now measured, in the actual target rather than extrapolated from
       native numbers. See *What the browser target actually costs* below.
 
+### The field's own research, which settles three arguments
+
+Primary sources: IEEE TPWRS, IEEE Transactions on Smart Grid, PSERC reports, and
+PowerWorld's own training material.
+
+#### Contouring is discredited, by an experiment, for the task everyone uses it for
+
+Contour maps are the most-copied idea in power-system visualisation. PowerWorld
+produced PJM's LMP contours in **1999**, and every ISO price map since descends
+from that. The original backing was real: Overbye et al. (TPWRS 18(1), 2003)
+found a contour-only group acknowledged violations *in less than half the time*
+of a number-only group, with no speed-accuracy tradeoff.
+
+**Gruchalla, Molnar & Johnson (IEEE Trans. Smart Grid 14(6), 2023) took it
+apart.** Thirty professional power-system research engineers:
+
+> "contour maps misrepresent power systems data, changing the statistical
+> dispersion of the bus values, **including the loss of extreme values**. In a
+> controlled empirical study with thirty professional power system research
+> engineers, we found that these distortions significantly impact excursion
+> identification tasks."
+
+**The engineers identified fewer than a third of the violations using contour
+maps**, and were less confident than with glyph-based views.
+
+The mechanism is arithmetic and unavoidable: every contour pixel is an
+inverse-distance-weighted average, so the cell containing the extreme value is
+an aggregate of its less extreme neighbours and `|ĝ| < max|x|` always. Measured
+on a 24,000-bus model, contouring took **kurtosis from 16.6 to 4.3** and the
+maximum from 1.0734 to 1.0486 p.u. — *it removed every low-voltage violation.*
+Voronoi tessellation preserved both tails exactly and cost 2.3x less to compute.
+
+And the sentence that matters for a network rather than a field: the algorithm
+**"confounds the geographical and topological proximity of bus values"**.
+Voronoi instead produces "sharp boundaries between spatially-close but
+topologically-distant branches" — showing topology rather than smearing it.
+
+PowerWorld's own inventors listed the objection first, in 1998: *"Voltages are
+defined at discrete points in a power system, not a continuum... Voltages that
+are near one another on a diagram may not be 'near' one another electrically."*
+Their stated mitigation was to contour **one voltage level at a time**. Every
+public ISO price map violates that condition. PowerWorld also ships a documented
+workaround for contours **bleeding into the ocean**, which is to hand-paint a
+polygon over the Gulf of Mexico.
+
+**This validates the choice already made here.** Nodal price is drawn per
+busbar, as a glyph, at the discrete point where the dual actually exists. It was
+chosen for palette reasons; it turns out to be the encoding the experiment
+favours. Do not add a contour layer.
+
+#### 3D lost, its inventor wrote it off, and the one favourable study is explained
+
+Overbye — who published *Interactive 3D Visualization of Power System
+Information* in 2003 — wrote in 2019: **"The use of interactive 3D for power
+system visualization was presented in [7], though it is not currently widely
+used."**
+
+The other research thread flagged Wiegmann et al. (2006) as the one
+domain-specific study that apparently found *for* 3D, and as the reason to keep
+an open mind. It resolves: 3D was faster (14.8 s against 18.8 and 20.7 s) but
+the paper concludes **"we cannot conclude that there is an advantage for 3D
+displays in terms of accuracy"**, and attributes the speed to *"the increased
+size and salience of the cylindrical generator representations... coupled with a
+reduced level of clutter."*
+
+**The 3D condition won because its glyphs were bigger.** That is obtainable in
+2D for free. The open question from the previous section is closed.
+
+Both modern WebGL adopters in this field hardcode `pitch: 0` — PyPSA's pydeck
+backend and NREL's GridSight, which even defines `setElevation(volt)` and never
+calls it. NEPLAN's marketed 3D could not be found across ~2,756 archived pages
+of their own site.
+
+The one live 2.5D worth noting is PNNL's **ChatGrid**, which uses it explicitly
+**to reduce clutter** rather than for realism.
+
+#### Animating flow speed by magnitude did not validate
+
+Wiegmann, Essenberg, Overbye & Sun (IEEE TPWRS, Aug 2005):
+
+> "our results **do not show a clear advantage for encoding real power flow with
+> motion speed**, suggesting that care should be taken to ensure that the
+> resulting incoherence of the motion will not overpower the advantage of
+> highlighting with motion."
+
+> "Without pie charts, workload was rated highest for the moving arrow
+> display... perhaps due to distraction caused by the moving arrows."
+
+The industry-standard "arrow speed proportional to flow" encoding is precisely
+the one that failed. Uniform-speed arrows won for source-and-sink analysis.
+
+**Pie charts consistently beat arrows, and the reason is the useful part:** they
+conveyed *percentage loading*, which arrows sized by MW cannot. Corridor
+utilisation as a fraction of rating is the quantity that reads.
+
+PSERC 02-36 adds a second caution: when a contour occluded the controls an
+operator needed, solution time went from 2.93 s to **9.96 s**. Decoration that
+covers the thing being operated is worse than no decoration.
+
+### Time is this field's open wound, and almost nothing addresses it
+
+Overbye named it as an open problem in a PSERC report in **2002**: "the problem
+of visualizing not just a single time snapshot but rather the variation in the
+system operating conditions over time." The 2022 Fischer survey independently
+names the same problem as still open. It is still open in 2026.
+
+**The universal pattern: the map shows one snapshot or an annual average, and
+the year lives in a separate non-geographic heatmap.** PyPSA-Eur renders a
+24x365 seaborn heatmap; PostREISE a day-by-hour one; gridStatus.io an
+hour-of-day by date one. PyPSA-Eur's own price map is a **snapshot-weighted
+annual average** per region.
+
+Every exception is an offline video render: ReEDS renders 2,190 PNG frames and
+pipes them through ffmpeg; Grid2Op emits a GIF; PyPSA's `n.plot.animate()` has
+been open and unmerged for a year and is described by its author as "a bit of a
+fun function".
+
+**Exactly one tool was found with an interactive scrubber over a geographic
+network**: NREL's GridSight, deck.gl and MapLibre, a three-handle slider with
+play. It has twelve stars and has not been touched since October 2024.
+
+So the scrubber built here is, as far as this survey reaches, close to unique in
+the field — and it is the thing the field has been naming as its own gap for
+twenty-four years.
+
+### The clearest statement of the core UX failure, from inside the field
+
+Overbye, IREP 2007, on a 43,000-bus model whose 7,100-bus one-line diagram could
+not answer the question he had:
+
+> "the one-line **did not show** the desired information, [but] the one-line,
+> along with the underlying power system model, **did contain** the necessary
+> information. The trick was to provide a way of **dynamically extracting it**."
+
+And, on why a fixed set of displays cannot work:
+
+> "it can be quite difficult to design a priori a single display, or even a set
+> of displays, that contains all the information needed to make effective,
+> corrective control decisions."
+
+That is the argument for an interface built on selection, inspection and
+filtering over one live model, rather than on a gallery of prepared charts.
+
+**Two more practitioner findings worth keeping.** Auto-layout in PSS/E is
+reported to produce "a terrible mess... **it can take a full day to sort it all
+out**", and geographic coordinates are usually simply absent — a PSS/E
+auto-layout project was designed for "sensible automatic bus layout without
+assuming geographic data availability, **which most users lack**." Which is
+exactly why the layout here keeps the spring embedder as the default path and
+treats geography as the exception.
+
+Overbye, NAPS 2019, on geographic layouts: "the GDVs do not tend to make
+effective use of display space, with most of the image consisting of empty
+background", and satellite backgrounds "run the risk of background camouflaging
+the electric grid information of interest."
+
+### The academic verdict on the incumbents
+
+Fischer & Keim, arXiv:2106.04661:
+
+> "Powerworld Simulator and General Electric's e-terra platform are tools widely
+> used in the commercial sector, although **the level and types of visualization
+> they provide are somewhat behind the state-of-the-art**."
+
+> "the techniques currently employed in the power grid industry [are] relatively
+> simple and to a large degree **dating back decades. This is surprising**,
+> given the technological advances in the last century."
+
+And the standing motivation of the IEEE VIS EnergyVis workshop:
+
+> "much of the visualization supporting these changes is **outdated, with simple
+> one-line diagrams and contour plots being over-extended by the data they are
+> being applied to**."
+
 ### What the people who own real grids actually ship
 
 Fetched live rather than recalled: OpenInfraMap, the ENTSO-E Transparency
