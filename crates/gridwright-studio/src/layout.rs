@@ -1,18 +1,24 @@
 //! Where a bus goes on screen.
 //!
-//! `gridwright_net::Bus` carries a country and a synchronous area and a nominal
-//! voltage, and no coordinates at all. That is a reasonable thing for an
-//! optimisation model to omit — nothing in a linear program cares where a node
-//! is — but it means there is no projection to do here. A position has to be
-//! invented from the topology.
+//! Two ways, and which one is used depends on what the file said.
 //!
-//! Fruchterman–Reingold, because the thing a person is looking for in a grid
-//! diagram is which nodes are electrically close to which, and a spring embedder
-//! puts exactly that on the page. Geographic layout was the obvious
-//! alternative and is not available: no reader in `gridwright-io` produces
-//! coordinates, because none of the formats it reads are required to carry them
-//! (MATPOWER and PSS/E have no coordinate field at all). If a reader ever does,
-//! this module should be bypassed rather than tuned.
+//! **Geography, when the buses have any.** PyPSA carries longitude and latitude
+//! and the readers now keep them, so for those networks there is a projection
+//! to do rather than a picture to invent. Nothing beats the real map: an
+//! engineer knows where their own network is, and a spring embedder's idea of a
+//! good arrangement is not a thing anybody can recognise.
+//!
+//! **Fruchterman–Reingold, when they have none.** MATPOWER, PSS/E RAW, UCTE and
+//! the IEEE cases have no coordinate field at all, and most of what people
+//! actually load is one of those. A position then has to be invented from the
+//! topology, and a spring embedder puts electrical closeness on the page, which
+//! is the thing a person is looking for in a grid diagram when they cannot have
+//! the map.
+//!
+//! **Both, when the file is half placed.** A real network with a handful of
+//! synthetic buses added is the common case, not an exotic one. The located
+//! buses are projected and then pinned, and the relaxation places the rest
+//! around them.
 
 use eframe::egui::{Pos2, Vec2, pos2};
 use gridwright_net::Network;
@@ -45,7 +51,27 @@ pub fn layout(net: &Network) -> Vec<Pos2> {
         return Vec::new();
     }
 
+    let placed = project(net);
+    // Every bus located: there is nothing to invent, so the relaxation is
+    // skipped entirely rather than run and then overwritten.
+    if placed.iter().all(Option::is_some) {
+        let mut pos: Vec<Pos2> = placed.into_iter().map(Option::unwrap).collect();
+        normalise(&mut pos);
+        return pos;
+    }
+
     let mut pos = seed_ring(n);
+    // A located bus starts where it belongs and stays there. Seeding the
+    // relaxation with real geography and then letting it move would produce a
+    // map that is nearly right, which is worse than one that is obviously
+    // schematic -- a reader trusts a map, and this one would be lying by a few
+    // hundred kilometres.
+    for (i, p) in placed.iter().enumerate() {
+        if let Some(p) = p {
+            pos[i] = *p;
+        }
+    }
+
     if !(2..=MAX_RELAXED).contains(&n) {
         return pos;
     }
@@ -97,6 +123,9 @@ pub fn layout(net: &Network) -> Vec<Pos2> {
         }
 
         for i in 0..n {
+            if placed[i].is_some() {
+                continue;
+            }
             // Repulsion alone sends anything not held by an edge to infinity,
             // and disconnected components are common rather than exotic here:
             // asynchronous interconnections are joined only by HVDC, and a
@@ -114,6 +143,40 @@ pub fn layout(net: &Network) -> Vec<Pos2> {
 
     normalise(&mut pos);
     pos
+}
+
+/// Project every located bus, and `None` for the rest.
+///
+/// **Web Mercator**, which is what every map tile in existence uses. That is
+/// the whole argument: it is conformal, so a substation cluster keeps its
+/// shape, and if a basemap is ever put underneath this it will line up without
+/// a second projection to get wrong.
+///
+/// Its famous flaw is scale, not shape -- it inflates area with latitude, so a
+/// Norwegian grid reads as larger than an Italian one of the same extent. For a
+/// network diagram that is close to harmless: nobody measures distance off one,
+/// and the alternative that fixes it (an equal-area projection) breaks the
+/// shapes people recognise instead.
+///
+/// The poles go to infinity in this projection. Latitude is clamped to the
+/// standard ±85.051129° before the transform, because the arctangent of an
+/// infinity is a position that survives every later check and ruins the
+/// bounding box for every other bus.
+fn project(net: &Network) -> Vec<Option<Pos2>> {
+    net.buses
+        .iter()
+        .map(|b| {
+            b.position.map(|c| {
+                let lat = c.lat.clamp(-85.051_129, 85.051_129).to_radians();
+                let y = ((std::f64::consts::FRAC_PI_4 + lat / 2.0).tan()).ln();
+                // Negated, because screen y grows downward and latitude grows
+                // up. Without this every map is drawn upside down, which is
+                // obvious on a country with a recognisable shape and completely
+                // invisible on a synthetic case.
+                pos2(c.lon.to_radians() as f32, -y as f32)
+            })
+        })
+        .collect()
 }
 
 /// A circle, walked in index order.
@@ -216,5 +279,100 @@ mod tests {
     #[test]
     fn empty_network_has_no_positions() {
         assert!(layout(&Network::new(Snapshots::hourly(1))).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod geographic_tests {
+    use super::*;
+    use gridwright_net::{Bus, Coord, Snapshots};
+
+    fn placed(coords: &[Option<(f64, f64)>]) -> Network {
+        let mut net = Network::new(Snapshots::hourly(1));
+        for (i, c) in coords.iter().enumerate() {
+            net.buses.push(Bus {
+                name: format!("b{i}"),
+                position: c.and_then(|(lon, lat)| Coord::new(lon, lat)),
+                ..Default::default()
+            });
+        }
+        net
+    }
+
+    #[test]
+    fn north_is_up() {
+        // Screen y grows downward and latitude grows up, so the projection has
+        // to flip. Getting this wrong draws every map upside down, which is
+        // glaring on a recognisable coastline and invisible on a synthetic case
+        // -- so it is worth a test rather than an eye.
+        let net = placed(&[Some((0.0, 60.0)), Some((0.0, 40.0))]);
+        let pos = layout(&net);
+        assert!(pos[0].y < pos[1].y, "the northern bus was drawn below");
+    }
+
+    #[test]
+    fn east_is_right() {
+        let net = placed(&[Some((-5.0, 50.0)), Some((5.0, 50.0))]);
+        let pos = layout(&net);
+        assert!(pos[0].x < pos[1].x, "the eastern bus was drawn to the left");
+    }
+
+    #[test]
+    fn a_fully_placed_network_keeps_its_shape() {
+        // Three buses in a right angle, projected over a small extent where
+        // Mercator distortion is negligible. If the relaxation had been allowed
+        // to run, this would not survive.
+        let net = placed(&[
+            Some((0.0, 50.0)),
+            Some((1.0, 50.0)),
+            Some((0.0, 50.0 + 0.6428)),
+        ]);
+        let pos = layout(&net);
+        let horizontal = (pos[1] - pos[0]).length();
+        let vertical = (pos[2] - pos[0]).length();
+        assert!(
+            (horizontal / vertical - 1.0).abs() < 0.05,
+            "aspect was distorted: {horizontal} across against {vertical} up",
+        );
+    }
+
+    #[test]
+    fn an_unplaced_network_still_gets_a_layout() {
+        let net = placed(&[None, None, None]);
+        let pos = layout(&net);
+        assert_eq!(pos.len(), 3);
+        assert!(pos.iter().all(|p| p.x.is_finite() && p.y.is_finite()));
+    }
+
+    #[test]
+    fn placed_buses_do_not_move_when_others_are_relaxed() {
+        // The mixed case: a real network with synthetic buses bolted on. The
+        // located ones are the frame everything else is arranged around, and a
+        // map that is nearly right is worse than one that is plainly schematic.
+        let net = placed(&[Some((0.0, 50.0)), Some((2.0, 50.0)), None, None]);
+        let pos = layout(&net);
+
+        // Both anchors kept the same latitude, so they must still share a row.
+        assert!(
+            (pos[0].y - pos[1].y).abs() < 1e-4,
+            "anchors drifted apart vertically: {} against {}",
+            pos[0].y,
+            pos[1].y,
+        );
+        assert!(pos[0].x < pos[1].x, "anchors swapped sides");
+    }
+
+    #[test]
+    fn a_bus_at_the_pole_does_not_take_the_layout_with_it() {
+        // Mercator sends the poles to infinity. Without the clamp this produces
+        // a non-finite position that survives into the bounding box and
+        // collapses every other bus onto one point.
+        let net = placed(&[Some((0.0, 90.0)), Some((0.0, 50.0)), Some((1.0, 50.0))]);
+        let pos = layout(&net);
+        assert!(
+            pos.iter().all(|p| p.x.is_finite() && p.y.is_finite()),
+            "a pole produced {pos:?}",
+        );
+        assert!(pos[1].distance(pos[2]) > 1e-6, "the other buses collapsed");
     }
 }
