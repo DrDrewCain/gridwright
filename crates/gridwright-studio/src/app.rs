@@ -640,6 +640,17 @@ impl StudioApp {
                             .size(11.0)
                             .color(if whole { theme::INK_DIM } else { theme::INK }),
                     );
+
+                    ui.with_layout(
+                        egui::Layout::right_to_left(egui::Align::Center),
+                        |ui| {
+                            ui.label(
+                                egui::RichText::new("← → step · shift for a day")
+                                    .size(10.0)
+                                    .color(theme::INK_DIM),
+                            );
+                        },
+                    );
                 });
             });
 
@@ -661,14 +672,35 @@ impl StudioApp {
         if ctx.memory(|m| m.focused()).is_some() {
             return false;
         }
-        let (back, fwd, first, last) = ctx.input(|i| {
+        let (back, fwd, first, last, stride) = ctx.input(|i| {
             (
                 i.key_pressed(Key::ArrowLeft),
                 i.key_pressed(Key::ArrowRight),
                 i.key_pressed(Key::Comma),
                 i.key_pressed(Key::Period),
+                i.modifiers.shift,
             )
         });
+
+        // Two step sizes, because one is not enough on a real horizon.
+        //
+        // ArcGIS keeps the *step interval* as a term distinct from the position
+        // and the addressable range, and it is the one this was missing:
+        // walking a year of hourly snapshots one at a time is 8,760 keypresses,
+        // and dragging the slider moves several snapshots per pixel. Shift
+        // steps by a day where there is one, so the same key answers both "the
+        // next hour" and "this hour tomorrow".
+        let step = if !stride {
+            1
+        } else {
+            // A day, unless the horizon is too short for that to mean anything,
+            // in which case a tenth of it -- which keeps a large stride useful
+            // on a representative-week or typical-day model.
+            match n {
+                0..=48 => (n / 10).max(1),
+                _ => 24,
+            }
+        };
 
         let t = match self.instant {
             Instant::At(t) => t,
@@ -683,8 +715,8 @@ impl StudioApp {
             (_, _, _, true) => n - 1,
             // Saturating rather than wrapping. Walking off the end of a year
             // and arriving in January is a jump the reader did not ask for.
-            (true, false, ..) => t.saturating_sub(1),
-            (false, true, ..) => (t + 1).min(n - 1),
+            (true, false, ..) => t.saturating_sub(step),
+            (false, true, ..) => (t + step).min(n - 1),
             _ => return false,
         };
 
