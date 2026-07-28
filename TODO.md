@@ -729,6 +729,125 @@ after them is downstream of what the browser can actually do.
       It is now measured, in the actual target rather than extrapolated from
       native numbers. See *What the browser target actually costs* below.
 
+### What the people who own real grids actually ship
+
+Fetched live rather than recalled: OpenInfraMap, the ENTSO-E Transparency
+Platform and Transmission System Map, TYNDP, TenneT, Elia, RTE, Swissgrid,
+TransnetBW, Amprion, 50Hertz. Several of these are read out of their shipped
+JavaScript bundles.
+
+**The finding that matters most: the network map and the results map are almost
+never the same artefact.** Every organisation surveyed has either an asset map
+with no data on it — OpenInfraMap, TenneT's ArcGIS service, Swissgrid's KML,
+ENTSO-E's own grid map — or a data view with no network in it: the Transparency
+Platform's bidding-zone choropleths, and the pure chart portals at TransnetBW,
+Amprion and 50Hertz.
+
+The one exception found in Europe is **Elia's `ods124`**, which publishes per
+380 kV line, every fifteen minutes, geolocated: `physicalflow` in MW *and*
+`loading` as a percent of the line's limit. Even that ships as an API plus a
+generic Opendatasoft map widget rather than as a designed product.
+
+**That gap is this project's whole thesis, and it is now evidenced rather than
+assumed.** Drawing solved flow and nodal price onto the corridors and busbars
+that carry them is the thing the incumbents do not do.
+
+#### Nobody does 3D, and the best of them went out of their way to remove it
+
+Not "tried and abandoned" — never reached for. The strongest signal is
+OpenInfraMap, the most sophisticated renderer in the set, which gets free camera
+rotation from MapLibre and explicitly turns it off:
+
+```js
+map.dragRotate.disable()
+map.touchZoomRotate.disableRotation()
+map.addControl(new maplibregl.NavigationControl({ showCompass: false }))
+```
+
+No `pitch`, no `fill-extrusion`, no `terrain`, and the compass hidden so the
+affordance is not even suggested. Straight-down 2D by choice.
+
+#### Time is a discrete stepper everywhere, and there is no play button anywhere
+
+The reference implementation is the Transparency Platform's `MapSlider`:
+previous/next chevrons flanking a slider of `HH:mm` labels, **the scrub position
+held in the URL** via `usePermalinkState(..., "slider")`, and values recomputed
+with `useMemo` while the geometry stays put. No `requestAnimationFrame` loop
+exists in it — the only one in the bundle is for focus management.
+
+TYNDP's version of "time" is three scenario horizons (2030/2040/2050) shipped as
+three separate GeoJSON files and switched by a picker. No interpolation.
+
+This independently confirms the animation-versus-small-multiples literature from
+the other direction: an entire industry converged on stepping, and not one of
+them shipped a play button. **Putting the instant in the URL is worth copying.**
+
+#### Voltage colouring: use OpenInfraMap's scale
+
+It is the most considered one in the corpus, and being able to say "the same
+colours as OpenInfraMap" is worth more than an invented scale:
+
+| from | colour | |
+| --- | --- | --- |
+| unknown | `#7A7A85` | grey |
+| 10 kV | `#6E97B8` | |
+| 25 kV | `#55B555` | |
+| 52 kV | `#B59F10` | |
+| 132 kV | `#B55D00` | |
+| 220 kV | `#C73030` | |
+| 310 kV | `#B54EB2` | |
+| 550 kV | `#00C1CF` | |
+| HVDC | `#4E01B5` | by *frequency*, not voltage |
+| traction | `#A8B596` | |
+
+Two details worth taking. **OIM types HVDC and traction by frequency rather than
+by voltage**, evaluated before the voltage step — `frequency == 0` is DC,
+anything that is neither 50 nor 60 is rail power. And it is the only one in the
+set that uses **both** colour and width for voltage; TenneT's ArcGIS service
+colours by `SPANNINGSNIVEAU` and leaves every class at width 1.5, so colour
+carries everything.
+
+**The multi-circuit trick is the one genuinely hard-won idea in the corpus.** A
+single tower carrying three voltages is drawn as three parallel offset lines,
+spaced 14 px, collapsing to zero below zoom 10 and reaching full separation at
+21. One way in the data, three drawn circuits.
+
+#### Generate the legend from the style, or it will drift
+
+OpenInfraMap's legend imports `voltage_scale` from the style module and builds
+its swatches by rendering the same layer definitions, so the two cannot
+disagree. ENTSO-E's grid map hardcodes its legend colours in CSS separately from
+its Mapbox Studio style — and that is exactly where it has a live bug: the
+legend lists "132–150 kV" and "110 kV" as separate rows and both use
+`class="line fill-110kv"`, so they are indistinguishable on screen.
+
+This repo already generates its corridor key from the same constants the canvas
+draws with. Keep it that way.
+
+#### Staleness is the norm, and it shows in the dependency versions
+
+ENTSO-E's flagship Transmission System Map runs **Mapbox GL 0.53.0** — a
+January 2019, pre-1.0 release — and states on the page that its **data is
+correct up to 01/01/2019**. Seven and a half years stale and still the headline
+European grid map. It also carries the disclaimer that "network elements are not
+located at their real geographic location": a schematic drawn on a slippy map.
+
+The Transparency Platform bundles **OpenLayers 5.3.3** (2018). TYNDP 2024 is
+AngularJS with `angular-leaflet-directive`. The TYNDP 2018 project map is a dead
+Netlify deploy-preview URL. OpenInfraMap, a volunteer project, is the only one
+in the survey on a current stack.
+
+#### Two smaller things worth stealing
+
+- **Topology-aware selection on a geometry-only renderer.** OpenInfraMap's
+  `CircuitInspector` selects a whole electrical circuit rather than one drawn
+  way, and reports its length, voltage, frequency and terminating substations.
+  The analogue here is selecting a corridor and getting the path, not the
+  segment.
+- **Congestion and flow are published at different granularities on purpose.**
+  Elia gives flow per line and congestion risk per electrical zone. Two
+  questions, two spatial resolutions, and conflating them would answer neither.
+
 ### Whether a third dimension is a good idea: the evidence says mostly no
 
 The previous section establishes that 3D here is *cheap*. This one is about
