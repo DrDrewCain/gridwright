@@ -765,7 +765,7 @@ impl NetworkView {
 }
 
 /// Identifies one circuit, so a bus can order the things attached to it.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 enum Circuit {
     Line(usize),
     Link(usize),
@@ -932,3 +932,102 @@ fn storage(painter: &Painter, bar_top: Pos2, r: f32, ink: Color32) {
 /// not on it exactly, and a diagram that marks 0.99999 as slack would fail to
 /// mark most of the lines the solver was actually held back by.
 const BINDING: f64 = 0.995;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gridwright_net::{Bus, Line, Snapshots};
+
+    /// Three buses in a row: `left — middle — right`.
+    fn row() -> (Network, Vec<Pos2>) {
+        let mut net = Network::new(Snapshots::hourly(1));
+        for name in ["left", "middle", "right"] {
+            net.buses.push(Bus {
+                name: name.into(),
+                ..Default::default()
+            });
+        }
+        net.lines.push(Line {
+            name: "a".into(),
+            bus0: 1,
+            bus1: 0,
+            ..Default::default()
+        });
+        net.lines.push(Line {
+            name: "b".into(),
+            bus0: 1,
+            bus1: 2,
+            ..Default::default()
+        });
+        (net, vec![pos2(-1.0, 0.0), pos2(0.0, 0.0), pos2(1.0, 0.0)])
+    }
+
+    #[test]
+    fn taps_land_in_the_direction_their_circuit_leaves() {
+        let (net, layout) = row();
+        let taps = TapSlots::build(&net, &layout);
+
+        // The line to the left bus taps the left of the middle bar and the one
+        // to the right taps the right. This is the whole reason slots are
+        // sorted: get it backwards and the two circuits cross on the approach.
+        let to_left = taps.offset(Circuit::Line(0), 1, 20.0);
+        let to_right = taps.offset(Circuit::Line(1), 1, 20.0);
+        assert!(to_left < 0.0, "westbound circuit tapped at {to_left}");
+        assert!(to_right > 0.0, "eastbound circuit tapped at {to_right}");
+    }
+
+    #[test]
+    fn a_lone_circuit_taps_the_middle_of_its_bar() {
+        let (net, layout) = row();
+        let taps = TapSlots::build(&net, &layout);
+        // The left bus has one circuit on it, so there is nothing to spread.
+        assert_eq!(taps.offset(Circuit::Line(0), 0, 20.0), 0.0);
+    }
+
+    #[test]
+    fn taps_stay_on_the_bar_they_belong_to() {
+        let (net, layout) = row();
+        let taps = TapSlots::build(&net, &layout);
+        let half = 20.0;
+        for c in [Circuit::Line(0), Circuit::Line(1)] {
+            for bus in 0..net.buses.len() {
+                let d = taps.offset(c, bus, half);
+                assert!(
+                    d.abs() <= half,
+                    "circuit {c:?} tapped bus {bus} at {d}, past the end of a bar of half-width {half}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_unattached_circuit_offsets_to_the_centre() {
+        let (net, layout) = row();
+        let taps = TapSlots::build(&net, &layout);
+        // A view may be handed a network that never went through `validate`,
+        // and an out-of-range reference must not panic its way onto the canvas.
+        assert_eq!(taps.offset(Circuit::Line(99), 0, 20.0), 0.0);
+        assert_eq!(taps.offset(Circuit::Line(0), 99, 20.0), 0.0);
+    }
+
+    #[test]
+    fn the_ramp_ends_where_its_endpoints_are() {
+        let (a, b) = (crate::theme::INK_DIM, crate::theme::INK_STRONG);
+        assert_eq!(lerp_color(a, b, 0.0), a);
+        assert_eq!(lerp_color(a, b, 1.0), b);
+    }
+
+    #[test]
+    fn the_ramp_only_gets_lighter() {
+        // The claim the price encoding rests on: brighter means more expensive,
+        // with no dip in between that would read as a cheaper bus.
+        let (a, b) = (crate::theme::INK_DIM, crate::theme::INK_STRONG);
+        let lum = |c: Color32| c.r() as u32 + c.g() as u32 + c.b() as u32;
+        let mut last = 0;
+        for i in 0..=20 {
+            let now = lum(lerp_color(a, b, i as f32 / 20.0));
+            assert!(now >= last, "step {i} darkened: {last} then {now}");
+            last = now;
+        }
+    }
+}
