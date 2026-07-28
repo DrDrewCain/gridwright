@@ -1419,27 +1419,60 @@ fn brackets(painter: &Painter, r: Rect, arm: f32) {
     }
 }
 
-/// Voltage bands, in the colours OpenInfraMap uses.
+/// Voltage bands, adapted from OpenInfraMap's scale.
 ///
-/// Adopted rather than invented. OIM's scale is the most considered one in the
-/// field — TenneT's ArcGIS service colours by voltage and leaves every class at
-/// the same width, Swissgrid's KML has two colours for the whole Swiss grid,
-/// and ENTSO-E's map has a live bug where two bands share a CSS class and
-/// cannot be told apart. Being able to say "the same colours as OpenInfraMap"
-/// is worth more to a reader than any palette designed here.
+/// Adopted rather than invented, because OIM's is the most considered one in
+/// the field: TenneT's ArcGIS service colours by voltage and leaves every class
+/// at the same width, Swissgrid's KML draws the entire Swiss grid in two greys,
+/// and ENTSO-E's flagship map has shipped a bug for years where two bands share
+/// a CSS class. Being able to say "close to OpenInfraMap" is worth more to a
+/// reader than a palette designed here.
 ///
-/// Each entry is the lower bound of a band in kV, and the colour from that band
-/// upward.
+/// **One band is deliberately changed, and the reason is a rule worth stating.**
+/// Swissgrid, on redrawing their national map: *"Red is a signal colour and is
+/// no longer used when the grid is in its normal state in the new
+/// representation."* OIM's 220 kV band is `#C73030`, a red — drawn on perfectly
+/// healthy corridors, where it competes with the red that means unserved
+/// energy. A healthy 220 kV line and a bus that failed to serve its load must
+/// not be the same colour, and of the two, the failure is the one that has to
+/// win. So 220 kV takes a warm brown-orange instead, keeping its place in the
+/// ramp without spending the alarm hue.
+///
+/// The 25 kV band moved too, and the test is what found it: OIM's `#55B555` is
+/// close enough to this theme's "solved" green that a healthy 25 kV corridor and
+/// a lamp reporting a good answer read as the same colour. Deepened to a forest
+/// green, which keeps it distinct from both that lamp and the 10 kV blue above
+/// it.
+///
+/// Between them these two changes also keep the palette inside NUREG-0700's
+/// guidance to avoid displays requiring red-green comparisons, which the
+/// original scale's 25 kV green against 220 kV red would have needed.
+///
+/// Each entry is the lower bound of a band in kV, and the colour from there up.
 const VOLTAGE_SCALE: [(f64, Color32); 8] = [
     (0.0, Color32::from_rgb(0x7A, 0x7A, 0x85)),
     (10.0, Color32::from_rgb(0x6E, 0x97, 0xB8)),
-    (25.0, Color32::from_rgb(0x55, 0xB5, 0x55)),
+    (25.0, Color32::from_rgb(0x3E, 0x8A, 0x3E)),
     (52.0, Color32::from_rgb(0xB5, 0x9F, 0x10)),
     (132.0, Color32::from_rgb(0xB5, 0x5D, 0x00)),
-    (220.0, Color32::from_rgb(0xC7, 0x30, 0x30)),
+    (220.0, Color32::from_rgb(0xA8, 0x62, 0x38)),
     (310.0, Color32::from_rgb(0xB5, 0x4E, 0xB2)),
     (550.0, Color32::from_rgb(0x00, 0xC1, 0xCF)),
 ];
+
+/// How close two colours may be before a reader cannot tell them apart.
+///
+/// Crude on purpose: a sum of channel differences rather than a perceptual
+/// distance, because the thing being guarded against is a palette that grows a
+/// near-duplicate of the alarm colour, and that shows up plainly even in a
+/// coarse metric. A real colour-difference formula would be more accurate and
+/// would not catch anything this does not.
+#[cfg(test)]
+fn channel_distance(a: Color32, b: Color32) -> i32 {
+    (a.r() as i32 - b.r() as i32).abs()
+        + (a.g() as i32 - b.g() as i32).abs()
+        + (a.b() as i32 - b.b() as i32).abs()
+}
 
 /// Below this a stated voltage is not a voltage.
 ///
@@ -1505,6 +1538,31 @@ mod voltage_tests {
             });
         }
         net
+    }
+
+    #[test]
+    fn no_voltage_band_is_mistakable_for_an_alarm() {
+        // Swissgrid's rule: red is a signal colour and is not used when the
+        // grid is in its normal state. A healthy corridor and a bus that failed
+        // to serve its load must not be the same colour, and the failure is the
+        // one that has to win.
+        //
+        // This is a real regression risk rather than a hypothetical: the scale
+        // this was adapted from puts #C73030 on 220 kV, which is a red, and
+        // 220 kV is the single most common transmission voltage in Europe.
+        for (kv, color) in VOLTAGE_SCALE {
+            for (name, state) in [
+                ("trip", crate::theme::TRIP),
+                ("alarm", crate::theme::ALARM),
+                ("live", crate::theme::LIVE),
+            ] {
+                let d = channel_distance(color, state);
+                assert!(
+                    d > 90,
+                    "the {kv} kV band is within {d} of the {name} colour",
+                );
+            }
+        }
     }
 
     #[test]
