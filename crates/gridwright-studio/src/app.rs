@@ -402,6 +402,42 @@ impl StudioApp {
             }
         });
 
+        // The balance at this bus, which is the quantity the whole model is
+        // built around: everything injected here equals everything withdrawn,
+        // and the dual of that equality is the price shown at the top of this
+        // block. Naming the two sides makes the price legible as a consequence
+        // rather than as a number that arrived from somewhere.
+        //
+        // Only once solved. Before that, dispatch is unknown and the honest
+        // sum would be "up to `p_nom`, against `p_set`", which is two different
+        // kinds of number and not a balance.
+        if let Some(solved) = solved {
+            let at = self.instant;
+            let made: f64 = net
+                .generators
+                .iter()
+                .enumerate()
+                .filter(|(_, g)| g.bus == b)
+                .filter_map(|(i, _)| solved.dispatch.get(i))
+                .map(|series| at.mean(series))
+                .sum();
+            let taken: f64 = net.loads.iter().filter(|l| l.bus == b).map(|l| l.p_set).sum();
+
+            if made != 0.0 || taken != 0.0 {
+                ui.add_space(theme::UNIT);
+                ui.separator();
+                egui::Grid::new("balance").num_columns(2).show(ui, |ui| {
+                    reading(ui, "Generated", format!("{made:.0} MW"));
+                    reading(ui, "Consumed", format!("{taken:.0} MW"));
+                    // The remainder is what the network moved. Positive means
+                    // this bus exported and negative means it imported, which
+                    // is the sign convention a corridor label uses too:
+                    // positive is flow away from the end you are standing on.
+                    reading(ui, "Net to network", format!("{:+.0} MW", made - taken));
+                });
+            }
+        }
+
         // Unserved energy last, and only when there is some. It belongs under
         // the loads it happened to, and a line reading "0 MW shed" on every
         // healthy bus would train the reader to stop seeing it.
@@ -1078,7 +1114,7 @@ impl Instant {
     }
 
     /// The mean over the horizon, or the value at this instant.
-    fn mean(self, series: &[f64]) -> f64 {
+    pub(crate) fn mean(self, series: &[f64]) -> f64 {
         match self {
             Instant::Horizon => match series.len() {
                 0 => 0.0,
