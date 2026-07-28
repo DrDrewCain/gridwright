@@ -164,7 +164,7 @@ impl NetworkView {
             self.goal = Some((p, self.zoom.max(220.0)));
         }
 
-        self.handle_camera(ui, &response, rect);
+        self.handle_camera(ui, &response, rect, net.buses.len());
 
         let on_circuit = self.draw_edges(
             &painter,
@@ -187,8 +187,14 @@ impl NetworkView {
         self.draw_keys_hint(&painter, rect);
     }
 
-    fn handle_camera(&mut self, ui: &Ui, response: &eframe::egui::Response, rect: Rect) {
-        self.keys(ui, rect);
+    fn handle_camera(
+        &mut self,
+        ui: &Ui,
+        response: &eframe::egui::Response,
+        rect: Rect,
+        buses: usize,
+    ) {
+        self.keys(ui, rect, buses);
         self.glide(ui, rect);
 
         if response.dragged() {
@@ -238,7 +244,7 @@ impl NetworkView {
     ///
     /// This is a tool people keep open for hours. Every camera move having to
     /// go through a pointer is the difference between an instrument and a demo.
-    fn keys(&mut self, ui: &Ui, rect: Rect) {
+    fn keys(&mut self, ui: &Ui, rect: Rect, buses: usize) {
         use eframe::egui::Key;
 
         // Only when the canvas owns the keyboard. Otherwise `f` typed into a
@@ -247,14 +253,36 @@ impl NetworkView {
             return;
         }
 
-        let (fit, clear, zoom_in, zoom_out) = ui.input(|i| {
+        let (fit, clear, zoom_in, zoom_out, tab, back) = ui.input(|i| {
             (
                 i.key_pressed(Key::F) || i.key_pressed(Key::Home),
                 i.key_pressed(Key::Escape),
                 i.key_pressed(Key::Plus) || i.key_pressed(Key::Equals),
                 i.key_pressed(Key::Minus),
+                i.key_pressed(Key::Tab) && !i.modifiers.shift,
+                i.key_pressed(Key::Tab) && i.modifiers.shift,
             )
         });
+
+        // Tab walks the buses, shift-tab walks back.
+        //
+        // Borrowed from Figma, where tab and shift-tab select the next and
+        // previous sibling and complete a four-direction keyboard walk of the
+        // document. There is no hierarchy here yet to walk up and down, but the
+        // sideways half is useful on its own: it is the only way to reach a bus
+        // whose label lost a collision, short of knowing its name well enough
+        // to type it.
+        //
+        // Nothing happens with no network loaded, and the first press selects
+        // the first bus rather than doing nothing.
+        if (tab || back) && buses > 0 {
+            let next = match (self.selected, tab) {
+                (None, _) => 0,
+                (Some(b), true) => (b + 1) % buses,
+                (Some(b), false) => (b + buses - 1) % buses,
+            };
+            self.reveal(next);
+        }
 
         if fit {
             self.needs_fit = true;
@@ -319,7 +347,7 @@ impl NetworkView {
         painter.text(
             rect.right_bottom() + vec2(-12.0, -12.0),
             Align2::RIGHT_BOTTOM,
-            "scroll zoom · drag pan · F fit · esc clear",
+            "scroll zoom · drag pan · tab next bus · F fit · esc clear",
             FontId::proportional(10.0),
             crate::theme::INK_DIM,
         );
