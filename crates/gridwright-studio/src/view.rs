@@ -133,16 +133,9 @@ impl NetworkView {
 
         self.handle_camera(ui, &response, rect);
 
-        // Model-space bounds of what is on screen, so everything outside can be
-        // dropped before a shape is built. Egui pays per emitted shape whether
-        // or not it lands in the clip rect, and at a zoom that shows one
-        // substation of a national model that is most of the network.
-        let visible = self.visible(rect);
-
         let on_circuit = self.draw_edges(
             &painter,
             rect,
-            visible,
             net,
             layout,
             overlay.loading,
@@ -345,7 +338,12 @@ impl NetworkView {
         );
     }
 
-    /// Model-space bounds of what is on screen.
+    /// Model-space bounds of what is on screen, so everything outside can be
+    /// dropped before a shape is built.
+    ///
+    /// Egui pays per emitted shape whether or not it lands in the clip rect,
+    /// and at a zoom that shows one substation of a national model, that is
+    /// most of the network.
     fn visible(&self, rect: Rect) -> Rect {
         Rect::from_min_max(self.model_of(rect, rect.min), self.model_of(rect, rect.max))
     }
@@ -354,12 +352,12 @@ impl NetworkView {
         &self,
         painter: &eframe::egui::Painter,
         rect: Rect,
-        visible: Rect,
         net: &Network,
         layout: &[Pos2],
         loading: &[f64],
         pointer: Option<Pos2>,
     ) -> Option<(Circuit, Pos2)> {
+        let visible = self.visible(rect);
         let mut near: Option<(Circuit, Pos2, f32)> = None;
         let mut consider = |c: Circuit, path: &[Pos2]| {
             if let Some(ptr) = pointer
