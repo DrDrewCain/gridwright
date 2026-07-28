@@ -256,6 +256,47 @@ pub struct Bus {
     /// component that moves energy between two of them at an efficiency, which
     /// is what [`Link`] is.
     pub carrier: String,
+    /// Where this node is on the Earth, when the source said.
+    ///
+    /// Absent on most of them. MATPOWER, PSS/E RAW and UCTE carry no geography
+    /// at all; CGMES puts it in a separate profile that a case is often shipped
+    /// without; PyPSA has it and calls it `x` and `y`. So this is an `Option`
+    /// rather than a pair of zeroes, because "at null island" and "not stated"
+    /// are different claims and a layout that cannot tell them apart will draw
+    /// half a continent's worth of buses onto one point off the coast of Ghana.
+    pub position: Option<Coord>,
+}
+
+/// A point on the Earth, in WGS 84.
+///
+/// Named rather than a bare `(f64, f64)` so that no caller has to remember
+/// which one comes first — the two orderings are both common, both wrong half
+/// the time, and silently produce a network transposed about the diagonal.
+///
+/// A reader whose source uses a projected coordinate system must convert or
+/// leave this `None`. Storing easting and northing in here would typecheck and
+/// put Berlin in the Indian Ocean.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct Coord {
+    /// Degrees east of Greenwich, negative west.
+    pub lon: f64,
+    /// Degrees north of the equator, negative south.
+    pub lat: f64,
+}
+
+impl Coord {
+    /// A position, or `None` if either part is not a usable number.
+    ///
+    /// Readers get their coordinates from files, and a file is entitled to
+    /// contain `NaN`, an empty cell that parsed to zero-over-zero, or a
+    /// latitude of 400. Every one of those reaches a layout as a position that
+    /// is worse than no position: `NaN` propagates through a bounding box and
+    /// takes every other bus with it.
+    pub fn new(lon: f64, lat: f64) -> Option<Self> {
+        (lon.is_finite() && lat.is_finite() && (-180.0..=180.0).contains(&lon) && (-90.0..=90.0).contains(&lat))
+            .then_some(Self { lon, lat })
+    }
 }
 
 impl Default for Bus {
@@ -270,6 +311,7 @@ impl Default for Bus {
             v_min: 0.9,
             v_max: 1.1,
             carrier: "AC".into(),
+            position: None,
         }
     }
 }
@@ -1715,5 +1757,51 @@ mod tests {
             Err(NetError::BadSnapshotWeight { index: 1, .. })
         ));
         assert!(Snapshots::weighted(vec![3.0, 3.0]).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod coord_tests {
+    use super::Coord;
+
+    #[test]
+    fn a_position_on_the_earth_is_accepted() {
+        let berlin = Coord::new(13.405, 52.52).unwrap();
+        assert_eq!(berlin.lon, 13.405);
+        assert_eq!(berlin.lat, 52.52);
+    }
+
+    #[test]
+    fn the_poles_and_the_antimeridian_are_positions() {
+        // Inclusive bounds are deliberate. There are real substations above the
+        // Arctic Circle, and a longitude of exactly 180 is a place.
+        assert!(Coord::new(180.0, 90.0).is_some());
+        assert!(Coord::new(-180.0, -90.0).is_some());
+    }
+
+    #[test]
+    fn a_latitude_past_the_pole_is_not_a_position() {
+        // The most common way a file lies about geography: longitude and
+        // latitude swapped. Berlin transposed is 52.52 east, 13.405 north --
+        // in the Arabian Sea, and inside the valid range, so this does not
+        // catch it. What it does catch is anywhere past 90, which is where a
+        // transposed European longitude often lands.
+        assert!(Coord::new(0.0, 91.0).is_none());
+        assert!(Coord::new(181.0, 0.0).is_none());
+    }
+
+    #[test]
+    fn nan_is_not_a_position() {
+        // The one that matters most. A NaN reaching a bounding box makes every
+        // comparison false and takes the whole layout with it, so it is
+        // rejected at the boundary rather than defended against downstream.
+        assert!(Coord::new(f64::NAN, 0.0).is_none());
+        assert!(Coord::new(0.0, f64::NAN).is_none());
+        assert!(Coord::new(f64::INFINITY, 0.0).is_none());
+    }
+
+    #[test]
+    fn a_bus_starts_with_no_position() {
+        assert_eq!(super::Bus::default().position, None);
     }
 }
