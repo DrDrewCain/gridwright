@@ -1937,6 +1937,55 @@ it's actually possible to use Blender **without** the shortcuts."*
 That is the standard to hold this to. Not "add a menu", but "every keyboard
 path also has a visible one".
 
+#### The panel convention, and where this project sits outside it
+
+**Left is navigation and structure; right is the properties of what is
+selected.** Verified across Figma ("The left sidebar is where you can explore
+and organize your file. The right sidebar is where you can view layer
+properties"), Illustrator (toolbar "docked to the left of the document window by
+default"), Photoshop, and Blender — whose sidebar documentation is the tidiest
+statement of it: the Toolbar is "on the left side of the editor area" and the
+Sidebar with object settings is "on the right side", toggled by `T` and `N`.
+
+**Left-side inspectors appear only where the inspector is fused to the model
+tree.** Revit is the clear case: "the Properties palette is open and docked
+above the Project Browser on the left side of the drawing area" — both the tree
+*and* the inspector, stacked, on the left.
+
+**This project currently follows the CAD convention, and did so by accident.**
+The bus inspector is stacked above the composition summary in the left panel.
+That is defensible for the same reason Revit's is — there is no separate tree
+here, so the inspector shares a column with the only structural view there is —
+but it should be a decision rather than an artefact of what got written first.
+If a component tree ever appears, it takes the left column and the inspector
+moves right.
+
+#### Two affordances worth taking
+
+**Alt-click the eye to solo.** Verified in Illustrator's live shortcut table:
+alt-click the visibility icon shows or hides *all layers but the selected one*,
+and alt-click the lock icon does the same for editability. Same modifier, same
+column, different icon, different "apply to all others" verb. Adobe shipped the
+identical binding in Photoshop. When layers arrive here — voltage levels,
+result overlays — this is the isolate gesture to use.
+
+**A shortcuts panel where used shortcuts light up.** Figma's, described in their
+own words: "Shortcuts you've already used are highlighted... You can continue
+working while the keyboard shortcuts panel is visible. Try out a new shortcut
+and watch the panel update." That is a far better teaching loop than a static
+list, and this interface is keyboard-heavy enough to want one.
+
+#### One divergence that needs deciding rather than defaulting
+
+**Marquee semantics.** CAD is direction-dependent and unanimous about it — five
+products agree that left-to-right selects only what is fully enclosed and
+right-to-left selects anything touched, with the crossing box drawn dashed.
+Figma is not: its marquee is plain intersect, with no direction dependence.
+
+Grid engineers arrive from the CAD side. If box selection is ever added here,
+the CAD convention is probably right, and it is worth being deliberate about
+rather than reaching for whichever felt natural.
+
 #### Pattern 1 — one list, many concerns (ArcGIS Pro's Contents pane)
 
 The single best structural idea found. One list of entities is reused as the
