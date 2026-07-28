@@ -729,6 +729,93 @@ after them is downstream of what the browser can actually do.
       It is now measured, in the actual target rather than extrapolated from
       native numbers. See *What the browser target actually costs* below.
 
+### What practitioners actually say, in their own words
+
+An earlier sweep reported that **no attributable practitioner quote** criticising
+these interfaces could be found, and that the strongest available criticism came
+from academics and the vendors' own research arm. That was wrong, and it was
+wrong because Reddit and eng-tips are unreachable to a plain fetcher. Going
+through the Arctic Shift Reddit archive and the psspy.org forum turns up plenty.
+
+**Layout is the pain, and it is the single most on-point quote found.** From the
+PSS/E user forum, on generating a one-line from raw data:
+
+> "The trouble is, for a large system. **The automated draw routines in PSSE are
+> not very good. They create a terrible mess. Buses and branches are everywhere,
+> overlapping each other. It can take a full day to sort it all out.**"
+
+Another, on the same thread: *"The grow bus functionality draws them in such a
+mess!"* And the workaround one user settled on is to leave the tool entirely —
+export a text solution, fix coordinates by hand, and *"call matplotlib to draw
+all the connecting lines and labels."*
+
+**The reason is that the data has no geometry in it.** Stated plainly by a
+forum regular:
+
+> "Those files only contain network information (topology and electric data). It
+> is not possible to create .sld or .ecd file from .raw file since **diagram and
+> economic data are not present in the file**."
+
+And on the bus-location file that could supply it: *"unless someone on your team
+has created one, **you'll have to make it yourself**."*
+
+**This is direct evidence for the layout design already built here.** Most files
+carry no coordinates, which is why the spring embedder stays the default path
+and geography is the exception rather than the assumption — and why the status
+strip says which one produced the picture.
+
+**Diagrams do not survive crossing a tool boundary.** Also verbatim:
+
+> "You can't import the sld from PSSE into Powerfactory."
+
+> "I have been drawing the network manually when ever I have to export a psse
+> case, but **it's a pain**."
+
+And from the arc-flash side, on a model converted between two other packages:
+*"When you get it back **it won't have any drawings** but the model will be in
+there. You have to start a new drawing... I spent more time sending them various
+files trying to help them to convert than it would have taken me just to
+re-draw it."*
+
+**On the interfaces themselves**, the quote the earlier sweep could not find:
+
+> "**They all have objectively terrible user interfaces**, and no engineering
+> group worth its salt really accomplishes all that much by doing one-off
+> analyses via the GUI."
+
+with a reply agreeing: *"Very few people do studies solely via the GUI."* Others
+report the GUI *"crashes a lot and can be slow"*, a slider selecting *"an item
+many elements away from what I was trying to select"*, and — for the one tool
+where somebody did say it outright — GE PSLF's *"fuck-ugly interface"*.
+
+**And one-lines get drawn by hand in general-purpose drafting tools.** A thread
+asking what to build a one-line in gets answered with AutoCAD, Visio and Revit
+— no power-system tool is suggested at all. *"There are probably better tools,
+but it is the one I am usually stuck with as an EE at big companies."*
+
+#### Two findings that bear directly on what to build next
+
+**A CHI 2026 paper studied what control-room operators actually do with these
+diagrams**, and its conclusion names three needs:
+
+> "Our findings reveal critical needs for **semantic zoom, temporal continuity,
+> and adaptive view coordination** in control room design... Further study
+> should **balance geographic reality with operational clarity**."
+
+Temporal continuity is the scrubber. Semantic zoom is not built here — the
+canvas draws the same symbols at every zoom and only decides whether labels fit.
+Adaptive view coordination is the linked-2D-view recommendation from the
+visualisation literature, arriving from a second direction.
+
+**The negative finding is as useful as the positive ones.** Across every source
+searched, complaints about inspecting a year of results are **essentially
+absent** — one post total, and it is about tools returning only instantaneous
+values rather than a series. Nobody is complaining about the 8,760-hour problem
+because, in the tools people actually use, the year never reaches the diagram at
+all. That is consistent with the survey finding that the map shows one snapshot
+and the year lives in a separate heatmap, and it means the scrubber built here
+is answering a question the field has not yet learned to ask out loud.
+
 ### The field's own research, which settles three arguments
 
 Primary sources: IEEE TPWRS, IEEE Transactions on Smart Grid, PSERC reports, and
