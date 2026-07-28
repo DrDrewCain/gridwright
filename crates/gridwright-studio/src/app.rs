@@ -513,16 +513,25 @@ impl StudioApp {
         }
 
         separator(ui);
-        let share = p1 as f32 / total as f32;
+        let share = (p1 as f32 / total as f32).clamp(0.0, 1.0);
         let (rect, response) =
             ui.allocate_exact_size(egui::Vec2::new(120.0, 8.0), egui::Sense::hover());
         let p = ui.painter();
-        p.rect_filled(rect, 1.0, theme::SLATE_FIELD);
-        let mut feasible = rect;
-        feasible.set_width(rect.width() * share);
+
+        // Both halves are painted, because this is a whole divided in two and
+        // not a fill level. Drawn as a fill, the unpainted remainder reads as
+        // work not yet done -- and the remainder here is phase two, the part
+        // that actually answered the question. The wasted half should be the
+        // one that looks spent.
+        let mut phase_one = rect;
+        phase_one.set_width(rect.width() * share);
+        let mut phase_two = rect;
+        phase_two.set_left(phase_one.right());
+
         // Amber for phase one because it is, in the sense that matters, wasted
         // work: a warm start would have skipped it.
-        p.rect_filled(feasible, 1.0, theme::ALARM.gamma_multiply(0.75));
+        p.rect_filled(phase_one, 1.0, theme::ALARM.gamma_multiply(0.75));
+        p.rect_filled(phase_two, 1.0, theme::INK_DIM);
 
         ui.label(
             egui::RichText::new(format!("{:.0}% phase one", share * 100.0))
@@ -539,37 +548,36 @@ impl StudioApp {
         ));
     }
 
-    /// Reduce the per-bus, per-snapshot shed to one number per bus.
+    /// Reduce the solve's per-bus, per-snapshot series to one number per bus,
+    /// which is what the canvas can draw.
     ///
-    /// Peak rather than total: the view marks *where* the system failed, and a
-    /// bus that sheds heavily for one hour is as much a failure of that bus as
-    /// one that sheds lightly all year.
+    /// Shed is reduced by peak rather than by total: the view marks *where* the
+    /// system failed, and a bus that sheds heavily for one hour is as much a
+    /// failure of that bus as one that sheds lightly all year.
     fn absorb(&mut self, outcome: Result<Solved, Failure>) {
-        self.peak_shed = match &outcome {
-            Ok(solved) => solved
+        self.peak_shed.clear();
+        self.bus_price.clear();
+
+        if let Ok(solved) = &outcome {
+            self.peak_shed = solved
                 .shed
                 .iter()
                 .map(|per_snapshot| per_snapshot.iter().copied().fold(0.0_f64, f64::max))
-                .collect(),
-            Err(_) => Vec::new(),
-        };
-        // Mean over the horizon, not peak. Shed is an event -- one bad hour is
-        // the story -- but price is a condition, and a single congested hour
-        // should not repaint a bus that is ordinary the rest of the year.
-        self.bus_price = match &outcome {
-            Ok(solved) => solved
+                .collect();
+            // Mean over the horizon, not peak. Shed is an event -- one bad hour
+            // is the story -- but price is a condition, and a single congested
+            // hour should not repaint a bus that is ordinary the rest of the
+            // year.
+            self.bus_price = solved
                 .prices
                 .iter()
-                .map(|series| {
-                    if series.is_empty() {
-                        0.0
-                    } else {
-                        series.iter().sum::<f64>() / series.len() as f64
-                    }
+                .map(|series| match series.len() {
+                    0 => 0.0,
+                    n => series.iter().sum::<f64>() / n as f64,
                 })
-                .collect(),
-            Err(_) => Vec::new(),
-        };
+                .collect();
+        }
+
         self.outcome = Some(outcome);
     }
 }
