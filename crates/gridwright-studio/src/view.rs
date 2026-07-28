@@ -150,7 +150,7 @@ impl NetworkView {
         if let Some((c, at)) = on_circuit.filter(|_| !on_bus) {
             self.circuit_readout(ui, &painter, net, overlay.loading, c, at);
         }
-        self.draw_key(&painter, rect, overlay.prices);
+        self.draw_key(&painter, rect, net, overlay.prices);
         self.draw_keys_hint(&painter, rect);
     }
 
@@ -547,8 +547,55 @@ impl NetworkView {
     /// An unlabelled colour ramp is decoration: the reader can see that two
     /// buses differ but not by how much, or even in which direction. The ends
     /// carry numbers so the encoding is readable without being explained.
-    fn draw_key(&self, painter: &eframe::egui::Painter, rect: Rect, prices: &[f64]) {
+    fn draw_key(
+        &self,
+        painter: &eframe::egui::Painter,
+        rect: Rect,
+        net: &Network,
+        prices: &[f64],
+    ) {
         use crate::theme;
+
+        let font = eframe::egui::FontId::proportional(10.0);
+        let mut y = rect.bottom() - 12.0;
+
+        // Corridor kinds, and only the ones this network has. A legend row for
+        // a category with no members teaches a distinction the reader will
+        // never see, and on a single-area MATPOWER case that is two of the
+        // three -- most of the legend would be about nothing.
+        let kinds = [
+            (
+                net.lines.iter().any(|l| !l.is_transport()),
+                AC_COLOR,
+                "ac line",
+            ),
+            (
+                net.lines.iter().any(|l| l.is_transport()),
+                TRANSPORT_COLOR,
+                "transport",
+            ),
+            (!net.links.is_empty(), LINK_COLOR, "link"),
+        ];
+        // Bottom up, so adding a kind pushes the stack away from the edge
+        // rather than shifting every row already on screen.
+        for (present, color, name) in kinds.into_iter().rev() {
+            if !present {
+                continue;
+            }
+            painter.line_segment(
+                [pos2(rect.left() + 12.0, y), pos2(rect.left() + 30.0, y)],
+                Stroke::new(2.0, color),
+            );
+            painter.text(
+                pos2(rect.left() + 36.0, y),
+                Align2::LEFT_CENTER,
+                name,
+                font.clone(),
+                theme::INK_DIM,
+            );
+            y -= 14.0;
+        }
+        let floor = y - 2.0;
 
         if prices.is_empty() {
             return;
@@ -556,14 +603,13 @@ impl NetworkView {
         let (lo, hi) = prices
             .iter()
             .fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
-        let font = eframe::egui::FontId::proportional(10.0);
 
         if hi - lo < 1e-9 {
             // A network with no congestion has one price everywhere, and a ramp
             // across a range of zero would imply variation that is not there.
             painter.text(
-                rect.left_bottom() + vec2(12.0, -12.0),
-                eframe::egui::Align2::LEFT_BOTTOM,
+                pos2(rect.left() + 12.0, floor),
+                Align2::LEFT_BOTTOM,
                 format!("{lo:.2} /MWh at every bus"),
                 font,
                 theme::INK_DIM,
@@ -571,7 +617,11 @@ impl NetworkView {
             return;
         }
 
-        let bar = Rect::from_min_size(rect.left_bottom() + vec2(12.0, -26.0), vec2(108.0, 5.0));
+        // Stacked upward from whatever the corridor legend left free: caption,
+        // then the ramp, then its end values. The numbers go under the ramp so
+        // they sit against the swatch they label rather than across a gap from
+        // it.
+        let bar = Rect::from_min_size(pos2(rect.left() + 12.0, floor - 22.0), vec2(108.0, 5.0));
         // Painted in steps rather than as a gradient mesh: at this size the
         // banding is invisible, and it keeps the paint list to plain rects.
         let steps = 24;
@@ -585,22 +635,22 @@ impl NetworkView {
         }
 
         painter.text(
-            bar.left_top() + vec2(0.0, -3.0),
-            eframe::egui::Align2::LEFT_BOTTOM,
+            bar.left_bottom() + vec2(0.0, 2.0),
+            Align2::LEFT_TOP,
             format!("{lo:.0}"),
             font.clone(),
             theme::INK_DIM,
         );
         painter.text(
-            bar.right_top() + vec2(0.0, -3.0),
-            eframe::egui::Align2::RIGHT_BOTTOM,
+            bar.right_bottom() + vec2(0.0, 2.0),
+            Align2::RIGHT_TOP,
             format!("{hi:.0} /MWh"),
             font.clone(),
             theme::INK_DIM,
         );
         painter.text(
-            bar.left_bottom() + vec2(0.0, 3.0),
-            eframe::egui::Align2::LEFT_TOP,
+            bar.left_top() + vec2(0.0, -3.0),
+            Align2::LEFT_BOTTOM,
             "mean nodal price",
             font,
             theme::INK_DIM,
