@@ -1436,13 +1436,56 @@ after profiling it.
       line — 0.36 pairs with egui 0.35 — so version parity cannot be assumed
       across the ecosystem.
 
+### What has actually shipped in the canvas so far
+
+Recorded here rather than only as ticks in the stages, because the stages were
+written before any of it existed and the decisions below were made against the
+code rather than in the plan.
+
+- Buses as busbars, not dots. Circuits tap onto them perpendicularly at points
+  spread along the bar and ordered by which way the far end lies, so nothing
+  crosses on the approach. A bar has length because more than one thing
+  connects to it; a diagram where everything meets at the midpoint throws that
+  away.
+- Generators, loads and storage as the IEC symbols — a ring with a sine, a
+  solid arrowhead, battery plates — degrading to a filled disc below five
+  pixels of radius rather than drawing three pixels of squiggle inside a ring.
+- Injection above the bar, withdrawal below, which is the convention.
+- Selection as viewfinder brackets and hover as a thin closed outline. They
+  were both rings a pixel apart in size, which is one ring as far as a reader
+  is concerned.
+- An inspector: nodal price first, then what is attached, then dispatch against
+  nameplate, then unserved energy where there is any.
+- Keyboard camera (F fit, escape clear, plus/minus zoom), ignored while any
+  widget holds focus. Commanded moves ease; dragging and scrolling do not,
+  because a camera lagging a pointer reads as lag rather than as motion.
+- An empty state that names the action and offers the sample case.
+
+Still missing, in rough order of how much they are missed: a legend for the
+corridor colours (AC, transport, link are three hues nothing explains), any
+plot at all, a font that is not Ubuntu-Light, and multi-snapshot navigation —
+every reduction on the canvas is currently over the whole horizon because
+there is no way to ask for one hour of it.
+
 ### Stage 4 — results, and being honest about them
 
-- [ ] Flows on the network, coloured by loading, animated by direction.
+- [x] Flows on the network, brightening with loading, with a tick across any
+      corridor sitting on its rating. Not animated by direction: the DC model
+      returns a signed flow per snapshot, and marching ants down a corridor
+      would encode a sign we already have room to state, at the cost of a
+      permanently moving canvas. Hovering a circuit gives flow against rating.
+- [x] Nodal prices on the network itself — the output the engine exists to
+      produce and the one competing browser tools cannot show, because the
+      pure-Rust LP alternatives do not return duals.
+
+      **Not a heatmap.** Lightness on the busbar, scaled to the network's own
+      spread. Hue in this interface means state, and a fourth colour competes
+      with the ones that carry it; lightness is also the channel that survives
+      colour vision deficiency, which the blue-to-red ramp everybody reaches
+      for does not. An absolute scale would render an uncongested network as one
+      flat colour, and where prices stop being equal is the whole point.
 - [ ] Dispatch stacks, price duration curves, storage state of charge,
       capacity build-out by period. `egui_plot` for all of it.
-- [ ] Nodal price heatmap on the network itself — this is the output the engine
-      exists to produce and the one competing browser tools cannot show.
 - [ ] **Show the *status* of an answer, not just the number.** An AC result that
       is a relaxation rather than an operating point, a head iteration that did
       not converge, and a branch and bound that stopped on its node limit are
