@@ -118,13 +118,7 @@ impl NetworkView {
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
         let Some(net) = net.filter(|_| !layout.is_empty()) else {
-            painter.text(
-                rect.center(),
-                Align2::CENTER_CENTER,
-                "Drop a network file here",
-                FontId::proportional(15.0),
-                ui.visuals().weak_text_color(),
-            );
+            self.draw_empty(&painter, rect);
             return;
         };
 
@@ -283,6 +277,52 @@ impl NetworkView {
             ui.ctx().request_repaint();
         }
         let _ = rect;
+    }
+
+    /// The canvas with nothing on it.
+    ///
+    /// An empty screen is an invitation to act, so it names the action and
+    /// then the way out for a reader who has no file to hand. It points at the
+    /// panel rather than reprinting what is on it -- the formats are listed
+    /// there with their extensions, and two copies of a list is how one of them
+    /// goes stale.
+    fn draw_empty(&self, painter: &eframe::egui::Painter, rect: Rect) {
+        use crate::theme;
+
+        // A dashed boundary inside the pane, so the drop target is a place
+        // rather than the whole window. Dashes because a solid rule here would
+        // read as a panel edge, and there is no panel.
+        let target = Rect::from_center_size(
+            rect.center(),
+            vec2(rect.width().min(420.0), rect.height().min(200.0)),
+        );
+        painter.add(eframe::egui::Shape::dashed_line(
+            &[
+                target.left_top(),
+                target.right_top(),
+                target.right_bottom(),
+                target.left_bottom(),
+                target.left_top(),
+            ],
+            Stroke::new(1.0, theme::SLATE_LINE),
+            6.0,
+            5.0,
+        ));
+
+        painter.text(
+            target.center() - vec2(0.0, 10.0),
+            Align2::CENTER_CENTER,
+            "Drop a network here",
+            FontId::proportional(15.0),
+            theme::INK,
+        );
+        painter.text(
+            target.center() + vec2(0.0, 12.0),
+            Align2::CENTER_CENTER,
+            "or open the sample case on the left",
+            FontId::proportional(11.0),
+            theme::INK_DIM,
+        );
     }
 
     /// Model-space bounds of what is on screen.
