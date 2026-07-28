@@ -729,6 +729,151 @@ after them is downstream of what the browser can actually do.
       It is now measured, in the actual target rather than extrapolated from
       native numbers. See *What the browser target actually costs* below.
 
+### Whether a third dimension is a good idea: the evidence says mostly no
+
+The previous section establishes that 3D here is *cheap*. This one is about
+whether it is *right*, and the answer from the visualisation literature is that
+in a browser it is very likely a mistake. Recording it in full because the
+temptation will come back.
+
+**The load-bearing fact.** Almost every credible experimental win for 3D on
+abstract network data comes from **stereopsis plus head-coupled motion
+parallax** — that is, a headset. Ware & Franck (1996, ACM TOG 15(2)) isolate it
+precisely, measuring the size of graph a person can understand relative to a
+static monoscopic 3D baseline: stereo alone **×1.6**, head-coupled parallax
+alone **×2.2**, both **×3.0**. Note that parallax beats stereo, and mouse-orbit
+is not parallax — it is a slower, indirect substitute nobody has measured.
+
+A browser gives monoscopic perspective plus mouse-orbit. That is the exact
+configuration Greffard et al. (GD 2011) found stereo beats, and it carries every
+cost of 3D while capturing none of the measured benefit.
+
+**Munzner's criterion, verbatim** (*Visualization Analysis and Design*, 2014,
+ch. 6): benefits outweigh costs "when task is **shape perception for 3D spatial
+data**". Her rule is "No unjustified 3D — 3D needs very careful justification
+for abstract data ... **be especially careful with 3D for point clouds or
+networks**." Her four enumerated costs:
+
+- **Power of the plane.** Planar position is her highest-ranked magnitude
+  channel; depth is at the bottom, below length, tilt and area.
+- **Occlusion hides information**, and fixing it costs interaction.
+- **Perspective distortion "interferes with all size channel encodings"**.
+- **Text legibility is "far worse when tilted from the image plane"**.
+
+A transmission network fails this test on its face. Geography is planar,
+topology is abstract, voltage class is ordinal, time is not a spatial axis.
+There is no 3D shape to perceive.
+
+**Measured harm to quantity reading.** Zacks, Levy, Tversky & Schiano (1998,
+*JEP: Applied* 4(2)) found perspective depth cues **lowered accuracy** on bar
+reading. Borkin et al. (2011, TVCG 17(12)) is the cautionary tale worth
+remembering when a grid engineer asks for 3D: on *coronary arteries*, which are
+unambiguously 3D objects, 2D visualisations were significantly **more accurate
+and more efficient** than 3D. The domain experts demanded 3D and were wrong.
+
+**The 2.5D steelman, tested head-on, did not win.** Feyer et al. (2023, TVCG
+30(1)) ran 2D coplanar against 2.5D stacked planes against 3D hemisphere, in VR,
+across six multilayer-network tasks: **"We found no clear overall winner."**
+2.5D won cross-layer path tracing and per-node degree; it lost badly on
+per-layer counting at seven layers (error 0.45 against 0.18 for 2D, 139 s
+against 65 s). And the mechanism by which it won is the one a browser cannot
+provide: *"the participants tend to move more in 2.5D ... in 2D and 3D the
+network can be seen in its entirety from one static position"*. A participant:
+*"[2.5D] is harder to compare because you have to walk so much."* The authors
+close by noting a flat-screen version of the experiment would be interesting —
+**it has not been done.** Building this means running it.
+
+#### The one domain-specific study, which apparently found *for* 3D
+
+Wiegmann, Overbye, Hoppe, Essenberg & Sun (2006, IEEE PES General Meeting,
+doi:10.1109/PES.2006.1709137) is the only controlled human-factors experiment on
+2D against 3D for power system displays that could be found. The open PDF is a
+dead link and it is paywalled otherwise, so this is second-hand and flagged as
+such — but the reported finding is that 3D representations of generator output
+and reserves improved speed *and* accuracy on some tasks.
+
+Note carefully what the 3D was: **extruded bars superimposed on a 2D one-line
+diagram.** A 2D map with magnitude glyphs standing off it — not a 3D layout.
+Fischer & Keim's power-grid visualisation survey (arXiv:2106.04661) catalogues
+only two 3D techniques in the entire field and observes that for the interactive
+one, *"the only example includes representing bar charts as 3D objects
+superimposed over a 2D map"*, with **no user evaluations of either**.
+
+**Get this paper before building anything with depth in it.**
+
+#### If it is built anyway, these nine conditions all have to hold
+
+1. Layers carry hard semantics nameable in one sentence — voltage classes, or
+   contingencies. Not "it looks like more information".
+2. **Three to five layers.** Feyer's 2.5D degraded badly at seven.
+3. Primary tasks are cross-layer connectivity and cross-layer comparison, not
+   per-layer counting.
+4. **Orthographic, never perspective.** This removes the exact mechanism Zacks
+   measured and Munzner names. (Inference from two sources, not a tested
+   finding — there appears to be *no* experimental literature comparing
+   axonometric to perspective for reading quantities.)
+5. **Ground-plane shadows or drop lines.** Tory et al. (2006, TVCG 12(1)) found
+   3D worked for approximate positioning specifically "when appropriate cues,
+   such as shadows, are present". Cheapest verified win available.
+6. **No text in the scene.** Billboard every label.
+7. **Depth encodes nothing quantitative.** Layer membership is categorical; that
+   is all depth may carry.
+8. **A linked 2D view is always present.** The single most-supported decision in
+   the whole review: Tory et al. found combination displays had "as good or
+   better performance, inspired higher confidence"; Kristensson et al. recommend
+   the same for the space-time cube.
+9. **Constrain the camera** — snap-to-axis, bounded volume, no free flight.
+   Kraus et al. (2020) recommended the bounded VR-Table over room-scale because
+   unbounded space costs overview.
+
+Voltage classes actually satisfy 1, 2 and 3. That is the only version of this
+worth prototyping, and it should be measured against our own 2D view rather than
+assumed.
+
+#### What the evidence says to build instead
+
+**A better 2D view.** Fischer & Keim name the real problem: *"Visualizing these
+networks on a geographical map is challenging since nodes have a 'fixed'
+position, and thus clutter or occlusion may be harder to avoid."* That is a 2D
+problem before it is ever a 3D one, and it is where the effort belongs — layout,
+edge bundling, aggregation, level of detail.
+
+**Small multiples and a scrubber, not animation.** Robertson et al. (2008, TVCG
+14(6)): animation is *"the least effective form for analysis"*; small multiples
+are more accurate. Archambault, Purchase & Pinaud (2011, TVCG 17(4)) replicated
+it on graphs specifically — small multiples significantly faster on all five
+comprehension tasks. Brehmer et al. (2019) again on mobile.
+
+**One exception worth designing for:** Archambault found small multiples produced
+significantly *more* errors than animation for identifying the set of nodes or
+edges that changed **within the same timeslice**. That maps directly onto "which
+lines tripped together", so animated transition is the right tool for that one
+question and the wrong one for everything else. Munzner's safe case is the same:
+animated transitions between two states, never many states changing everywhere.
+
+Amini et al. (2015, TVCG 21(1)) supply the mechanism: their 3D condition
+*"relies mainly on 3D camera navigation"* while the 2D condition *"relies
+significantly on scrubbing the timeline"*. Much of the space-time cube's
+advantage is a proxy for having a good temporal interaction at all.
+
+**Adopt the generalised space-time cube as the data model, not the renderer.**
+This is the most actionable idea in the review. Bach et al. (2016, CGF 36(6))
+argue the cube is *"purely conceptual without the need to be implemented"*, and
+that good temporal visualisations are *operations* on it — flatten across time,
+flatten across space, slice, extract — that "transform the cube's 3D shape into
+readable 2D visualisations". It applies to any 2D-plus-time data, networks
+explicitly included. Take the analytic vocabulary, skip the occlusion.
+
+#### The space-time cube itself tests badly as a primary view
+
+Kristensson et al. (2009, TVCG 15(4)), the controlled study, n=30 novices: the
+cube was **significantly worse** on point queries ("are two people in the same
+place at 9:00", p<0.005) and about **twice as fast** on global-pattern questions
+(60 s against 121 s, p<0.05), with overall error 23% against 16% (p=0.051).
+Their own recommendation is to ship "an alternative visualization view" for
+point queries. And their 2D baseline was deliberately weak — they say so — which
+makes this close to a best case for the cube.
+
 ### A third dimension is affordable, and it is not a renderer
 
 Measured against vendored egui/eframe/epaint 0.35 sources and real benchmark
