@@ -903,6 +903,126 @@ And the standing motivation of the IEEE VIS EnergyVis workshop:
 > one-line diagrams and contour plots being over-extended by the data they are
 > being applied to**."
 
+### What the standards actually say about colour and status
+
+Read from primary sources: IEEE 315-1975 (R1993), IEC 60617 via its identically
+adopted Indian national standard, IEC 60073, NUREG-0700 Rev. 4, EPRI 1008122,
+USDA RUS Bulletin 1724E-300, and BPA's current switching procedure.
+
+#### Redundant coding is required, not advisable
+
+**NUREG-0700 Rev. 4, guideline 1.3.8-10, in full: "Color coding should be
+redundant with some other display feature."** The same document, 1.1-27 and
+1.3.8-1: *"to accommodate the approximately 10 percent color-blind individuals,
+designers should avoid displays requiring red-green or blue-yellow
+comparisons"*, and *"In general, the number of colors should be limited to
+six."*
+
+EPRI 1008122 says the same thing and names the exact collision to avoid: *"An
+example of that conflict would be an attempt to use the red/green color pair to
+mean off-normal/normal as well as using the same color pair to mean on/off."*
+
+IEC 60073's own introduction: *"The use of only a single means of coding is
+often insufficient to ensure unambiguous representation of information."*
+
+**This validates two choices already made here and indicts a third.** Unserved
+energy is drawn as a colour *and* a ring, which is redundant coding. Price is a
+lightness ramp rather than a blue-to-red one, which is the only channel that
+survives colour vision deficiency. But the corridor palette is now AC, transport
+and link plus eight voltage bands plus three state colours, which is well past
+six, and the honest reading of that guideline is that the voltage bands and the
+state colours are competing.
+
+#### The red/green inversion is a conformance choice, not a bug
+
+The single most useful thing found. **IEC 60073 requires the *user* to declare
+which criterion the code is keyed to**, and the answer changes the colours:
+
+| | safety of persons | condition of process | state of equipment |
+| --- | --- | --- | --- |
+| red | danger | emergency | faulty |
+| yellow | warning | abnormal | abnormal |
+| green | safe | normal | normal |
+
+Key it to safety and red means energised and green means safe to touch. Key it
+to process and green means running. **Both are conformant.** NUREG-0700's
+Table 1.3 footnote documents the split inside one country: *"Personnel with
+previous fossil fuel plant experience typically associate an open/flowing state
+with red and a closed/stop state with green, but reverse associations typically
+exist for personnel with previous Navy experience."*
+
+The 1991 edition of IEC 60073 went further and **preferred white, grey and black
+for switch open/closed**, permitting red and green only where supplemented by a
+symbol or text.
+
+So: this project's LIVE/ALARM/TRIP is the "state of equipment" reading, and that
+should be said somewhere a reader can find it rather than assumed.
+
+#### A one-line diagram is a reference-state drawing, not a status display
+
+IEEE 315 is explicit, and it explains why status colouring is a *layer* in every
+SCADA product rather than a property of the symbol:
+
+> §4.3: "The standard method of showing a contact is by a symbol indicating the
+> circuit condition it produces when the actuating device is in the deenergized
+> or nonoperated position."
+
+> §4.6: "The standard method of showing switches is in a position with no
+> operating force applied."
+
+And its own answer to drawing a closed switch is geometric rather than
+chromatic: *"When the basic switch symbols... are shown in the closed position
+on a diagram, terminals must be added for clarity."*
+
+**Two symbol collisions worth knowing before drawing anything else.** In IEC
+60617, a small circle filled or open marks the **hinge point** of a contact, not
+its status — so filled-means-closed collides with the standard. And an "×" is
+the **circuit-breaker qualifying symbol** in IEC while being a **test or
+isolation switch** in US utility legends. Nothing with an × in it ships without a
+legend.
+
+#### Hue is already spent on voltage in real mimic diagrams
+
+IS 11954, *Guide for colour coding of electrical mimic diagrams*, assigns colour
+by **voltage level** — crimson for 400 kV down through violet and black for low
+voltage, ordered *"colours closer to 'Red' for higher voltages"* — over a
+background specified as *"light grey or cream"*.
+
+This is a large part of why status has to be carried by fill, shape and
+annotation on a real board. It also means the voltage colouring just added here
+is the *conventional* use of hue, and the state colours are the interlopers.
+
+#### What a shipping utility product actually does
+
+Oracle's Network Management System, the DMS behind many control rooms,
+documents the rule outright: *"a closed switch is a different color **and
+shape** than an open switch."*
+
+Three more of its choices are worth copying:
+
+- **Conductors carry three orthogonal render channels** — an eight-digit code
+  giving line thickness, dash pattern and colour independently.
+- **De-energised is at least two states**, "predicted" and "confirmed", each
+  drawn as a glow, with an explicit precedence order when several highlights
+  apply at once.
+- **Conditions are decorations in fixed quadrants** around the device rather
+  than mutations of it: tags above-left, outages above-right, crews below-left,
+  notes below-right. A tag does not change what the device looks like.
+
+BPA's control centre does the same thing physically. Its group display board is
+pinned: **white pin** for an isolating device open and tagged as a clearance
+limit, **red pin with a white disk** for a closed ground switch, miniature red
+tag for a work clearance, blue for a test clearance, round yellow for a hold
+order, and a **red wooden block** for any switch in an abnormal position.
+
+#### One more guideline worth adopting
+
+NUREG-0700 3.2.2-3: *"System and equipment status should be conveyed by
+illuminated indicators, **never by the absence of illumination**."* The
+equivalent failure here is drawing something as absent when it is merely
+unknown — which is exactly why an unrated line is NaN rather than zero, and why
+the anatomy bar paints both of its halves.
+
 ### What the people who own real grids actually ship
 
 Fetched live rather than recalled: OpenInfraMap, the ENTSO-E Transparency
