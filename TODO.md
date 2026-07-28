@@ -1661,6 +1661,187 @@ there is no way to ask for one hour of it.
 - [ ] Emit IAMC-format long tables. It is the lingua franca of model comparison
       exercises, and a tool that cannot produce it cannot participate in one.
 
+### What modellers actually do, and the two holes nobody has filled
+
+Researched against primary sources — tool documentation, issue trackers, and
+the time-series-aggregation review literature. Everything below is either
+quoted from a source or flagged as inference.
+
+**Two findings change what to build first.**
+
+#### 1. Licence-free infeasibility diagnosis is available and nobody has it
+
+PyPSA's own troubleshooting guide offers four strategies for an infeasible
+model, and the first — `n.optimize(compute_infeasibilities=True)` — is gated on
+**"If you are using Gurobi"**. Its flagship *Tracing Infeasibilities* example
+runs `n.optimize(solver_name="gurobi")`. The leading open-source energy
+framework's flagship infeasibility tutorial requires a commercial licence.
+
+Calliope's equivalent page is the honest one and it is grim: its opening advice
+is to *remove constraints*, which is bisection by hand, and the full toolkit
+runs to twelve techniques including writing an LP file out to run
+`gurobi_cl ResultFile=...` against it, digging through `.cplex.log`, and calling
+`model.backend.verbose_strings()` first **because by default the LP file has
+unreadable names**.
+
+Meanwhile **HiGHS has `Highs::getIis`**, with a strategy bitmap that includes
+forming an infeasibility set by solving an elasticity LP and then reducing it
+toward a true IIS — and HiGHS compiles to WebAssembly, which this repo has
+already measured. Two caveats worth carrying: the facility was still receiving
+bug fixes as of v1.15.1, and its docs suggest it is LP-only, so a model with
+integer investment decisions likely needs the relaxation IIS'd instead.
+
+**The differentiator is not the IIS.** It is translating row indices back into
+"generator X at hour Y conflicts with binding constraint Z". Calliope shipping
+`verbose_strings()` as an opt-in is direct evidence that the incumbents treat
+that mapping as an afterthought, and it is the part this repo is best placed to
+own — the model builder here knows what every row is.
+
+The elastic-slack path is already half-built as priced load shedding, and it is
+what the community hand-rolls: Calliope ships `unmet_demand`, PyPSA's guide
+recommends adding a high-cost generator at every bus. It is also error-prone
+when hand-rolled — PyPSA-Eur issue #1907 reports load shedding reported **1000x
+larger than expected** because of a sign-attribute scaling mistake. A 1000x
+error in the diagnostic used to diagnose everything else.
+
+#### 2. Network diff is an open request from a PyPSA maintainer
+
+Issue #1627, "Make comparison of `networks` more accessible", opened by a core
+contributor. Three motivations: verifying that a scenario modification was
+actually applied, debugging networks that "suddenly become inexplicably
+infeasible", and the inadequacy of the current workaround. The stated blocker is
+that **pandas `compare()` requires the same labels for index and column, which
+is rarely the case**.
+
+What PyPSA has today is equality and not difference: `==` since v0.29.0,
+`n.equals()` since v0.35.0. Both return booleans.
+
+A network diff is not a dataframe diff, which is why pandas cannot do it. It is
+three different things needing three presentations:
+
+- **Topological** — components added, removed, re-parented. Set difference on
+  identity, which is exactly where pandas dies on misaligned indices.
+- **Parametric** — scalars changed on surviving components. The only part
+  pandas handles.
+- **Time series** — an 8760-vector changed. Never 8760 numbers; a duration-curve
+  overlay and summary statistics. Antares independently confirms this is its own
+  category by giving it a separate `replace_matrix` command and storing matrices
+  out of band from the command log.
+- **Result delta conditioned on input delta** — "you changed three inputs, here
+  are the seven outputs that moved most". Nothing open does this.
+
+It must work between an unsolved and a solved network, which is explicitly
+requested — meaning inputs and results have to be one addressable object rather
+than results being a separate artefact.
+
+#### The scenario-as-commands design is confirmed, and improvable
+
+Stage 2 records Antares Web's variant manager as base-plus-ordered-commands.
+That is verified — "Any modifications made to a variant are recorded as a list
+of commands in the variant's history" — and its command vocabulary is worth
+copying nearly directly, because its *shape* carries the insight: structural
+CRUD (`create_area`, `remove_link`, `create_st_storage`, ...) plus
+`replace_matrix` for time series plus `update_config` for scalars. **Three kinds
+of delta, not one.**
+
+Two things to take from elsewhere:
+
+- **Spine Toolbox composes declaratively**, not imperatively: scenarios are
+  built from *ranked layers of alternatives*, where position determines rank.
+  That gives reuse an ordered command list does not — `base + {high_gas_price} +
+  {no_nuclear}`, with those layers shared across scenarios.
+- **PyPSA-Eur shows the failure mode.** It encodes scenario identity into the
+  *filename* (`base_s_{clusters}_elec_{opts}.nc`). A filename is a lossy hash of
+  a config, so when it collides or when `config.yaml` changes underneath, the
+  provenance is silently gone.
+
+Antares also could not make its own mechanism universal — variant management
+applies "only to 'managed' studies available in the 'default' workspace".
+
+So: **named, content-addressed, ordered sets of reusable typed deltas over an
+immutable base, with matrices stored by hash out of band.** Antares'
+vocabulary, Spine's composition, neither one's provenance hole.
+
+#### Where the time actually goes is not data cleaning
+
+The prior assumption was data wrangling. The evidence points somewhere more
+specific and more favourable. A 2024 REMix scenario-ensemble paper reports
+**700 scenarios, 3,400,000 files in 260,000 directories, 33 TB** — and that it
+took **three years for a team of ten** to stabilise the workflow, against 20
+days of actual solving. They had to invent a hierarchical directory structure
+just to track file dependencies.
+
+Pfenninger et al. (2017) name the same thing: it is time-consuming to "track
+data provenance and processing steps". A 2024 study on model understandability
+finds PhD students "invest large amounts of time to get up and running" and
+cannot determine "where the most relevant uncertainties in the model lie".
+
+**The dominant sink is the combinatorial bookkeeping of many runs and the loss
+of the chain from a result back to the assumption that produced it.** That is a
+provenance and diffing problem, which suits a studio far better than a
+data-cleaning problem would.
+
+#### What to draw, from revealed preference
+
+PyPSA's `statistics` module and PyPSA-Eur's automatic per-run outputs encode
+years of "users kept asking for this". Both are dominated by the same handful:
+
+- **The energy balance is the atom.** It appears in the metric list, the summary
+  CSVs, a map view, a time-series view and an interactive view. One primitive —
+  per bus, per carrier — renders as a stack, a map and a heatmap.
+- **Duals are a headline statistic, not an advanced one.** "Marginal prices" is
+  on the canonical list and gets its own heatmap. Already done here, and worth
+  noting that retaining duals gives constraint shadow prices nearly free, which
+  is what PyPSA #1732 wants soft constraints for.
+- **The hour-of-day by day-of-year heatmap is the workhorse chart**, applied to
+  prices, utilisation and storage state of charge alike. One component, three
+  domains.
+- **Curtailment and market value are top-level**, not derived afterthoughts.
+- **Capacity and generation must look different.** PyPSA keeps
+  `Installed`/`Expanded`/`Optimal` capacities as three separate metrics and
+  `Supply`/`Withdrawal` separate from all of them, because conflating "GW built"
+  with "GWh produced" is the classic reader error.
+
+#### Temporal aggregation, which has a literature and a stated best practice
+
+From Teichgraeber & Brandt's review. The domain spans **eight to nine orders of
+magnitude in time scale**. Aggregation buys one to two orders of magnitude of
+compute, non-linearly: **10 representative days out of 365 (2.7% of the data)
+reduces computation time to 0.1-1.1%** of the original.
+
+Their best practice #1 is that performance **"should be validated on the full
+time series"** — and nothing found shows a user whether their aggregation is any
+good. That is a cheap, high-credibility thing to build: a duration-curve overlay
+of original against aggregated, per series, with the surviving extreme days
+marked.
+
+The correctness trap is storage. Aggregation assumes periods are operationally
+independent, which fails for seasonal storage, where **"the order in which the
+cluster days appear matters"**. The fix is intra-period plus inter-period state
+of charge superposition with the daily cyclic constraint replaced by a yearly
+one. This should be a visible toggle rather than a buried flag.
+
+#### The competitive picture
+
+`model.energy` is the closest browser-native thing and is deliberately a toy —
+its own words are "a toy model with a strongly simplified setup", with no
+inter-regional transmission, four selectable weather years, and **server-side
+solving**. Antares Web is the most serious web application in the space and is a
+*study manager*: the solve is not in the browser.
+
+TransitionZero's FEO — an OSeMOSYS-based platform covering 163 countries that
+added a web model builder in 2024 — **no longer resolves at
+`feo.transitionzero.org`**, while the parent domain does. Worth finding out what
+happened before assuming the space is empty for a good reason.
+
+#### What to deprioritise
+
+**N-1 contingency screening.** It belongs to a different profession than the one
+this tool serves — TSO operations rather than system planning — it needs AC power
+flow to be credible, and it is served by entrenched incumbents with regulatory
+sign-off. MISO screens more than 11,500 contingencies every four minutes; that
+is not a thing to compete with from a browser tab.
+
 ### What the domain research says to build, and what to refuse
 
 Ordered by how much each converts the tool from demo to instrument. Most of
