@@ -62,6 +62,13 @@ pub struct NetworkView {
     /// frames it. Deferred to draw time because fitting needs the pane size,
     /// and nothing knows that until there is a pane.
     needs_fit: bool,
+    /// The bus the user has chosen, which outlives the pointer leaving it.
+    ///
+    /// Distinct from hover on purpose: hover answers "what is under my cursor"
+    /// and vanishes, selection answers "what am I working on" and does not. An
+    /// inspector driven by hover cannot be read, because reading it means
+    /// moving the pointer off the thing it describes.
+    selected: Option<usize>,
 }
 
 impl Default for NetworkView {
@@ -70,6 +77,7 @@ impl Default for NetworkView {
             zoom: 400.0,
             centre: Pos2::ZERO,
             needs_fit: true,
+            selected: None,
         }
     }
 }
@@ -78,6 +86,11 @@ impl NetworkView {
     /// Refit at the next opportunity. Called when the network changes under it.
     pub fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// Which bus is selected, for whoever draws the inspector.
+    pub fn selected(&self) -> Option<usize> {
+        self.selected
     }
 
     /// `peak_shed` is per bus, empty when nothing has been solved. Precomputed
@@ -172,17 +185,32 @@ impl NetworkView {
             .fold(0.0_f64, f64::max)
             .max(1.0);
 
-        for line in &net.lines {
+        // Where each circuit lands along each busbar.
+        //
+        // A busbar has length because more than one thing connects to it, and a
+        // diagram where every circuit meets the bar at its midpoint throws that
+        // away — the bar stops being a conductor and goes back to being a dot
+        // wearing a rectangle. Taps are spread along the bar and ordered by the
+        // direction of their far end, so circuits leaving to the left land on
+        // the left of the bar and nothing needs to cross the bar to get where
+        // it is going.
+        let taps = TapSlots::build(net, layout);
+
+        for (e, line) in net.lines.iter().enumerate() {
             let Some((a, b)) = self.segment(rect, visible, layout, line.bus0, line.bus1) else {
                 continue;
             };
+            let (a, b) = taps.place(a, b, line.bus0, line.bus1, Circuit::Line(e), self.bar_half());
             let width = 0.8 + 2.4 * (line.s_nom.abs() / max_s_nom).sqrt() as f32;
             let color = if line.is_transport() {
                 TRANSPORT_COLOR
             } else {
                 AC_COLOR
             };
-            painter.line_segment([a, b], Stroke::new(width, color));
+            painter.add(eframe::egui::Shape::line(
+                self.tapped(a, b),
+                Stroke::new(width, color),
+            ));
         }
 
         let max_p_nom = net
@@ -192,12 +220,16 @@ impl NetworkView {
             .fold(0.0_f64, f64::max)
             .max(1.0);
 
-        for link in &net.links {
+        for (e, link) in net.links.iter().enumerate() {
             let Some((a, b)) = self.segment(rect, visible, layout, link.bus0, link.bus1) else {
                 continue;
             };
+            let (a, b) = taps.place(a, b, link.bus0, link.bus1, Circuit::Link(e), self.bar_half());
             let width = 0.8 + 2.0 * (link.p_nom.abs() / max_p_nom).sqrt() as f32;
-            painter.line_segment([a, b], Stroke::new(width, LINK_COLOR));
+            painter.add(eframe::egui::Shape::line(
+                self.tapped(a, b),
+                Stroke::new(width, LINK_COLOR),
+            ));
         }
     }
 
@@ -208,6 +240,41 @@ impl NetworkView {
     /// checks they are in range — the view may be handed something that was
     /// never validated, so it declines to index rather than panicking on a file
     /// somebody dragged in.
+    /// A circuit routed as a tap onto two busbars, rather than as a chord
+    /// between two points.
+    ///
+    /// This is the difference between a diagram of a power system and a graph
+    /// with bars for vertices. On a real single-line diagram nothing meets a
+    /// busbar at an angle: a circuit runs, then turns and drops onto the bar
+    /// perpendicular. The bar is a conductor with physical extent, and a
+    /// connection lands *on* it — the right angle is what says so.
+    ///
+    /// So each end gets a short vertical stub, and the diagonal runs between
+    /// the stub ends. Three segments instead of one, and the whole picture
+    /// stops reading as a node-link graph.
+    ///
+    /// The stub goes up from the lower bus and down from the higher one, so a
+    /// circuit always leaves a bar on the side facing its far end and never
+    /// crosses back over its own busbar.
+    /// Half the drawn length of a busbar, in screen points.
+    ///
+    /// One definition, because the bar, its taps, its label offset and its hit
+    /// target all have to agree, and they were each computing it separately.
+    pub(crate) fn bar_half(&self) -> f32 {
+        (self.zoom * 0.022).clamp(6.0, 30.0)
+    }
+
+    fn tapped(&self, a: Pos2, b: Pos2) -> Vec<Pos2> {
+        // Tied to the bar's own size rather than to zoom directly, so the tap
+        // always reads as a drop onto *that* bar. Long enough to be
+        // unmistakably a right angle: a three-pixel stub is just a kinked line.
+        let stub = (self.bar_half() * 1.15).clamp(9.0, 34.0);
+        let dir = if b.y >= a.y { 1.0 } else { -1.0 };
+        let a_stub = pos2(a.x, a.y + stub * dir);
+        let b_stub = pos2(b.x, b.y - stub * dir);
+        vec![a, a_stub, b_stub, b]
+    }
+
     fn segment(
         &self,
         rect: Rect,
@@ -229,7 +296,7 @@ impl NetworkView {
 
     #[allow(clippy::too_many_arguments)]
     fn draw_buses(
-        &self,
+        &mut self,
         ui: &Ui,
         painter: &eframe::egui::Painter,
         rect: Rect,
@@ -251,7 +318,7 @@ impl NetworkView {
         // model into a solid mat at low zoom; fixed model size draws bars the
         // width of the pane at high zoom.
         let half = (self.zoom * 0.022).clamp(6.0, 30.0);
-        let thickness = (half * 0.22).clamp(2.5, 6.0);
+        let thickness = (half * 0.30).clamp(3.0, 8.0);
         let pointer = response.hover_pos();
 
         // What is attached to each bus, computed once. Asking
@@ -357,13 +424,36 @@ impl NetworkView {
             }
         }
 
+        // A click takes the bus under the pointer, or clears when there is
+        // none. Clearing on empty canvas matters: without it the only way to
+        // deselect is to select something else, and there is no gesture for
+        // "nothing".
+        if response.clicked() {
+            self.selected = best.map(|(b, _)| b);
+        }
+
+        // The selection is drawn whether or not the pointer is still on it.
+        if let Some(sel) = self.selected.filter(|&b| b < net.buses.len())
+            && let Some(&p) = layout.get(sel)
+            && visible.contains(p)
+        {
+            let s = self.screen_of(rect, p);
+            let bar = Rect::from_center_size(s, vec2(half * 2.0, thickness));
+            painter.rect_stroke(
+                bar.expand(5.0),
+                1.0,
+                Stroke::new(1.5, crate::theme::INK_STRONG),
+                eframe::egui::StrokeKind::Outside,
+            );
+        }
+
         let Some((picked, _)) = best else {
             return;
         };
         let bus = &net.buses[picked];
         let s = self.screen_of(rect, layout[picked]);
         let half = (self.zoom * 0.022).clamp(6.0, 30.0);
-        let thickness = (half * 0.22).clamp(2.5, 6.0);
+        let thickness = (half * 0.30).clamp(3.0, 8.0);
         painter.rect_stroke(
             Rect::from_center_size(s, vec2(half * 2.0, thickness)).expand(4.0),
             1.0,
@@ -421,4 +511,87 @@ pub fn country_color(country: &str) -> Color32 {
         h = h.wrapping_mul(0x0100_0193);
     }
     COUNTRY_COLORS[h as usize % COUNTRY_COLORS.len()]
+}
+
+/// Identifies one circuit, so a bus can order the things attached to it.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum Circuit {
+    Line(usize),
+    Link(usize),
+}
+
+/// Which point along each busbar each circuit lands on.
+///
+/// Built once per frame from the layout. The cost is linear in circuits and the
+/// alternative is every circuit landing on top of every other at the middle of
+/// the bar, which is what a node-link graph looks like and what a single-line
+/// diagram specifically does not.
+struct TapSlots {
+    /// `(circuit, bus) -> (slot index, slots on that bus)`.
+    slot: std::collections::HashMap<(Circuit, usize), (usize, usize)>,
+}
+
+impl TapSlots {
+    fn build(net: &Network, layout: &[Pos2]) -> Self {
+        // Per bus, everything attached to it and the direction it leaves in.
+        let mut at: Vec<Vec<(f32, Circuit)>> = vec![Vec::new(); net.buses.len()];
+        let mut note = |bus: usize, other: usize, c: Circuit| {
+            if let (Some(p), Some(q)) = (layout.get(bus), layout.get(other))
+                && let Some(slot) = at.get_mut(bus)
+            {
+                slot.push((q.x - p.x, c));
+            }
+        };
+        for (e, l) in net.lines.iter().enumerate() {
+            note(l.bus0, l.bus1, Circuit::Line(e));
+            note(l.bus1, l.bus0, Circuit::Line(e));
+        }
+        for (e, l) in net.links.iter().enumerate() {
+            note(l.bus0, l.bus1, Circuit::Link(e));
+            note(l.bus1, l.bus0, Circuit::Link(e));
+        }
+
+        let mut slot = std::collections::HashMap::new();
+        for (bus, mut circuits) in at.into_iter().enumerate() {
+            // By horizontal direction of the far end, so the landing order
+            // along the bar matches the order the circuits fan out in. Sorting
+            // by anything else would make circuits cross each other on the
+            // approach for no reason a reader could see.
+            circuits.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let n = circuits.len();
+            for (i, (_, c)) in circuits.into_iter().enumerate() {
+                slot.insert((c, bus), (i, n));
+            }
+        }
+        Self { slot }
+    }
+
+    /// Move each end of a circuit from the bus centre to its own tap point.
+    fn place(
+        &self,
+        a: Pos2,
+        b: Pos2,
+        bus_a: usize,
+        bus_b: usize,
+        c: Circuit,
+        half: f32,
+    ) -> (Pos2, Pos2) {
+        (
+            pos2(a.x + self.offset(c, bus_a, half), a.y),
+            pos2(b.x + self.offset(c, bus_b, half), b.y),
+        )
+    }
+
+    fn offset(&self, c: Circuit, bus: usize, half: f32) -> f32 {
+        let Some(&(i, n)) = self.slot.get(&(c, bus)) else {
+            return 0.0;
+        };
+        if n <= 1 {
+            return 0.0;
+        }
+        // Inset from the ends so a tap never sits exactly on the bar's tip,
+        // where it would read as the line simply continuing past it.
+        let span = half * 1.5;
+        -span * 0.5 + span * (i as f32 + 0.5) / n as f32
+    }
 }
