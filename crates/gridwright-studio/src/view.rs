@@ -731,19 +731,22 @@ impl NetworkView {
                 .set_cursor_icon(eframe::egui::CursorIcon::PointingHand);
         }
 
-        // The selection is drawn whether or not the pointer is still on it.
+        // The selection is drawn whether or not the pointer is still on it, and
+        // in a different shape from the hover mark rather than a slightly
+        // larger version of it. Two rings a pixel apart in size are one ring as
+        // far as a reader is concerned: with the pointer anywhere on the canvas
+        // there was no way to tell which bus the panel was describing.
+        //
+        // Corner brackets, because they are what a viewfinder uses to say "this
+        // one" -- they leave the object itself uncovered and they do not close,
+        // so they cannot be mistaken for a boundary the object has.
         if let Some(sel) = self.selected.filter(|&b| b < net.buses.len())
             && let Some(&p) = layout.get(sel)
             && visible.contains(p)
         {
             let s = self.screen_of(rect, p);
-            let bar = Rect::from_center_size(s, vec2(half * 2.0, thickness));
-            painter.rect_stroke(
-                bar.expand(5.0),
-                1.0,
-                Stroke::new(1.5, crate::theme::INK_STRONG),
-                eframe::egui::StrokeKind::Outside,
-            );
+            let bar = Rect::from_center_size(s, vec2(half * 2.0, thickness)).expand(6.0);
+            brackets(painter, bar, (half * 0.45).clamp(4.0, 10.0));
         }
 
         let Some((picked, _)) = best else {
@@ -753,10 +756,12 @@ impl NetworkView {
         let s = self.screen_of(rect, layout[picked]);
         let half = (self.zoom * 0.022).clamp(6.0, 30.0);
         let thickness = (half * 0.30).clamp(3.0, 8.0);
+        // Hover is a closed outline and one pixel thin: present, but plainly a
+        // lighter mark than the brackets that say what is selected.
         painter.rect_stroke(
-            Rect::from_center_size(s, vec2(half * 2.0, thickness)).expand(4.0),
+            Rect::from_center_size(s, vec2(half * 2.0, thickness)).expand(3.0),
             1.0,
-            Stroke::new(1.5, crate::theme::INK_STRONG),
+            Stroke::new(1.0, crate::theme::INK),
             eframe::egui::StrokeKind::Outside,
         );
 
@@ -1194,5 +1199,22 @@ mod pick_tests {
         let (at, d) = nearest_on(&[pos2(4.0, 0.0), pos2(4.0, 0.0)], pos2(0.0, 0.0)).unwrap();
         assert_eq!(at, pos2(4.0, 0.0));
         assert!((d - 4.0).abs() < 1e-4);
+    }
+}
+
+/// Four corner brackets around a rect: the viewfinder mark for "this one".
+fn brackets(painter: &Painter, r: Rect, arm: f32) {
+    let stroke = Stroke::new(1.5, crate::theme::INK_STRONG);
+    // Never longer than half a side, or opposite arms meet and the brackets
+    // close into the outline they exist not to be.
+    let arm = arm.min(r.width() * 0.45).min(r.height() * 0.45);
+    for (corner, dx, dy) in [
+        (r.left_top(), 1.0, 1.0),
+        (r.right_top(), -1.0, 1.0),
+        (r.left_bottom(), 1.0, -1.0),
+        (r.right_bottom(), -1.0, -1.0),
+    ] {
+        painter.line_segment([corner, corner + vec2(arm * dx, 0.0)], stroke);
+        painter.line_segment([corner, corner + vec2(0.0, arm * dy)], stroke);
     }
 }
