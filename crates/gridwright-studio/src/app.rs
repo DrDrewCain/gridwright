@@ -704,7 +704,7 @@ impl StudioApp {
                     }
 
                     ui.label(
-                        egui::RichText::new(self.instant.label())
+                        egui::RichText::new(self.instant.label(n))
                             .monospace()
                             .size(11.0)
                             .color(if whole { theme::INK_DIM } else { theme::INK }),
@@ -1159,10 +1159,13 @@ impl Instant {
     }
 
     /// A short phrase naming what is on screen.
-    fn label(self) -> String {
+    fn label(self, of: usize) -> String {
         match self {
-            Instant::Horizon => "whole horizon".into(),
-            Instant::At(t) => format!("snapshot {}", t + 1),
+            Instant::Horizon => format!("all {of}"),
+            // One-based, and with the total, because "snapshot 4000" tells a
+            // reader nothing about where in the year they are and "4000 / 8760"
+            // tells them roughly mid-May.
+            Instant::At(t) => format!("{} / {of}", t + 1),
         }
     }
 }
