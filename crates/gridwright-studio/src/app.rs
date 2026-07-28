@@ -22,6 +22,9 @@ pub struct StudioApp {
     peak_shed: Vec<f64>,
     /// One price per bus, for the canvas ramp. Empty until a solve returns.
     bus_price: Vec<f64>,
+    /// One utilisation per line, as a fraction of its rating. NaN where the
+    /// line has no rating to be a fraction of.
+    line_load: Vec<f64>,
     /// The last thing that went wrong while opening a file. Kept until the next
     /// load rather than shown for a few frames: a person who dropped the wrong
     /// file may not be looking at the screen when it lands.
@@ -64,6 +67,7 @@ impl StudioApp {
             outcome: None,
             peak_shed: Vec::new(),
             bus_price: Vec::new(),
+            line_load: Vec::new(),
             load_error: None,
         }
     }
@@ -81,7 +85,9 @@ impl StudioApp {
                 self.outcome = None;
                 self.peak_shed.clear();
             self.bus_price.clear();
+            self.line_load.clear();
                 self.bus_price.clear();
+                self.line_load.clear();
                 self.load_error = None;
 
                 // Solve immediately when it is cheap enough to be
@@ -557,6 +563,7 @@ impl StudioApp {
     fn absorb(&mut self, outcome: Result<Solved, Failure>) {
         self.peak_shed.clear();
         self.bus_price.clear();
+        self.line_load.clear();
 
         if let Ok(solved) = &outcome {
             self.peak_shed = solved
@@ -576,6 +583,25 @@ impl StudioApp {
                     n => series.iter().sum::<f64>() / n as f64,
                 })
                 .collect();
+            // Peak, unlike price: a corridor that binds for one hour of the
+            // year is a constrained corridor, and averaging that away hides
+            // the hour the network was actually short of transfer capacity.
+            //
+            // NaN rather than zero where a line has no rating. Zero would draw
+            // an unrated line as idle, which is a claim about a quantity the
+            // model never had.
+            if let Some(loaded) = &self.loaded {
+                self.line_load = solved
+                    .flows
+                    .iter()
+                    .zip(&loaded.network.lines)
+                    .map(|(series, line)| {
+                        let peak = series.iter().fold(0.0_f64, |m, v| m.max(v.abs()));
+                        let rating = line.s_nom.abs();
+                        if rating > 0.0 { peak / rating } else { f64::NAN }
+                    })
+                    .collect();
+            }
         }
 
         self.outcome = Some(outcome);
@@ -613,8 +639,14 @@ impl eframe::App for StudioApp {
             .stroke(egui::Stroke::new(1.0, crate::theme::SLATE_LINE));
         egui::CentralPanel::default().frame(canvas).show(ui, |ui| {
             let net = self.loaded.as_ref().map(|l| &l.network);
-            self.view
-                .ui(ui, net, &self.positions, &self.peak_shed, &self.bus_price);
+            self.view.ui(
+                ui,
+                net,
+                &self.positions,
+                &self.peak_shed,
+                &self.bus_price,
+                &self.line_load,
+            );
         });
     }
 }

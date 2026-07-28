@@ -96,6 +96,7 @@ impl NetworkView {
         layout: &[Pos2],
         peak_shed: &[f64],
         prices: &[f64],
+        loading: &[f64],
     ) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
@@ -132,7 +133,7 @@ impl NetworkView {
         let visible =
             Rect::from_min_max(self.model_of(rect, rect.min), self.model_of(rect, rect.max));
 
-        self.draw_edges(&painter, rect, visible, net, layout);
+        self.draw_edges(&painter, rect, visible, net, layout, loading);
         self.draw_buses(
             ui, &painter, rect, visible, net, layout, peak_shed, prices, &response,
         );
@@ -265,6 +266,7 @@ impl NetworkView {
         visible: Rect,
         net: &Network,
         layout: &[Pos2],
+        loading: &[f64],
     ) {
         // Width carries rating, so the corridors that matter read first. Square
         // root rather than linear because transfer capacities span three orders
@@ -299,10 +301,30 @@ impl NetworkView {
             } else {
                 AC_COLOR
             };
+            // Loading brightens the corridor, the same way price brightens a
+            // busbar. An idle line is still drawn -- it is part of the network
+            // whether or not it carried anything -- but it sits back.
+            let use_ = loading.get(e).copied().unwrap_or(f64::NAN);
+            let color = if use_.is_nan() {
+                color
+            } else {
+                lerp_color(
+                    color.gamma_multiply(0.55),
+                    crate::theme::INK_STRONG,
+                    use_.clamp(0.0, 1.0) as f32,
+                )
+            };
+            let path = self.tapped(a, b);
             painter.add(eframe::egui::Shape::line(
-                self.tapped(a, b),
+                path.clone(),
                 Stroke::new(width, color),
             ));
+            // A corridor at its rating is where the price separation across
+            // this network comes from, so it is marked with the tick a diagram
+            // uses for a constraint rather than with a fourth colour.
+            if use_ >= BINDING {
+                self.binding_tick(painter, &path, width);
+            }
         }
 
         let max_p_nom = net
@@ -322,6 +344,37 @@ impl NetworkView {
                 self.tapped(a, b),
                 Stroke::new(width, LINK_COLOR),
             ));
+        }
+    }
+
+    /// Two short strokes across a corridor at its limit.
+    ///
+    /// The tick is borrowed from the way a schematic marks a constraint, and it
+    /// is a shape rather than a colour on purpose: the palette already spends
+    /// its hues on state, and a binding constraint is not a fault. It is the
+    /// model doing exactly what it was asked to.
+    fn binding_tick(&self, painter: &eframe::egui::Painter, path: &[Pos2], width: f32) {
+        // Placed on the longest leg rather than at the path midpoint, because
+        // the midpoint of a tapped route can land on a corner, where a
+        // perpendicular tick has no single direction to be perpendicular to.
+        let Some((a, b)) = path
+            .windows(2)
+            .map(|w| (w[0], w[1]))
+            .max_by(|x, y| {
+                (x.0 - x.1)
+                    .length()
+                    .total_cmp(&(y.0 - y.1).length())
+            })
+        else {
+            return;
+        };
+        let along = (b - a).normalized();
+        let across = vec2(-along.y, along.x) * (width + 3.0);
+        let mid = a + (b - a) * 0.5;
+        let stroke = Stroke::new(1.2, crate::theme::INK_STRONG);
+        for offset in [-2.5, 2.5] {
+            let c = mid + along * offset;
+            painter.line_segment([c - across, c + across], stroke);
         }
     }
 
@@ -872,3 +925,10 @@ fn storage(painter: &Painter, bar_top: Pos2, r: f32, ink: Color32) {
         painter.line_segment([pos2(stem.x - w, y), pos2(stem.x + w, y)], stroke);
     }
 }
+
+/// How close to its rating a corridor has to run before it counts as binding.
+///
+/// Not 1.0: a simplex answer sits on the constraint to within its tolerance,
+/// not on it exactly, and a diagram that marks 0.99999 as slack would fail to
+/// mark most of the lines the solver was actually held back by.
+const BINDING: f64 = 0.995;
