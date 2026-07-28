@@ -27,10 +27,10 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let mut app = gridwright_studio::StudioApp::new(cc);
-            if let Some(path) = path {
-                if let Err(e) = open(&mut app, &path) {
-                    eprintln!("{path}: {e}");
-                }
+            if let Some(path) = path
+                && let Err(e) = open(&mut app, &path)
+            {
+                eprintln!("{path}: {e}");
             }
             Ok(Box::new(app))
         }),

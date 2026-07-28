@@ -224,7 +224,7 @@ impl Palette {
         // Stable by score, then by index, so a tie resolves the same way on
         // every keystroke. A list that reshuffles under the cursor while the
         // reader is aiming at a row is worse than a list that ranks imperfectly.
-        hits.sort_by(|a, b| b.0.cmp(&a.0));
+        hits.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
         hits.into_iter().take(SHOWN).map(|(_, h)| h).collect()
     }
 
@@ -309,16 +309,20 @@ mod tests {
 
     #[test]
     fn typing_a_bus_name_puts_that_bus_first() {
-        let mut p = Palette::default();
-        p.query = "bus2".into();
+        let p = Palette {
+            query: "bus2".into(),
+            ..Default::default()
+        };
         let got = labels(&p, &names(&["bus1", "bus2", "bus20", "substation2"]));
         assert_eq!(got[0], "bus2");
     }
 
     #[test]
     fn a_command_is_reachable_by_name() {
-        let mut p = Palette::default();
-        p.query = "fit".into();
+        let p = Palette {
+            query: "fit".into(),
+            ..Default::default()
+        };
         assert_eq!(labels(&p, &names(&["bus1"]))[0], "Fit to window");
     }
 
@@ -330,8 +334,10 @@ mod tests {
 
     #[test]
     fn nothing_matching_ranks_nothing() {
-        let mut p = Palette::default();
-        p.query = "zzzzz".into();
+        let p = Palette {
+            query: "zzzzz".into(),
+            ..Default::default()
+        };
         assert!(p.rank(&names(&["bus1", "bus2"])).is_empty());
     }
 
@@ -339,8 +345,10 @@ mod tests {
     fn ranking_is_stable_across_calls() {
         // A list that reshuffles between frames while the reader is aiming at a
         // row is worse than one that ranks imperfectly.
-        let mut p = Palette::default();
-        p.query = "bus".into();
+        let p = Palette {
+            query: "bus".into(),
+            ..Default::default()
+        };
         let n = names(&["bus1", "bus2", "bus3", "abus", "busbar"]);
         assert_eq!(labels(&p, &n), labels(&p, &n));
     }

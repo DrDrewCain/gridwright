@@ -50,9 +50,7 @@ pub fn score(needle: &str, haystack: &str) -> Option<i32> {
     let mut best = vec![MISS; rows * cols];
     let mut run = vec![MISS; rows * cols];
     // Matching nothing costs nothing, wherever we are.
-    for j in 0..cols {
-        best[j] = 0;
-    }
+    best[..cols].fill(0);
 
     for i in 1..rows {
         for j in 1..cols {
