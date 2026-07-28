@@ -457,6 +457,24 @@ impl StudioApp {
                 );
             }
             Some(Ok(solved)) => {
+                // Before the numbers, not after. A caveat printed underneath a
+                // table has already lost -- the reader took the number and
+                // stopped.
+                let trust = Trust::of(&solved.status);
+                if let Some(caveat) = trust.caveat() {
+                    ui.add_space(crate::theme::UNIT);
+                    egui::Frame::new()
+                        .fill(crate::theme::SLATE_FIELD)
+                        .stroke(egui::Stroke::new(1.0, trust.color()))
+                        .inner_margin(egui::Margin::same((crate::theme::UNIT * 1.5) as i8))
+                        .show(ui, |ui| {
+                            ui.label(
+                                egui::RichText::new(caveat).size(11.0).color(trust.color()),
+                            );
+                        });
+                    ui.add_space(crate::theme::UNIT * 1.5);
+                }
+
                 egui::Grid::new("results").num_columns(2).show(ui, |ui| {
                     reading(ui, "Status", solved.status.clone());
                     // Absent unless optimal, and shown as absent rather than as
@@ -1153,5 +1171,63 @@ mod reduce_tests {
             ..Default::default()
         });
         assert_eq!(reduce(&solved, &net, Instant::Horizon).load.len(), 1);
+    }
+}
+
+/// How much a result can be relied on, from its status alone.
+///
+/// The failure this exists to prevent is documented and real: a published
+/// workflow wrote a results file for a run that returned `Status: ok`,
+/// `Termination: suboptimal`, `Objective: 3.14e+37`. A wrong answer with a
+/// beautiful chart on top of it is the worst thing this tool could ship, so a
+/// result that is not proven optimal has to *look* different rather than merely
+/// say so in a field nobody reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Trust {
+    /// Proven optimal. Every number derived from it means what it says.
+    Proven,
+    /// A feasible point that was not proven optimal -- a hit iteration or time
+    /// limit, or a branch-and-bound that stopped on its node count. The
+    /// dispatch is real; the cost is an upper bound and the prices are duals of
+    /// a relaxation rather than of the answer.
+    Unproven,
+    /// No answer at all. Anything drawn from it would be invented.
+    None,
+}
+
+impl Trust {
+    fn of(status: &str) -> Self {
+        // Matched on the string because that is what crosses the worker
+        // boundary; the enum behind it lives in `gridwright-solve` and is not a
+        // dependency here. Unknown statuses are untrusted rather than trusted,
+        // because a solver this does not recognise has told us something we
+        // cannot interpret, and the safe reading of "I do not understand this"
+        // is not "it is fine".
+        match status {
+            "Optimal" => Trust::Proven,
+            "Limit" => Trust::Unproven,
+            "Infeasible" | "Unbounded" => Trust::None,
+            _ => Trust::Unproven,
+        }
+    }
+
+    /// What to say about it, in the reader's terms rather than the solver's.
+    fn caveat(self) -> Option<&'static str> {
+        match self {
+            Trust::Proven => None,
+            Trust::Unproven => Some(
+                "Stopped before proving optimality. The dispatch is feasible; the cost is an \
+                 upper bound and the prices are duals of a relaxation.",
+            ),
+            Trust::None => Some("No feasible answer. Nothing below is a result."),
+        }
+    }
+
+    fn color(self) -> egui::Color32 {
+        match self {
+            Trust::Proven => crate::theme::LIVE,
+            Trust::Unproven => crate::theme::ALARM,
+            Trust::None => crate::theme::TRIP,
+        }
     }
 }
