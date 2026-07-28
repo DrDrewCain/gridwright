@@ -389,6 +389,7 @@ impl NetworkView {
         // the left of the bar and nothing needs to cross the bar to get where
         // it is going.
         let taps = TapSlots::build(net, layout);
+        let by_voltage = voltages_are_stated(net);
 
         for (e, line) in net.lines.iter().enumerate() {
             let Some((a, b)) = self.segment(rect, visible, layout, line.bus0, line.bus1) else {
@@ -396,8 +397,17 @@ impl NetworkView {
             };
             let (a, b) = taps.place(a, b, line.bus0, line.bus1, Circuit::Line(e), self.bar_half());
             let width = 0.8 + 2.4 * (line.s_nom.abs() / max_s_nom).sqrt() as f32;
+            // Voltage where the network states it, kind where it does not.
+            //
+            // Both are identity rather than state: what this corridor *is*, not
+            // what it is doing. State stays on the lightness axis below, and
+            // the alarm hues stay on the buses -- a red busbar and a 220 kV
+            // corridor are different shapes in different places, and the one
+            // that means trouble is also ringed.
             let color = if line.is_transport() {
                 TRANSPORT_COLOR
+            } else if by_voltage {
+                voltage_color(line_kv(net, line))
             } else {
                 AC_COLOR
             };
@@ -563,19 +573,39 @@ impl NetworkView {
         // a category with no members teaches a distinction the reader will
         // never see, and on a single-area MATPOWER case that is two of the
         // three -- most of the legend would be about nothing.
-        let kinds = [
-            (
+        //
+        // When the network states voltages, the AC row is replaced by the bands
+        // actually present. Built from `VOLTAGE_SCALE` itself rather than from a
+        // parallel list of labels: ENTSO-E's grid map hardcodes its legend in
+        // CSS separately from its style, and has shipped a bug for years where
+        // two voltage bands share a class and cannot be told apart on screen.
+        let by_voltage = voltages_are_stated(net);
+        let mut kinds: Vec<(bool, Color32, String)> = Vec::new();
+        if by_voltage {
+            for (i, (from, color)) in VOLTAGE_SCALE.iter().enumerate() {
+                let present = net.lines.iter().any(|l| {
+                    !l.is_transport() && voltage_color(line_kv(net, l)) == *color
+                });
+                let label = if i == 0 {
+                    "unknown kV".to_string()
+                } else {
+                    format!("{from:.0} kV")
+                };
+                kinds.push((present, *color, label));
+            }
+        } else {
+            kinds.push((
                 net.lines.iter().any(|l| !l.is_transport()),
                 AC_COLOR,
-                "ac line",
-            ),
-            (
-                net.lines.iter().any(|l| l.is_transport()),
-                TRANSPORT_COLOR,
-                "transport",
-            ),
-            (!net.links.is_empty(), LINK_COLOR, "link"),
-        ];
+                "ac line".into(),
+            ));
+        }
+        kinds.push((
+            net.lines.iter().any(|l| l.is_transport()),
+            TRANSPORT_COLOR,
+            "transport".into(),
+        ));
+        kinds.push((!net.links.is_empty(), LINK_COLOR, "link".into()));
         // Bottom up, so adding a kind pushes the stack away from the edge
         // rather than shifting every row already on screen.
         for (present, color, name) in kinds.into_iter().rev() {
@@ -589,7 +619,7 @@ impl NetworkView {
             painter.text(
                 pos2(rect.left() + 36.0, y),
                 Align2::LEFT_CENTER,
-                name,
+                &name,
                 font.clone(),
                 theme::INK_DIM,
             );
@@ -1324,5 +1354,160 @@ fn brackets(painter: &Painter, r: Rect, arm: f32) {
     ] {
         painter.line_segment([corner, corner + vec2(arm * dx, 0.0)], stroke);
         painter.line_segment([corner, corner + vec2(0.0, arm * dy)], stroke);
+    }
+}
+
+/// Voltage bands, in the colours OpenInfraMap uses.
+///
+/// Adopted rather than invented. OIM's scale is the most considered one in the
+/// field — TenneT's ArcGIS service colours by voltage and leaves every class at
+/// the same width, Swissgrid's KML has two colours for the whole Swiss grid,
+/// and ENTSO-E's map has a live bug where two bands share a CSS class and
+/// cannot be told apart. Being able to say "the same colours as OpenInfraMap"
+/// is worth more to a reader than any palette designed here.
+///
+/// Each entry is the lower bound of a band in kV, and the colour from that band
+/// upward.
+const VOLTAGE_SCALE: [(f64, Color32); 8] = [
+    (0.0, Color32::from_rgb(0x7A, 0x7A, 0x85)),
+    (10.0, Color32::from_rgb(0x6E, 0x97, 0xB8)),
+    (25.0, Color32::from_rgb(0x55, 0xB5, 0x55)),
+    (52.0, Color32::from_rgb(0xB5, 0x9F, 0x10)),
+    (132.0, Color32::from_rgb(0xB5, 0x5D, 0x00)),
+    (220.0, Color32::from_rgb(0xC7, 0x30, 0x30)),
+    (310.0, Color32::from_rgb(0xB5, 0x4E, 0xB2)),
+    (550.0, Color32::from_rgb(0x00, 0xC1, 0xCF)),
+];
+
+/// Below this a stated voltage is not a voltage.
+///
+/// MATPOWER cases routinely carry `baseKV` of 1.0 because they are written in
+/// per unit and never needed a real number. Colouring a network by a voltage
+/// nobody stated would invent eight bands out of one placeholder.
+const MIN_REAL_KV: f64 = 1.0;
+
+/// The band a corridor at this voltage falls in.
+fn voltage_color(kv: f64) -> Color32 {
+    VOLTAGE_SCALE
+        .iter()
+        .rev()
+        .find(|(from, _)| kv >= *from)
+        .map(|(_, c)| *c)
+        .unwrap_or(VOLTAGE_SCALE[0].1)
+}
+
+/// Whether this network says enough about voltage to colour by it.
+///
+/// Two distinct real levels, not one. A single-voltage network coloured by
+/// voltage is a network drawn in one arbitrary hue, which is exactly the
+/// mistake the country colouring made before it was removed: a colour that
+/// varies with nothing is a colour carrying no information on a screen where
+/// colour is supposed to mean something.
+fn voltages_are_stated(net: &Network) -> bool {
+    let mut seen: Option<f64> = None;
+    for b in &net.buses {
+        if b.v_nom < MIN_REAL_KV {
+            continue;
+        }
+        match seen {
+            None => seen = Some(b.v_nom),
+            Some(v) if (v - b.v_nom).abs() > 1e-6 => return true,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The voltage a corridor runs at.
+///
+/// The higher of its two ends. A line between a 380 kV and a 220 kV bus is a
+/// transformer in everything but name, and drawing it at the lower level would
+/// hide the higher network it is part of.
+fn line_kv(net: &Network, line: &gridwright_net::Line) -> f64 {
+    let at = |b: usize| net.buses.get(b).map(|b| b.v_nom).unwrap_or(0.0);
+    at(line.bus0).max(at(line.bus1))
+}
+
+#[cfg(test)]
+mod voltage_tests {
+    use super::*;
+    use gridwright_net::{Bus, Snapshots};
+
+    fn net_at(kv: &[f64]) -> Network {
+        let mut net = Network::new(Snapshots::hourly(1));
+        for (i, v) in kv.iter().enumerate() {
+            net.buses.push(Bus {
+                name: format!("b{i}"),
+                v_nom: *v,
+                ..Default::default()
+            });
+        }
+        net
+    }
+
+    #[test]
+    fn bands_start_at_their_lower_bound() {
+        // Exactly on a boundary belongs to the band it opens, not the one
+        // below. 220.0 kV is a 220 kV line.
+        assert_eq!(voltage_color(220.0), VOLTAGE_SCALE[5].1);
+        assert_eq!(voltage_color(219.9), VOLTAGE_SCALE[4].1);
+        assert_eq!(voltage_color(1000.0), VOLTAGE_SCALE[7].1);
+        assert_eq!(voltage_color(0.0), VOLTAGE_SCALE[0].1);
+    }
+
+    #[test]
+    fn a_per_unit_case_is_not_a_network_of_one_volt_lines() {
+        // MATPOWER cases routinely carry baseKV of 1.0 because they are written
+        // in per unit. Reading that as a real voltage would colour the whole
+        // network from one placeholder.
+        assert!(!voltages_are_stated(&net_at(&[1.0, 1.0, 1.0])));
+        assert!(!voltages_are_stated(&net_at(&[0.0, 0.0])));
+    }
+
+    #[test]
+    fn one_stated_level_is_not_worth_a_colour_axis() {
+        // A network drawn entirely in one hue is a hue carrying no information,
+        // which is the mistake the country colouring made before it was removed.
+        assert!(!voltages_are_stated(&net_at(&[380.0, 380.0, 380.0])));
+        assert!(voltages_are_stated(&net_at(&[380.0, 220.0])));
+    }
+
+    #[test]
+    fn a_level_stated_on_only_some_buses_still_counts() {
+        // Real files are partial. Two real levels among placeholders is enough
+        // to be worth drawing.
+        assert!(voltages_are_stated(&net_at(&[0.0, 380.0, 110.0, 1.0])));
+    }
+
+    #[test]
+    fn a_corridor_takes_the_higher_of_its_two_ends() {
+        // A line between 380 and 220 is a transformer in all but name, and
+        // drawing it at the lower level would hide the higher network it is
+        // part of.
+        let net = net_at(&[380.0, 220.0]);
+        let line = gridwright_net::Line {
+            bus0: 1,
+            bus1: 0,
+            ..Default::default()
+        };
+        assert_eq!(line_kv(&net, &line), 380.0);
+    }
+
+    #[test]
+    fn a_corridor_pointing_off_the_end_of_the_bus_list_has_no_voltage() {
+        // The view is handed networks that never went through `validate`.
+        let net = net_at(&[380.0]);
+        let line = gridwright_net::Line {
+            bus0: 0,
+            bus1: 99,
+            ..Default::default()
+        };
+        assert_eq!(line_kv(&net, &line), 380.0);
+        let orphan = gridwright_net::Line {
+            bus0: 98,
+            bus1: 99,
+            ..Default::default()
+        };
+        assert_eq!(line_kv(&net, &orphan), 0.0);
     }
 }
