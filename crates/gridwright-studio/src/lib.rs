@@ -25,6 +25,7 @@
 //! open it and not.
 
 mod app;
+mod basemap;
 mod chart;
 mod backend;
 mod fuzzy;

@@ -51,6 +51,7 @@ pub fn layout(net: &Network) -> Placement {
         return Placement {
             pos: Vec::new(),
             kind: Origin::Invented,
+            frame: Frame::identity(),
         };
     }
 
@@ -61,11 +62,16 @@ pub fn layout(net: &Network) -> Placement {
     // skipped entirely rather than run and then overwritten.
     if located == n {
         let mut pos: Vec<Pos2> = placed.into_iter().map(Option::unwrap).collect();
-        normalise(&mut pos);
+        let frame = normalise(&mut pos);
+        // Spreading happens *after* the frame is taken, so the basemap follows
+        // the projection rather than the nudges. That is the right way round: a
+        // substation moved a few kilometres to stop it overlapping its
+        // neighbour should not drag the coastline with it.
         spread(&mut pos, net);
         return Placement {
             pos,
             kind: Origin::Geographic,
+            frame,
         };
     }
     let kind = if located == 0 {
@@ -90,7 +96,11 @@ pub fn layout(net: &Network) -> Placement {
     }
 
     if !(2..=MAX_RELAXED).contains(&n) {
-        return Placement { pos, kind };
+        return Placement {
+            pos,
+            kind,
+            frame: Frame::identity(),
+        };
     }
 
     // Links are drawn as edges too — an electrolyser tying a power bus to a
@@ -159,7 +169,13 @@ pub fn layout(net: &Network) -> Placement {
     }
 
     normalise(&mut pos);
-    Placement { pos, kind }
+    // A relaxed layout has no shared source space: the positions were invented,
+    // so there is nothing for a basemap to line up with.
+    Placement {
+        pos,
+        kind,
+        frame: Frame::identity(),
+    }
 }
 
 /// Where a bus goes, and whether that is a fact or an invention.
@@ -167,6 +183,9 @@ pub fn layout(net: &Network) -> Placement {
 pub struct Placement {
     pub pos: Vec<Pos2>,
     pub kind: Origin,
+    /// How projected coordinates were mapped into the unit box. Only meaningful
+    /// when `kind` is `Geographic`; anything else has no source space to share.
+    pub frame: Frame,
 }
 
 /// What the positions on screen are actually derived from.
@@ -277,19 +296,28 @@ fn spread(pos: &mut [Pos2], net: &Network) {
 /// standard ±85.051129° before the transform, because the arctangent of an
 /// infinity is a position that survives every later check and ruins the
 /// bounding box for every other bus.
+/// The projection, for one point.
+///
+/// Exposed so the basemap can be tested against it. If the two ever disagree
+/// the coastline slides against the network, and both halves look plausible on
+/// their own -- which is exactly the bug a shared formula is meant to prevent
+/// and a shared *function* would prevent outright. They are separate because
+/// this takes degrees from a `Coord` and the basemap takes quantised integers.
+pub fn project_one(lon: f64, lat: f64) -> Pos2 {
+    let lat = lat.clamp(-85.051_129, 85.051_129).to_radians();
+    let y = ((std::f64::consts::FRAC_PI_4 + lat / 2.0).tan()).ln();
+    pos2(lon.to_radians() as f32, -y as f32)
+}
+
 fn project(net: &Network) -> Vec<Option<Pos2>> {
     net.buses
         .iter()
         .map(|b| {
-            b.position.map(|c| {
-                let lat = c.lat.clamp(-85.051_129, 85.051_129).to_radians();
-                let y = ((std::f64::consts::FRAC_PI_4 + lat / 2.0).tan()).ln();
-                // Negated, because screen y grows downward and latitude grows
-                // up. Without this every map is drawn upside down, which is
-                // obvious on a country with a recognisable shape and completely
-                // invisible on a synthetic case.
-                pos2(c.lon.to_radians() as f32, -y as f32)
-            })
+            // Negated inside `project_one`, because screen y grows downward
+            // and latitude grows up. Without that every map is drawn upside
+            // down, which is obvious on a recognisable coastline and completely
+            // invisible on a synthetic case.
+            b.position.map(|c| project_one(c.lon, c.lat))
         })
         .collect()
 }
@@ -315,7 +343,7 @@ fn seed_ring(n: usize) -> Vec<Pos2> {
 /// means the initial zoom is the same order of magnitude whatever the network,
 /// so a file that happens to relax into a wide sparse shape does not open at a
 /// zoom level three decades away from a compact one.
-fn normalise(pos: &mut [Pos2]) {
+fn normalise(pos: &mut [Pos2]) -> Frame {
     let (mut lo, mut hi) = (Vec2::splat(f32::MAX), Vec2::splat(f32::MIN));
     for p in pos.iter() {
         lo = lo.min(p.to_vec2());
@@ -327,6 +355,34 @@ fn normalise(pos: &mut [Pos2]) {
     let centre = ((lo + hi) * 0.5).to_pos2();
     for p in pos.iter_mut() {
         *p = ((*p - centre) * scale).to_pos2();
+    }
+    Frame { centre, scale }
+}
+
+/// The similarity transform `normalise` applied, so anything drawn in the same
+/// source space can follow the layout into it.
+///
+/// This exists for the basemap. Positions are normalised into a unit box after
+/// projection, so a coastline in raw Mercator would be drawn at a wildly
+/// different scale and offset from the network it is meant to sit under -- both
+/// halves correct, the picture nonsense.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Frame {
+    centre: Pos2,
+    scale: f32,
+}
+
+impl Frame {
+    /// The identity, for a layout that never projected anything.
+    pub fn identity() -> Self {
+        Self {
+            centre: pos2(0.0, 0.0),
+            scale: 1.0,
+        }
+    }
+
+    pub fn apply(&self, p: Pos2) -> Pos2 {
+        ((p - self.centre) * self.scale).to_pos2()
     }
 }
 

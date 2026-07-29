@@ -85,6 +85,24 @@ and brings the camera to it.
 **Keys.** `F` fits, `esc` clears the selection, `+` and `-` zoom, `←` and `→`
 step the timeline, `,` and `.` jump to its ends.
 
+## The basemap
+
+Coastlines and borders draw under the network **when, and only when, the layout
+is geographic**. Under a spring embedding they would place substations on a map
+they have no relationship to, which is a worse lie than no map — the whole point
+of the origin label in the status strip is that the two pictures are otherwise
+indistinguishable.
+
+Natural Earth 1:50m, public domain, simplified to about 11 km and quantised to
+`i16`: 995 rings, 74 KB, roughly 1% of the bundle. **Bundled rather than
+fetched** — a tile layer would give a serverless tool a server, plus somebody
+else's terms of service and a network round trip. This works on a plane.
+
+Deliberately a hairline and nothing else: no fill, no labels, no terrain.
+Overbye (NAPS 2019) on geographic grid displays — satellite and detailed
+backgrounds *"run the risk of background camouflaging the electric grid
+information of interest."* It answers "where is this?" and gets out of the way.
+
 ## Layout
 
 Positions come from geography when the file carries it — PyPSA does, in columns
@@ -108,6 +126,7 @@ picture does not support.
 | `palette.rs` | go-to and commands |
 | `fuzzy.rs` | subsequence matching for the palette |
 | `chart.rs` | small charts: line, band, stack, duration, threshold |
+| `basemap.rs` | bundled coastlines, drawn under a geographic layout |
 | `backend.rs` | solving, on a thread natively and inline on the web |
 
 `backend.rs` is where the two targets genuinely differ. Native gets a thread;

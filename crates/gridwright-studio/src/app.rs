@@ -17,6 +17,9 @@ pub struct StudioApp {
     /// Whether those positions are a projection of geography or an invention.
     /// Shown to the reader, because the picture cannot tell them apart.
     origin: crate::layout::Origin,
+    /// How the projection was fitted into the unit box, so the basemap can
+    /// follow it. Only meaningful when `origin` is geographic.
+    frame: crate::layout::Frame,
     view: NetworkView,
     backend: Box<dyn SolveBackend>,
     outcome: Option<Result<Solved, Failure>>,
@@ -96,6 +99,7 @@ impl StudioApp {
             loaded: None,
             positions: Vec::new(),
             origin: crate::layout::Origin::Invented,
+            frame: crate::layout::Frame::identity(),
             view: NetworkView::default(),
             // The context is taken here rather than at solve time because the
             // native backend needs it to wake the UI from another thread, and
@@ -131,6 +135,7 @@ impl StudioApp {
         let placed = layout(&loaded.network);
         self.positions = placed.pos;
         self.origin = placed.kind;
+        self.frame = placed.frame;
         self.view.reset();
         self.outcome = None;
         self.peak_shed.clear();
@@ -1474,6 +1479,11 @@ impl eframe::App for StudioApp {
                     loading: &self.line_load,
                     flow: &self.line_flow,
                 },
+                // The basemap draws only under a projection. A coastline under
+                // invented coordinates is a map of somewhere that does not
+                // exist.
+                matches!(self.origin, crate::layout::Origin::Geographic)
+                    .then_some(self.frame),
             );
         });
 

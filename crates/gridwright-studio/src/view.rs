@@ -83,6 +83,9 @@ pub struct NetworkView {
     hovered: Option<usize>,
     /// Whether the next fit jumps rather than travels. True for a new network.
     snap_next_fit: bool,
+    /// Coastlines, decoded once. Twenty kilobytes of outline, parsed at
+    /// construction rather than per frame.
+    basemap: crate::basemap::Basemap,
     /// A bus to bring the camera to on the next frame that has a layout.
     reveal_next: Option<usize>,
     /// A corridor to bring the camera to, likewise.
@@ -103,6 +106,7 @@ impl Default for NetworkView {
             goal: None,
             hovered: None,
             snap_next_fit: true,
+            basemap: crate::basemap::Basemap::load(),
             reveal_next: None,
             reveal_line_next: None,
             circuit_under_pointer: false,
@@ -162,12 +166,29 @@ impl NetworkView {
         net: Option<&Network>,
         layout: &[Pos2],
         overlay: Overlay<'_>,
+        geo: Option<crate::layout::Frame>,
     ) {
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = response.rect;
         let painter = painter.with_clip_rect(rect);
 
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
+
+        // Under everything, and only when the positions are a projection. A
+        // coastline beneath a spring embedding would place substations on a map
+        // they have no relationship to, which is a far worse lie than no map at
+        // all -- the whole point of the origin label in the status strip is that
+        // those two pictures are indistinguishable, and this would make one of
+        // them look authoritative.
+        if let Some(frame) = geo {
+            self.basemap.draw(
+                &painter,
+                self.visible(rect),
+                frame,
+                |p| self.screen_of(rect, p),
+                crate::theme::SLATE_LINE,
+            );
+        }
 
         let Some(net) = net.filter(|_| !layout.is_empty()) else {
             self.draw_empty(&painter, rect);
