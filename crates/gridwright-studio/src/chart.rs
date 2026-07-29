@@ -56,6 +56,19 @@ impl Axes {
         Self { rect, lo, hi }
     }
 
+    /// A second frame sharing another's value range.
+    ///
+    /// For drawing two views of the same quantity side by side. Refitting each
+    /// independently would draw the identical range at a different height and
+    /// invite a comparison between two charts that are not comparable.
+    pub fn like(other: &Axes, rect: Rect) -> Self {
+        Self {
+            rect,
+            lo: other.lo,
+            hi: other.hi,
+        }
+    }
+
     /// Where a value sits vertically.
     fn y(&self, v: f64) -> f32 {
         let t = ((v - self.lo) / (self.hi - self.lo)).clamp(0.0, 1.0) as f32;
@@ -219,6 +232,16 @@ mod tests {
         let a = ax(&[0.0, 1.0]);
         assert!(a.x(0, 24) > a.rect.left());
         assert!(a.x(23, 24) < a.rect.right());
+    }
+
+    #[test]
+    fn a_shared_axis_keeps_the_other_range() {
+        // Two views of one quantity have to share a scale, or the reader
+        // compares two heights that mean different things.
+        let a = ax(&[10.0, 90.0]);
+        let b = Axes::like(&a, Rect::from_min_size(pos2(0.0, 60.0), vec2(100.0, 20.0)));
+        assert_eq!(a.range(), b.range());
+        assert_ne!(a.rect, b.rect);
     }
 
     #[test]

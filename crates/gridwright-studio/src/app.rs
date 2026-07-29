@@ -416,6 +416,41 @@ impl StudioApp {
                 crate::chart::marker(p, &ax, t, series.len());
             }
             crate::chart::bounds(p, &ax, " /MWh");
+
+            // The same numbers sorted downward: how many hours the bus spent
+            // above each price. This is the standard chart of the field, and it
+            // answers a question the time series cannot -- "how often was it
+            // expensive" rather than "when". A flat-topped curve with a cliff
+            // is a bus with two regimes; a smooth slope is one that is
+            // continuously marginal.
+            //
+            // Drawn beside rather than instead. Small multiples of the same
+            // data under different transforms outperform one interactive plot
+            // for analysis, which is the most replicated finding in this
+            // literature.
+            let sorted = crate::chart::duration(series);
+            if sorted.len() > 1 {
+                ui.add_space(theme::UNIT);
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::Vec2::new(ui.available_width(), 34.0),
+                    egui::Sense::hover(),
+                );
+                // Sharing the price chart's axis on purpose: the two are the
+                // same quantity, and letting the duration curve refit its own
+                // bounds would draw the identical range at a different height
+                // and invite a comparison that means nothing.
+                let dax = crate::chart::Axes::like(&ax, rect);
+                let p = ui.painter();
+                crate::chart::frame(p, &dax);
+                crate::chart::line(p, &dax, &sorted, theme::INK);
+                p.text(
+                    dax.rect.left_bottom() + egui::vec2(2.0, -1.0),
+                    egui::Align2::LEFT_BOTTOM,
+                    "hours above",
+                    egui::FontId::proportional(9.0),
+                    theme::INK_DIM,
+                );
+            }
         }
 
         // Attachments, named rather than counted. "3 generators" tells you
