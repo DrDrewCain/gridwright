@@ -826,7 +826,7 @@ impl NetworkView {
         // the corridors -- and until now only one of them was explained. A
         // reader could reasonably conclude the bright lines were expensive.
         let key_w = 108.0;
-        let load_bar = Rect::from_min_size(pos2(rect.left() + 12.0, floor - 44.0), vec2(key_w, 5.0));
+        let load_bar = Rect::from_min_size(pos2(rect.left() + 12.0, floor - 56.0), vec2(key_w, 5.0));
         let steps = 24;
         for i in 0..steps {
             let t = i as f32 / (steps - 1) as f32;
@@ -951,6 +951,16 @@ impl NetworkView {
             }
         }
         let has_gen: Vec<bool> = gens.iter().map(|&c| c > 0).collect();
+
+        // Carrier colours per bus, in the order the fan draws them. Collected
+        // once rather than searched per bus per frame, which is quadratic and
+        // invisible at eight buses and is not at thirteen thousand.
+        let mut at_bus: Vec<Vec<Option<Color32>>> = vec![Vec::new(); net.buses.len()];
+        for g in &net.generators {
+            if let Some(v) = at_bus.get_mut(g.bus) {
+                v.push(crate::theme::carrier_color(&g.carrier));
+            }
+        }
         let has_load: Vec<bool> = loads.iter().map(|&c| c > 0).collect();
 
         // The threshold for drawing individual machines rather than one symbol
@@ -1026,10 +1036,21 @@ impl NetworkView {
             // count is the useful part, because a substation with six machines
             // is a different place from one with one.
             if has_gen[b] {
+                // Machines take their carrier's colour, where the file named
+                // one. A generator symbol is its own shape class, so this
+                // collides with nothing: hue on a corridor means voltage, hue
+                // on a busbar means alarm state, and hue on a ring with a sine
+                // in it means what is burning. Falls back to the bus ink when
+                // the carrier is unknown, rather than inventing a hue.
                 let n = if detail { gens[b].min(4) } else { 1 };
                 for k in 0..n {
                     let dx = fan(k, n, glyph);
-                    generator(painter, s + vec2(dx, -thickness * 0.5), glyph, ink);
+                    let c = at_bus[b]
+                        .get(k)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(ink);
+                    generator(painter, s + vec2(dx, -thickness * 0.5), glyph, c);
                 }
             }
             if has_store[b] {
