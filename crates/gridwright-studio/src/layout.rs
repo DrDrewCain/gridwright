@@ -384,6 +384,17 @@ impl Frame {
     pub fn apply(&self, p: Pos2) -> Pos2 {
         ((p - self.centre) * self.scale).to_pos2()
     }
+
+    /// Layout units per Mercator unit.
+    ///
+    /// Needed to convert a span *back* into Mercator, which is the only space a
+    /// fraction-of-the-world question can be asked in. Without it a caller
+    /// comparing a layout-space width against the globe's Mercator width is
+    /// comparing two different units, and the answer is wrong by whatever the
+    /// normalisation happened to be.
+    pub fn scale(&self) -> f32 {
+        self.scale
+    }
 }
 
 #[cfg(test)]
