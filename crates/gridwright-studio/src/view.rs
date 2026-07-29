@@ -1214,12 +1214,32 @@ impl NetworkView {
         // same bus wins the same collision on every frame. Sorting by anything
         // that changes with the camera would make names flicker in and out as
         // the reader pans, which is worse than losing them consistently.
-        let mut placed: Vec<Rect> = Vec::new();
-        for (b, bus) in net.buses.iter().enumerate() {
+        // **And the order is by what the bus is, not by where it sits in the file.**
+        // File order is arbitrary, so on a dense case the labels that survived
+        // were whichever happened to be listed first -- 162 buses came out as a
+        // wall of text naming no particular thing. Significance is a property of
+        // the network rather than of the camera, so it keeps the no-flicker
+        // property above: two buses hold the same relative priority however the
+        // reader pans.
+        let order = self.label_order(net, layout, visible);
+
+        // Every visible busbar is claimed before any label is placed, so a name
+        // never lands on top of a *different* substation. Without this the
+        // densest cases put labels across their neighbours' bars, which reads as
+        // the wrong name attached to the wrong thing -- worse than no name.
+        let mut placed: Vec<Rect> = order
+            .iter()
+            .filter_map(|b| layout.get(*b))
+            .map(|p| {
+                Rect::from_center_size(self.screen_of(rect, *p), vec2(half * 2.0, thickness))
+                    .expand(2.0)
+            })
+            .collect();
+        let bars = placed.len();
+
+        for b in order {
+            let bus = &net.buses[b];
             let Some(&p) = layout.get(b) else { continue };
-            if !visible.contains(p) {
-                continue;
-            }
             let s = self.screen_of(rect, p);
             let at = s + vec2(0.0, thickness * 0.5 + 19.0);
             let galley = painter.layout_no_wrap(
@@ -1227,14 +1247,25 @@ impl NetworkView {
                 FontId::proportional(10.0),
                 crate::theme::INK_DIM,
             );
-            let box_ = Rect::from_center_size(at, galley.size()).expand2(vec2(3.0, 1.0));
+            // Wider margins than the text needs. A label that merely fails to
+            // overlap its neighbour still reads as one continuous run of type at
+            // this size; the gap is what makes them separate things.
+            let box_ = Rect::from_center_size(at, galley.size()).expand2(vec2(6.0, 3.0));
 
             // The selected bus is labelled whatever else is in the way. It is
             // the one the reader asked about, and losing its name to a
             // collision with a neighbour they did not ask about is the one
             // failure this rule must not have.
             let mine = self.selected == Some(b);
-            if !mine && placed.iter().any(|r| r.intersects(box_)) {
+            // Its own bar is skipped, or every label would collide with the bus
+            // it belongs to.
+            let own = Rect::from_center_size(s, vec2(half * 2.0, thickness)).expand(2.0);
+            if !mine
+                && placed
+                    .iter()
+                    .enumerate()
+                    .any(|(i, r)| r.intersects(box_) && !(i < bars && *r == own))
+            {
                 continue;
             }
             placed.push(box_);
@@ -1358,6 +1389,72 @@ impl NetworkView {
         };
         painter.circle_filled(at, 2.5, crate::theme::INK_STRONG);
         callout(ui, painter, at + vec2(10.0, 6.0), label);
+    }
+
+    /// Visible buses, most worth naming first.
+    ///
+    /// Declutter needs an order, and the order decides which names a reader gets
+    /// when there is not room for all of them. Three properties are wanted, and
+    /// they pull against each other:
+    ///
+    /// - **Stable under panning.** Anything camera-dependent makes names blink in
+    ///   and out as the reader moves, which is worse than losing them
+    ///   consistently. So the rank comes from the network, never from the screen.
+    /// - **Stable under a re-ordered file.** Two readers with the same network
+    ///   written out in a different order should see the same labels, so file
+    ///   position is only ever the last tie-break.
+    /// - **About the thing being looked at.** A bus with a power station on it and
+    ///   six circuits into it is what a reader orients by; a load-only stub at the
+    ///   end of a spur is not, however early it appears in the file.
+    ///
+    /// Generation is weighted above demand deliberately. Both matter, but a bus
+    /// with plant on it is where a dispatch decision happens, and on the IEEE
+    /// cases the loads outnumber the generators three to one — ranking them
+    /// equally names the spurs and loses the stations.
+    fn label_order(&self, net: &Network, layout: &[Pos2], visible: Rect) -> Vec<usize> {
+        let mut weight = vec![0.0f64; net.buses.len()];
+        for g in &net.generators {
+            if let Some(w) = weight.get_mut(g.bus) {
+                *w += g.p_nom * 2.0;
+            }
+        }
+        for l in &net.loads {
+            if let Some(w) = weight.get_mut(l.bus) {
+                *w += l.p_set.abs();
+            }
+        }
+        // Degree, scaled so it breaks ties among buses of similar size rather
+        // than competing with capacity. A junction with no plant and no load is
+        // still a landmark, which is why it is added rather than only used as a
+        // tie-break.
+        for line in &net.lines {
+            for end in [line.bus0, line.bus1] {
+                if let Some(w) = weight.get_mut(end) {
+                    *w += 25.0;
+                }
+            }
+        }
+
+        let mut order: Vec<usize> = (0..net.buses.len())
+            .filter(|b| layout.get(*b).is_some_and(|p| visible.contains(*p)))
+            .collect();
+        order.sort_by(|a, b| {
+            // The selected bus first, so it is never the one that loses a
+            // collision -- the reader asked about it by name.
+            let picked = |i: &usize| self.selected == Some(*i);
+            picked(b)
+                .cmp(&picked(a))
+                .then_with(|| {
+                    weight[*b]
+                        .partial_cmp(&weight[*a])
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                // Name before index, so a re-exported file with the same buses in
+                // a different order labels the same ones.
+                .then_with(|| net.buses[*a].name.cmp(&net.buses[*b].name))
+                .then(a.cmp(b))
+        });
+        order
     }
 
     /// Half-length and thickness of a bus bar at the current zoom.
