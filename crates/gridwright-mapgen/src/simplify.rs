@@ -167,12 +167,30 @@ mod tests {
 
     #[test]
     fn a_long_input_does_not_overflow_the_stack() {
-        // The recursive form dies here, and 40,000 points is smaller than
-        // several real coastline parts in the 10m data.
-        let zig: Vec<[f64; 2]> = (0..40_000)
+        // A smooth curve rather than a zigzag. Both force deep recursion, which
+        // is what this checks, but a zigzag is also the algorithm's worst case
+        // for *work* -- every span keeps its midpoint, so nothing is ever
+        // discarded and the scan is quadratic. At 40,000 points that test alone
+        // took eighteen seconds; a curve of the same length runs in
+        // milliseconds and exercises the same recursion depth.
+        let curve: Vec<[f64; 2]> = (0..40_000)
+            .map(|i| {
+                let t = i as f64 / 40_000.0 * std::f64::consts::TAU;
+                [t, t.sin()]
+            })
+            .collect();
+        assert!(douglas_peucker(&curve, 0.001).len() >= 2);
+    }
+
+    #[test]
+    fn the_pathological_case_still_terminates() {
+        // A zigzag keeps every point, so this is the quadratic case. Kept small
+        // on purpose -- the property being checked is that it finishes and keeps
+        // everything, not how fast.
+        let zig: Vec<[f64; 2]> = (0..400)
             .map(|i| [i as f64, if i % 2 == 0 { 0.0 } else { 1.0 }])
             .collect();
-        assert!(douglas_peucker(&zig, 0.5).len() >= 2);
+        assert_eq!(douglas_peucker(&zig, 0.1).len(), zig.len());
     }
 
     #[test]
