@@ -2543,6 +2543,15 @@ code rather than in the plan.
 Since then, and evidenced rather than guessed — each of these has its reasoning
 in the research sections above:
 
+- **Charts, and the network driving them.** Price and its duration curve per
+  bus, flow against rating per corridor, state of charge per storage unit, and a
+  system dispatch stack ordered by merit and coloured by carrier. Dragging any
+  of them scrubs the timeline, so the plots and the map are one instrument
+  rather than a picture beside a control.
+- **Colour that distinguishes things.** Generators take their carrier's colour
+  on the canvas and in the stack — the one surface where hue is free, because a
+  panel chart shares no space with the canvas where hue means voltage and alarm
+  state. Nine bands of one grey was the state before, and it was unreadable.
 - **A timeline.** Arrow keys step, shift-arrow steps a day, `horizon` shows
   everything at once, and every reduction on the canvas follows. This turns out
   to be close to unique in the field: an interactive scrubber over a geographic
@@ -2565,10 +2574,11 @@ in the research sections above:
 
 Still missing, in rough order of how much they are missed:
 
-- **Any plot at all.** The evidence is unambiguous that the hour-of-day by
-  day-of-year heatmap is the workhorse chart of this field, applied to prices,
-  utilisation and state of charge alike — one component serving three domains.
-  Then dispatch stacks and duration curves.
+- **The hour-of-day by day-of-year heatmap**, which the evidence calls the
+  workhorse chart of this field, applied to prices, utilisation and state of
+  charge alike — one component serving three domains. Time series, duration
+  curves and the dispatch stack now exist; this is the one that does not, and it
+  is the one that makes a *year* legible where the others make a day legible.
 - **A network diff.** Requested by a PyPSA maintainer, blocked there on a
   stated technical reason, and unbuilt anywhere. Three parts, three
   presentations: topology, scalars, and time series as duration curves.
@@ -2581,7 +2591,13 @@ Still missing, in rough order of how much they are missed:
   horizon and selects a point; ArcGIS keeps the addressable *extent* and a
   two-handled *visible span* as separate things, and both are useful on a year.
 - **Small multiples**, which every replication in the literature prefers to
-  animation for analysis, and which nothing here offers.
+  animation for analysis. Partly answered — the price series and its duration
+  curve are two views of one quantity side by side — but there is no way to see
+  four buses at once, which is what the finding is actually about.
+- **A carrier legend that survives an unknown fuel.** Carriers are matched on a
+  substring against a fixed table, so a network naming its fuels in a language
+  or vocabulary the table does not have falls back entirely to the lightness
+  ramp. That is the honest failure and it is still a failure.
 
 ### Stage 4 — results, and being honest about them
 
