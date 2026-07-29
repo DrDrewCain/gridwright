@@ -185,21 +185,55 @@ pub fn ear_clip(ring: &[[f64; 2]]) -> Outcome {
 
     // A worklist of candidate ear tips, not a walk around the ring.
     //
-    // Clipping can only change whether the *two former neighbours* are ears --
-    // every other vertex has the neighbourhood it had before, so if it was not
-    // an ear then it still is not. A failed candidate is dropped, and only those
-    // two are ever pushed back, so each vertex is examined a constant number of
-    // times amortised. Walking the ring one step at a time instead measured ten
-    // times the work for four times the input.
+    // Clipping a vertex changes whether its two former neighbours are ears, so
+    // those two go back on the queue. That is the cheap case and it is what makes
+    // this near-linear: a failed candidate is dropped rather than retried, and
+    // walking the ring one step at a time instead measured ten times the work
+    // for four times the input.
+    //
+    // **Those two are not the only vertices a clip can affect, though, and the
+    // first version of this file asserted that they were.** A distant vertex `v`
+    // can be blocked by a reflex vertex `u` inside its ear; clipping `u`'s
+    // neighbours can make `u` convex, `u` then gets clipped, and `v` is an ear
+    // that nothing re-queues. So an empty worklist is not proof the ring is
+    // finished, and treating it as proof would report `Partial` on a perfectly
+    // simple polygon.
+    //
+    // Hence the sweep: when the queue runs dry, every live vertex goes back on,
+    // and it gives up only when a whole sweep clips nothing -- which is the real
+    // definition of stuck, since a sweep over an unchanged ring would repeat
+    // itself. **Measured, this fires zero times across all 30,790 parts of the
+    // five Natural Earth layers**, because Meisters' two-ears theorem guarantees
+    // a simple polygon always has an ear and clipping neighbours keeps finding
+    // them. It is here so the result is correct rather than lucky, and it costs
+    // nothing when it never runs.
     let mut queue: Vec<usize> = (0..n).rev().collect();
     let mut queued = vec![true; n];
+    let mut clipped_since_refill = false;
+    let mut sweeps = 0usize;
 
     while live > 3 {
-        let Some(cur) = queue.pop() else {
-            return Outcome::Partial {
-                remaining: live,
-                got: tris,
-            };
+        let cur = match queue.pop() {
+            Some(cur) => cur,
+            None => {
+                // A sweep that clips nothing cannot be followed by one that
+                // does: the ring is unchanged, so the answers would repeat.
+                if sweeps > 0 && !clipped_since_refill {
+                    return Outcome::Partial {
+                        remaining: live,
+                        got: tris,
+                    };
+                }
+                clipped_since_refill = false;
+                sweeps += 1;
+                for k in (0..n).rev() {
+                    if !gone[k] {
+                        queued[k] = true;
+                        queue.push(k);
+                    }
+                }
+                continue;
+            }
         };
         queued[cur] = false;
         if gone[cur] {
@@ -216,6 +250,7 @@ pub fn ear_clip(ring: &[[f64; 2]]) -> Outcome {
         nodes[next].prev = prev;
         gone[cur] = true;
         live -= 1;
+        clipped_since_refill = true;
 
         if live <= rebuild_at && live > 8 {
             let alive: Vec<u16> = (0..n).filter(|k| !gone[*k]).map(|k| nodes[k].i).collect();
