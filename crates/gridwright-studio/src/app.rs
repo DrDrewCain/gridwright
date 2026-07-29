@@ -832,7 +832,20 @@ impl StudioApp {
                 .total_cmp(&net.generators[b].marginal_cost)
         });
 
-        let series: Vec<&[f64]> = order.iter().map(|&g| solved.dispatch[g].as_slice()).collect();
+        let mut series: Vec<&[f64]> = order.iter().map(|&g| solved.dispatch[g].as_slice()).collect();
+
+        // Storage on top, and only its *discharge*. A battery delivering is
+        // generation and belongs in the stack; a battery charging is load and
+        // does not -- stacking a negative band would make the total stop being
+        // the total. Charging is visible on the state-of-charge chart, which is
+        // where it reads as what it is.
+        let discharged: Vec<Vec<f64>> = solved
+            .storage_power
+            .iter()
+            .map(|s| s.iter().map(|v| v.max(0.0)).collect())
+            .collect();
+        series.extend(discharged.iter().map(|v| v.as_slice()));
+
         let totals = crate::chart::stack_peak(&series);
         if totals.iter().all(|v| *v <= 0.0) {
             return;
@@ -875,7 +888,12 @@ impl StudioApp {
         // Named bottom to top in the same order as the bands, so the legend is
         // the merit order written out.
         ui.add_space(theme::UNIT * 0.5);
-        for (i, &g) in order.iter().enumerate().take(8) {
+        let named: Vec<&str> = order
+            .iter()
+            .map(|&g| net.generators[g].name.as_str())
+            .chain(net.storage.iter().map(|s| s.name.as_str()))
+            .collect();
+        for (i, name) in named.iter().enumerate().take(9) {
             let t = if n > 1 { i as f32 / (n - 1) as f32 } else { 1.0 };
             ui.horizontal(|ui| {
                 // A block rather than a rule, and outlined in the same hairline
@@ -894,7 +912,7 @@ impl StudioApp {
                     egui::StrokeKind::Inside,
                 );
                 ui.label(
-                    egui::RichText::new(&net.generators[g].name)
+                    egui::RichText::new(*name)
                         .size(10.0)
                         .color(theme::INK_DIM),
                 );
