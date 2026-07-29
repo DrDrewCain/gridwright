@@ -38,6 +38,11 @@ pub struct StudioApp {
     /// Which snapshot the canvas is showing, or the whole horizon at once.
     instant: Instant,
     palette: crate::palette::Palette,
+    /// A scrub requested by a chart this frame, applied once at the end of it.
+    ///
+    /// A `Cell` because charts are drawn from `&self` -- they run while the
+    /// solve result is borrowed -- and this is the one thing they need to write.
+    scrub_to: std::cell::Cell<Option<Instant>>,
     /// How long the last solve took, in seconds, as reported by the backend.
     ///
     /// Asked of the backend rather than measured here, because only it knows
@@ -103,6 +108,7 @@ impl StudioApp {
             line_flow: Vec::new(),
             instant: Instant::Horizon,
             palette: crate::palette::Palette::default(),
+            scrub_to: std::cell::Cell::new(None),
             solve_took: None,
             load_error: None,
         }
@@ -414,10 +420,7 @@ impl StudioApp {
         // panel could not tell them apart.
         if let Some(series) = solved.and_then(|s| s.prices.get(b)).filter(|s| s.len() > 1) {
             ui.add_space(theme::UNIT);
-            let (rect, _) = ui.allocate_exact_size(
-                egui::Vec2::new(ui.available_width(), 44.0),
-                egui::Sense::hover(),
-            );
+            let rect = self.chart_rect(ui, 44.0, series.len());
             let ax = crate::chart::Axes::fit(rect, series);
             let p = ui.painter();
             crate::chart::frame(p, &ax);
@@ -552,10 +555,7 @@ impl StudioApp {
                     continue;
                 };
                 ui.add_space(theme::UNIT);
-                let (rect, _) = ui.allocate_exact_size(
-                    egui::Vec2::new(ui.available_width(), 38.0),
-                    egui::Sense::hover(),
-                );
+                let rect = self.chart_rect(ui, 38.0, soc.len());
                 // From zero to the unit's *capacity*, not to whatever it
                 // happened to reach. A state of charge that peaks at 40% should
                 // look four tenths full; fitted to its own maximum it would
@@ -631,10 +631,7 @@ impl StudioApp {
         let solved = self.outcome.as_ref().and_then(|o| o.as_ref().ok());
         if let Some(series) = solved.and_then(|s| s.flows.get(e)).filter(|s| s.len() > 1) {
             ui.add_space(theme::UNIT);
-            let (rect, _) = ui.allocate_exact_size(
-                egui::Vec2::new(ui.available_width(), 44.0),
-                egui::Sense::hover(),
-            );
+            let rect = self.chart_rect(ui, 44.0, series.len());
             let ax = crate::chart::Axes::fit(rect, series);
             let p = ui.painter();
             crate::chart::frame(p, &ax);
@@ -778,6 +775,38 @@ impl StudioApp {
         }
     }
 
+    /// Allocate a chart's rectangle, and let dragging inside it scrub time.
+    ///
+    /// The charts and the map are one instrument, not a picture beside a
+    /// control. Seeing a spike in a price series and having to go find the
+    /// same hour on the slider below is the interaction this removes -- you
+    /// point at the spike and the network shows you that hour.
+    ///
+    /// Records the request on `scrub_to` rather than acting on it, and returns
+    /// only the rectangle. Charts are drawn while the solve result is borrowed,
+    /// so a method that reduced immediately could not be called from where the
+    /// charts live. The request is applied once, at the end of the frame.
+    fn chart_rect(&self, ui: &mut egui::Ui, height: f32, n: usize) -> egui::Rect {
+        let (rect, response) = ui.allocate_exact_size(
+            egui::Vec2::new(ui.available_width(), height),
+            egui::Sense::click_and_drag(),
+        );
+        // Drag rather than click alone, so sweeping across the chart plays the
+        // day through the network -- which is the closest thing to animation
+        // worth having, because the reader is driving it.
+        if (response.dragged() || response.clicked())
+            && let Some(p) = response.interact_pointer_pos()
+        {
+            let ax = crate::chart::Axes::fit(rect, &[0.0, 1.0]);
+            self.scrub_to.set(Some(Instant::At(ax.sample_at(p.x, n))));
+        }
+        if response.hovered() {
+            ui.ctx()
+                .set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        }
+        rect
+    }
+
     /// What ran, hour by hour, cheapest at the bottom.
     ///
     /// The chart this domain reaches for first. The bands are ordered by
@@ -813,10 +842,7 @@ impl StudioApp {
         ui.label(theme::eyebrow("dispatch"));
         ui.add_space(theme::UNIT);
 
-        let (rect, _) = ui.allocate_exact_size(
-            egui::Vec2::new(ui.available_width(), 56.0),
-            egui::Sense::hover(),
-        );
+        let rect = self.chart_rect(ui, 56.0, totals.len());
         // Fitted to the totals rather than to any one band, and from zero:
         // this is a stack of magnitudes, which is the case where a truncated
         // axis genuinely misleads.
@@ -1270,6 +1296,15 @@ impl eframe::App for StudioApp {
                 },
             );
         });
+
+        // Applied here, after every panel has drawn, because a chart cannot
+        // reduce while the result it is drawing from is borrowed.
+        if let Some(at) = self.scrub_to.take()
+            && self.instant != at
+        {
+            self.instant = at;
+            self.reduce();
+        }
     }
 }
 

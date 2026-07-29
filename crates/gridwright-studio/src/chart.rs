@@ -110,6 +110,20 @@ impl Axes {
     pub fn range(&self) -> (f64, f64) {
         (self.lo, self.hi)
     }
+
+    /// Which sample a screen position falls on.
+    ///
+    /// The inverse of `x`, so a click lands on the sample the reader was
+    /// pointing at rather than the one to its left. Clamped, because a drag
+    /// that leaves the frame should hold at the end rather than stop
+    /// responding.
+    pub fn sample_at(&self, px: f32, n: usize) -> usize {
+        if n == 0 {
+            return 0;
+        }
+        let t = ((px - self.rect.left()) / self.rect.width().max(1e-3)).clamp(0.0, 1.0);
+        ((t * n as f32) as usize).min(n - 1)
+    }
 }
 
 /// The frame: a baseline, and a zero line when zero is inside the data.
@@ -249,6 +263,30 @@ mod tests {
         let a = ax(&[0.0, 1.0]);
         assert!(a.x(0, 24) > a.rect.left());
         assert!(a.x(23, 24) < a.rect.right());
+    }
+
+    #[test]
+    fn a_click_lands_on_the_sample_under_it() {
+        // Round trip: the position a sample is drawn at must map back to that
+        // sample, or clicking a visible peak selects its neighbour.
+        let a = ax(&[0.0, 1.0]);
+        for n in [1usize, 2, 24, 8760] {
+            for i in [0, n / 3, n - 1] {
+                assert_eq!(a.sample_at(a.x(i, n), n), i, "n = {n}, i = {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_click_outside_the_frame_clamps_to_an_end() {
+        let a = ax(&[0.0, 1.0]);
+        assert_eq!(a.sample_at(a.rect.left() - 500.0, 24), 0);
+        assert_eq!(a.sample_at(a.rect.right() + 500.0, 24), 23);
+    }
+
+    #[test]
+    fn an_empty_chart_does_not_index_out_of_bounds() {
+        assert_eq!(ax(&[]).sample_at(50.0, 0), 0);
     }
 
     #[test]
