@@ -186,7 +186,21 @@ impl NetworkView {
                 self.visible(rect),
                 frame,
                 |p| self.screen_of(rect, p),
-                crate::theme::SLATE_LINE,
+                crate::basemap::Tone {
+                    // Land is *lighter* than the canvas and the sea is the
+                    // canvas itself. Painting the sea instead would put the
+                    // brighter tone on the larger area, and the canvas is
+                    // already the brightest surface in the window by design --
+                    // a sea brighter still would make the map the loudest thing
+                    // on screen, which is the one thing a backdrop must not be.
+                    land: crate::theme::SLATE_RAISED,
+                    sea: crate::theme::SLATE_WORK,
+                    coast: crate::theme::SLATE_LINE,
+                    // Dimmer than the coast: a national boundary is a fact
+                    // about people and a coastline is a fact about the ground,
+                    // and the reader is orienting by the second.
+                    border: crate::theme::SLATE_LINE.gamma_multiply(0.65),
+                },
             );
         }
 

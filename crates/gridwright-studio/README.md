@@ -93,15 +93,24 @@ they have no relationship to, which is a worse lie than no map — the whole poi
 of the origin label in the status strip is that the two pictures are otherwise
 indistinguishable.
 
-Natural Earth 1:50m, public domain, simplified to about 11 km and quantised to
-`i16`: 995 rings, 74 KB, roughly 1% of the bundle. **Bundled rather than
-fetched** — a tile layer would give a serverless tool a server, plus somebody
-else's terms of service and a network round trip. This works on a plane.
+Three layers: land filled a shade lighter than the sea, lakes painted back out
+in the sea tone, and national borders as a separate thinner hairline. A tonal
+land/sea distinction does more for orientation than any amount of outline
+detail, which is why every published TSO map has one.
 
-Deliberately a hairline and nothing else: no fill, no labels, no terrain.
-Overbye (NAPS 2019) on geographic grid displays — satellite and detailed
-backgrounds *"run the risk of background camouflaging the electric grid
-information of interest."* It answers "where is this?" and gets out of the way.
+Natural Earth 1:50m, public domain, simplified to about 11 km, quantised to
+`i16` and **triangulated ahead of time** — ear clipping a coastline is O(n²) in
+the worst case and belongs in a build step, so the runtime is a decode and a
+transform with no geometry algorithm in it. 143 KB, about 2% of the bundle.
+
+**Bundled rather than fetched** — a tile layer would give a serverless tool a
+server, plus somebody else's terms of service and a network round trip. This
+works on a plane.
+
+And no more than three layers. Overbye (NAPS 2019) on geographic grid displays:
+satellite and detailed backgrounds *"run the risk of background camouflaging the
+electric grid information of interest."* No roads, no terrain, no labels, and
+the whole thing sits within a few percent of the canvas tone.
 
 ## Layout
 
