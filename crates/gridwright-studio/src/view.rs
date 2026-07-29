@@ -85,6 +85,8 @@ pub struct NetworkView {
     snap_next_fit: bool,
     /// A bus to bring the camera to on the next frame that has a layout.
     reveal_next: Option<usize>,
+    /// A corridor to bring the camera to, likewise.
+    reveal_line_next: Option<usize>,
 }
 
 impl Default for NetworkView {
@@ -99,6 +101,7 @@ impl Default for NetworkView {
             hovered: None,
             snap_next_fit: true,
             reveal_next: None,
+            reveal_line_next: None,
         }
     }
 }
@@ -133,6 +136,13 @@ impl NetworkView {
     /// Refit at the next frame, travelling rather than cutting.
     pub fn refit(&mut self) {
         self.needs_fit = true;
+    }
+
+    /// Select a corridor and bring the camera to its midpoint.
+    pub fn reveal_line(&mut self, line: usize) {
+        self.selected_line = Some(line);
+        self.selected = None;
+        self.reveal_line_next = Some(line);
     }
 
     /// Which bus is selected, for whoever draws the inspector.
@@ -171,6 +181,22 @@ impl NetworkView {
 
         // Deferred to here because centring on a bus needs its position, and
         // the palette that asked for it has no layout to look in.
+        // A corridor is revealed at its *midpoint*, not at either end. Framing
+        // one end of a long line puts the other off screen, which is the half
+        // of it a reader asking about a corridor usually wants to see.
+        if let Some(e) = self.reveal_line_next.take()
+            && let Some(line) = net.lines.get(e)
+            && let (Some(&a), Some(&b)) = (layout.get(line.bus0), layout.get(line.bus1))
+        {
+            let mid = a + (b - a) * 0.5;
+            // Zoomed to hold the whole corridor with room around it, rather
+            // than to a fixed level that would frame a short line from orbit
+            // and a long one from inside.
+            let span = a.distance(b).max(1e-4);
+            let fits = (rect.width().min(rect.height()) * 0.55) / span;
+            self.goal = Some((mid, fits.clamp(MIN_ZOOM, MAX_ZOOM)));
+        }
+
         if let Some(b) = self.reveal_next.take()
             && let Some(&p) = layout.get(b)
         {

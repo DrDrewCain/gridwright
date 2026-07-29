@@ -1249,12 +1249,21 @@ impl StudioApp {
     fn run_palette(&mut self, ctx: &egui::Context) {
         use crate::palette::Action;
 
-        let names: Vec<String> = self
-            .network()
-            .map(|n| n.buses.iter().map(|b| b.name.clone()).collect())
-            .unwrap_or_default();
+        let (buses, lines) = match self.network() {
+            Some(n) => (
+                n.buses.iter().map(|b| b.name.clone()).collect(),
+                n.lines.iter().map(|l| l.name.clone()).collect(),
+            ),
+            None => (Vec::new(), Vec::new()),
+        };
 
-        let Some(action) = self.palette.ui(ctx, &names) else {
+        let Some(action) = self.palette.ui(
+            ctx,
+            &crate::palette::Names {
+                buses: &buses,
+                lines: &lines,
+            },
+        ) else {
             return;
         };
         match action {
@@ -1263,6 +1272,7 @@ impl StudioApp {
             // off screen, and a camera move with no selection loses the thing
             // they searched for the moment they pan.
             Action::GoTo(b) => self.view.reveal(b),
+            Action::GoToLine(e) => self.view.reveal_line(e),
             Action::Solve => {
                 if let Some(net) = self.loaded.as_ref().map(|l| &l.network) {
                     self.backend.submit(net);

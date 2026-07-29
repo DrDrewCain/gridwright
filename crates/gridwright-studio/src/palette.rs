@@ -23,6 +23,8 @@ use crate::theme;
 pub enum Action {
     /// Select this bus and bring the camera to it.
     GoTo(usize),
+    /// Select this corridor and bring the camera to it.
+    GoToLine(usize),
     Solve,
     Fit,
     OpenSample,
@@ -97,8 +99,8 @@ pub struct Palette {
 impl Palette {
     /// Open or close on the keyboard, and report what was chosen.
     ///
-    /// `names` is every bus name, in index order.
-    pub fn ui(&mut self, ctx: &egui::Context, names: &[String]) -> Option<Action> {
+    /// `names` is every component the palette can navigate to.
+    pub fn ui(&mut self, ctx: &egui::Context, names: &Names<'_>) -> Option<Action> {
         self.take_shortcut(ctx);
         if !self.open {
             return None;
@@ -214,7 +216,7 @@ impl Palette {
     }
 
     /// Everything matching, best first.
-    fn rank(&self, names: &[String]) -> Vec<Hit> {
+    fn rank(&self, names: &Names<'_>) -> Vec<Hit> {
         let q = self.query.trim();
 
         // Commands first when the query is empty, because a reader who opened
@@ -229,9 +231,21 @@ impl Palette {
                 hits.push((s + 6 - i as i32, Hit::Command(i)));
             }
         }
-        for (b, name) in names.iter().enumerate() {
+        for (b, name) in names.buses.iter().enumerate() {
             if let Some(s) = fuzzy::score(q, name) {
                 hits.push((s, Hit::Bus(b, name.clone())));
+            }
+        }
+        // Corridors too. Half the network is lines, and a reader who knows a
+        // circuit by name had no way to reach it -- the only route was to find
+        // it on the canvas, which is exactly the search the palette exists to
+        // replace.
+        for (e, name) in names.lines.iter().enumerate() {
+            if let Some(s) = fuzzy::score(q, name) {
+                // Slightly below an equally good bus match. A name that fits
+                // both is far more often the substation being looked for, and
+                // the corridor is one row further down rather than absent.
+                hits.push((s - 1, Hit::Line(e, name.clone())));
             }
         }
 
@@ -272,13 +286,20 @@ impl Palette {
 /// A row in the list: a place or a command.
 enum Hit {
     Bus(usize, String),
+    Line(usize, String),
     Command(usize),
+}
+
+/// Everything the palette can navigate to, in index order.
+pub struct Names<'a> {
+    pub buses: &'a [String],
+    pub lines: &'a [String],
 }
 
 impl Hit {
     fn label(&self) -> &str {
         match self {
-            Hit::Bus(_, name) => name,
+            Hit::Bus(_, name) | Hit::Line(_, name) => name,
             Hit::Command(i) => COMMANDS[*i].label,
         }
     }
@@ -287,6 +308,7 @@ impl Hit {
     fn aside(&self) -> &str {
         match self {
             Hit::Bus(..) => "bus",
+            Hit::Line(..) => "line",
             Hit::Command(i) => COMMANDS[*i].keys,
         }
     }
@@ -294,6 +316,7 @@ impl Hit {
     fn action(&self) -> Action {
         match self {
             Hit::Bus(b, _) => Action::GoTo(*b),
+            Hit::Line(e, _) => Action::GoToLine(*e),
             Hit::Command(i) => (COMMANDS[*i].make)(),
         }
     }
@@ -303,12 +326,15 @@ impl Hit {
 mod tests {
     use super::*;
 
-    fn names(n: &[&str]) -> Vec<String> {
+    fn strs(n: &[&str]) -> Vec<String> {
         n.iter().map(|s| s.to_string()).collect()
     }
 
-    fn labels(p: &Palette, names: &[String]) -> Vec<String> {
-        p.rank(names).iter().map(|h| h.label().to_string()).collect()
+    fn labels(p: &Palette, buses: &[String], lines: &[String]) -> Vec<String> {
+        p.rank(&Names { buses, lines })
+            .iter()
+            .map(|h| h.label().to_string())
+            .collect()
     }
 
     #[test]
@@ -316,7 +342,7 @@ mod tests {
         // Someone who opened the palette with no idea what to type should see
         // what it can do, not the first twelve buses in file order.
         let p = Palette::default();
-        let got = labels(&p, &names(&["bus1", "bus2"]));
+        let got = labels(&p, &strs(&["bus1", "bus2"]), &[]);
         assert_eq!(got[0], "Solve");
         assert!(got.contains(&"bus1".to_string()));
     }
@@ -327,7 +353,7 @@ mod tests {
             query: "bus2".into(),
             ..Default::default()
         };
-        let got = labels(&p, &names(&["bus1", "bus2", "bus20", "substation2"]));
+        let got = labels(&p, &strs(&["bus1", "bus2", "bus20", "substation2"]), &[]);
         assert_eq!(got[0], "bus2");
     }
 
@@ -337,13 +363,36 @@ mod tests {
             query: "fit".into(),
             ..Default::default()
         };
-        assert_eq!(labels(&p, &names(&["bus1"]))[0], "Fit to window");
+        assert_eq!(labels(&p, &strs(&["bus1"]), &[])[0], "Fit to window");
+    }
+
+    #[test]
+    fn a_corridor_is_reachable_by_name() {
+        let p = Palette {
+            query: "north".into(),
+            ..Default::default()
+        };
+        let got = labels(&p, &strs(&["bus1"]), &strs(&["north-south"]));
+        assert_eq!(got[0], "north-south");
+    }
+
+    #[test]
+    fn a_bus_outranks_a_corridor_of_the_same_name() {
+        // A name that fits both is far more often the substation.
+        let p = Palette {
+            query: "alpha".into(),
+            ..Default::default()
+        };
+        let got = labels(&p, &strs(&["alpha"]), &strs(&["alpha"]));
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0], "alpha");
     }
 
     #[test]
     fn the_list_is_capped() {
         let many: Vec<String> = (0..500).map(|i| format!("bus{i}")).collect();
-        assert_eq!(Palette::default().rank(&many).len(), SHOWN);
+        let n = Names { buses: &many, lines: &[] };
+        assert_eq!(Palette::default().rank(&n).len(), SHOWN);
     }
 
     #[test]
@@ -352,7 +401,8 @@ mod tests {
             query: "zzzzz".into(),
             ..Default::default()
         };
-        assert!(p.rank(&names(&["bus1", "bus2"])).is_empty());
+        let n = Names { buses: &strs(&["bus1", "bus2"]), lines: &[] };
+        assert!(p.rank(&n).is_empty());
     }
 
     #[test]
@@ -363,7 +413,7 @@ mod tests {
             query: "bus".into(),
             ..Default::default()
         };
-        let n = names(&["bus1", "bus2", "bus3", "abus", "busbar"]);
-        assert_eq!(labels(&p, &n), labels(&p, &n));
+        let b = strs(&["bus1", "bus2", "bus3", "abus", "busbar"]);
+        assert_eq!(labels(&p, &b, &[]), labels(&p, &b, &[]));
     }
 }
