@@ -17,6 +17,7 @@
 //! minutes; the same work in release takes seconds.
 
 mod dbf;
+mod places;
 mod pyramid;
 mod shapefile;
 mod simplify;
@@ -24,6 +25,7 @@ mod triangulate;
 
 use std::path::{Path, PathBuf};
 
+use places::Place;
 use pyramid::{Layer, Shape};
 
 /// Which file feeds which layer.
@@ -73,6 +75,30 @@ fn main() {
     }
 
     let mut total = 0usize;
+
+    // Places are written once rather than per level: a place has no shape, so
+    // there is nothing for a pyramid to simplify.
+    match read_places(&src.join("ne_10m_populated_places")) {
+        Ok(found) => {
+            let blob = places::encode(&found);
+            let file = out.join("places.bin");
+            if let Err(e) = std::fs::write(&file, &blob) {
+                eprintln!("cannot write {}: {e}", file.display());
+                std::process::exit(1);
+            }
+            eprintln!(
+                "places : {:>6} named, {:>7.1} KB",
+                found.len(),
+                blob.len() as f64 / 1024.0,
+            );
+            total += blob.len();
+        }
+        Err(e) => {
+            eprintln!("ne_10m_populated_places: {e}");
+            std::process::exit(1);
+        }
+    }
+
     for level in 0..pyramid::TOLERANCE.len() {
         let tolerance = pyramid::TOLERANCE[level];
         let wanted = pyramid::layers_at(level);
@@ -102,6 +128,63 @@ fn main() {
         total += blob.len();
     }
     eprintln!("total  : {:>7.1} KB", total as f64 / 1024.0);
+}
+
+/// Pair the point geometry with the columns that name it.
+///
+/// **By position, record for record**, which is the only key the format has. The
+/// two files are read with the record-preserving calls for exactly that reason,
+/// and a count mismatch is fatal rather than truncated to the shorter of the two:
+/// a table that has drifted by one against its geometry puts every city in the
+/// world on its neighbour, and nothing about the result would look wrong.
+fn read_places(stem: &Path) -> Result<Vec<Place>, String> {
+    let shp = std::fs::read(stem.with_extension("shp")).map_err(|e| e.to_string())?;
+    let dbf = std::fs::read(stem.with_extension("dbf")).map_err(|e| e.to_string())?;
+
+    let shapes = shapefile::read_by_record(&shp).map_err(|e| e.to_string())?;
+    let rows = dbf::read(
+        &dbf,
+        &["NAME", "ADM1NAME", "ADM0NAME", "FEATURECLA", "POP_MAX", "LABELRANK"],
+    )
+    .map_err(|e| e.to_string())?;
+
+    if shapes.len() != rows.len() {
+        return Err(format!(
+            "{} shapes against {} attribute rows, so the positional join is not sound",
+            shapes.len(),
+            rows.len(),
+        ));
+    }
+
+    let mut out = Vec::with_capacity(rows.len());
+    for ((_, parts), row) in shapes.iter().zip(&rows) {
+        if row.deleted {
+            continue;
+        }
+        let Some(at) = parts.first().and_then(|p| p.first()) else {
+            continue;
+        };
+        let name = row.values[0].clone();
+        if name.is_empty() {
+            continue;
+        }
+        // Not `unwrap_or(0)` on a parse failure without saying so: a blank cell is
+        // normal and parses to nothing, which is a population of zero, and that
+        // only decides whether the place draws as a city or a town.
+        let population: u32 = row.values[4].parse().unwrap_or(0);
+        let rank: u8 = row.values[5].parse().unwrap_or(10);
+        out.push(Place {
+            lon: at[0],
+            lat: at[1],
+            kind: places::Kind::classify(&row.values[3], population),
+            name,
+            region: row.values[1].clone(),
+            country: row.values[2].clone(),
+            rank,
+            population,
+        });
+    }
+    Ok(out)
 }
 
 fn read_layer(path: &Path) -> Result<Vec<shapefile::Ring>, String> {
