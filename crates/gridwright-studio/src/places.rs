@@ -22,7 +22,7 @@
 //! looks tidier in a still frame and is much worse to pan with, because a label
 //! that moves as the camera moves reads as a different label.
 
-use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2, pos2};
+use eframe::egui::{Align2, Color32, FontId, Painter, Pos2, Rect, Stroke, Vec2};
 
 /// The table, built by `gridwright-mapgen` from Natural Earth's populated places.
 ///
@@ -208,23 +208,42 @@ pub struct Tone {
 
 /// Draw the places inside `extent`, and answer how many got room.
 ///
-/// `extent` is in Mercator and `project` maps Mercator to the screen, so the
-/// caller decides what "where the network is" means and this decides what fits.
+/// `extent` is in **Mercator**, because that is the space the gazetteer is in and
+/// the space a caller can describe a region of the world in.
+///
+/// `frame` and `project` are taken separately, and deliberately, rather than as
+/// one composed mapping. Every position here is Mercator and the canvas's screen
+/// transform expects the layout's normalised space, so a caller handed a single
+/// `Fn(Pos2) -> Pos2` will pass the screen transform straight in and put every
+/// label thousands of units off screen -- which is exactly what happened, and
+/// looked identical to a table that had failed to load. Composing the two here
+/// means it cannot be got wrong out there.
+/// `reserved` is screen space the network has already claimed. **The map yields to
+/// the network, never the other way round**: a city name landing on a substation's
+/// name is two labels in one place and a reader cannot tell which is which -- and
+/// on a German grid the collision is often literal, because the substation is
+/// named after the city. Passed in rather than discovered, because the network is
+/// drawn after this and cannot be asked yet.
 pub fn draw(
     painter: &Painter,
     places: &Places,
     extent: Rect,
     limit: usize,
+    frame: crate::layout::Frame,
     project: impl Fn(Pos2) -> Pos2,
+    reserved: &[Rect],
     tone: Tone,
 ) -> usize {
     // Room for roughly the tallest label, so a grid cell holds a handful.
     let mut taken = Taken::new(24.0);
+    for r in reserved {
+        taken.claim(*r);
+    }
     let font = FontId::monospace(9.5);
     let mut drawn = 0usize;
 
     for p in places.within(extent, limit) {
-        let screen = project(p.at);
+        let screen = project(frame.apply(p.at));
         if !painter.clip_rect().contains(screen) {
             continue;
         }
@@ -363,6 +382,7 @@ fn i16b(b: &[u8], at: &mut usize) -> Option<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use eframe::egui::pos2;
 
     /// Mercator box around a lon/lat window, for asking what is inside it.
     fn window(west: f64, east: f64, south: f64, north: f64) -> Rect {
@@ -370,6 +390,48 @@ mod tests {
             crate::layout::project_one(west, north),
             crate::layout::project_one(east, south),
         )
+    }
+
+    #[test]
+    fn the_demo_networks_extent_finds_its_own_cities() {
+        // **The end-to-end check the wiring needs.** Every piece can be right --
+        // the table decodes, the frame inverts, the query is confined -- and the
+        // canvas can still label nothing, because the extent handed to it was
+        // computed in the wrong space. So this walks the real path: lay the demo
+        // network out, take the bus positions back into Mercator through its own
+        // frame, and ask what is inside.
+        const SAMPLE: &[u8] = include_bytes!("../../../examples/demo-grid.json");
+        let loaded = gridwright_worker::load(Some("demo-grid.json"), SAMPLE)
+            .expect("the demo network loads");
+        let placed = crate::layout::layout(&loaded.network);
+        assert_eq!(placed.kind, crate::layout::Origin::Geographic);
+
+        let mut extent: Option<Rect> = None;
+        for p in &placed.pos {
+            let m = placed.frame.invert(*p);
+            extent = Some(match extent {
+                Some(r) => r.union(Rect::from_min_max(m, m)),
+                None => Rect::from_min_max(m, m),
+            });
+        }
+        let extent = extent.expect("the demo network has buses");
+        let extent = extent.expand2(extent.size() * 0.25);
+
+        let places = Places::load();
+        let names: Vec<&str> = places
+            .within(extent, 60)
+            .iter()
+            .map(|p| p.name.as_str())
+            .collect();
+        assert!(
+            !names.is_empty(),
+            "the demo network's extent {extent:?} names nothing",
+        );
+        // The demo runs from the Elbe mouth to the Swabian Jura, so these are the
+        // cities a reader would expect to see beside it.
+        for want in ["Hamburg", "Stuttgart"] {
+            assert!(names.contains(&want), "{want} missing from {names:?}");
+        }
     }
 
     #[test]
@@ -478,6 +540,24 @@ mod tests {
         let before = sorted.len();
         sorted.dedup();
         assert_eq!(sorted.len(), before, "{regions:?} repeats");
+    }
+
+    #[test]
+    fn reserved_space_is_claimed_before_any_label() {
+        // Overlapping reservations are expected -- two adjacent substations
+        // overlap constantly -- so claiming them must not depend on them being
+        // disjoint. What matters is that afterwards none of that space is free.
+        let mut taken = Taken::new(24.0);
+        let a = Rect::from_min_size(pos2(50.0, 50.0), Vec2::new(60.0, 20.0));
+        let b = Rect::from_min_size(pos2(80.0, 55.0), Vec2::new(60.0, 20.0));
+        taken.claim(a);
+        taken.claim(b);
+        assert!(!taken.claim(a), "reserved space came back free");
+        assert!(
+            !taken.claim(Rect::from_min_size(pos2(100.0, 60.0), Vec2::new(10.0, 5.0))),
+            "space inside the second reservation came back free",
+        );
+        assert!(taken.claim(Rect::from_min_size(pos2(400.0, 400.0), Vec2::splat(10.0))));
     }
 
     #[test]

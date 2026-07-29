@@ -17,6 +17,14 @@ use gridwright_net::Network;
 /// [`crate::layout`] hands back a roughly unit-sized box, so these are bounds on
 /// "the whole network fits in a thumbnail" and "one substation fills the pane".
 const MIN_ZOOM: f32 = 20.0;
+
+/// How many named places the canvas will consider in one frame.
+///
+/// A cap on *candidates*, not on what appears: the collision pass drops whatever
+/// has no room, so a tight view shows a handful and a regional one shows most of
+/// this. It exists because past a few dozen names the map stops being a reference
+/// and becomes the thing a reader reads instead of the network.
+const PLACE_LIMIT: usize = 60;
 const MAX_ZOOM: f32 = 40_000.0;
 
 /// How close the pointer must be to a bus, in screen points, to pick it.
@@ -85,6 +93,7 @@ pub struct NetworkView {
     snap_next_fit: bool,
     /// The map under the network. Levels are decoded on first use.
     basemap: crate::basemap::Basemap,
+    places: crate::places::Places,
     /// Which map layers the reader wants.
     pub layers: crate::basemap::Show,
     /// A bus to bring the camera to on the next frame that has a layout.
@@ -108,6 +117,7 @@ impl Default for NetworkView {
             hovered: None,
             snap_next_fit: true,
             basemap: crate::basemap::Basemap::default(),
+            places: crate::places::Places::load(),
             layers: crate::basemap::Show::default(),
             reveal_next: None,
             reveal_line_next: None,
@@ -244,6 +254,49 @@ impl NetworkView {
                 },
                 layers,
             );
+
+            // Names, after the map and before the network. **Only inside the
+            // loaded network's own extent**, which is the whole point: a basemap
+            // that labels every city it knows about is a wall of type, and none of
+            // it is about the network on screen.
+            //
+            // The extent is the buses' own bounding box taken back into Mercator
+            // and widened by a quarter, so the places that frame the study appear
+            // without the ones a hundred kilometres past it.
+            let mut extent: Option<eframe::egui::Rect> = None;
+            for p in layout.iter() {
+                let m = frame.invert(*p);
+                extent = Some(match extent {
+                    Some(r) => r.union(eframe::egui::Rect::from_min_max(m, m)),
+                    None => eframe::egui::Rect::from_min_max(m, m),
+                });
+            }
+            if let Some(extent) = extent {
+                let pad = (extent.size() * 0.25).max(eframe::egui::Vec2::splat(0.004));
+                let reserved = self.bus_footprints(&painter, rect, net, layout);
+                crate::places::draw(
+                    &painter,
+                    &self.places,
+                    extent.expand2(pad),
+                    // A cap, not a zoom rule. Past a few dozen names the map stops
+                    // being a reference and starts being the thing you read
+                    // instead of the network, and the collision pass already drops
+                    // whatever has no room.
+                    PLACE_LIMIT,
+                    frame,
+                    to_screen,
+                    &reserved,
+                    crate::places::Tone {
+                        // Dimmer than any network ink, and nothing the network uses
+                        // to mean something. Overbye (NAPS 2019): a detailed
+                        // background risks "camouflaging the electric grid
+                        // information of interest".
+                        name: crate::theme::INK_DIM,
+                        mark: crate::theme::INK_DIM.gamma_multiply(0.8),
+                        halo: crate::theme::SLATE_WORK,
+                    },
+                );
+            }
         }
 
         let on_circuit = self.draw_edges(
@@ -985,11 +1038,7 @@ impl NetworkView {
         // bar. Circles say "vertex". Bars say "busbar", and an engineer reads
         // the second without being told.
         //
-        // Half-length follows zoom weakly. Fixed screen size turns a national
-        // model into a solid mat at low zoom; fixed model size draws bars the
-        // width of the pane at high zoom.
-        let half = (self.zoom * 0.022).clamp(6.0, 30.0);
-        let thickness = (half * 0.30).clamp(3.0, 8.0);
+        let (half, thickness) = self.bar_metrics();
         // Symbols scale with the bar but stop growing sooner. A generator ring
         // as tall as the busbar is wide stops reading as a machine hanging off
         // a conductor and starts reading as a lollipop.
@@ -1256,8 +1305,7 @@ impl NetworkView {
         };
         let bus = &net.buses[picked];
         let s = self.screen_of(rect, layout[picked]);
-        let half = (self.zoom * 0.022).clamp(6.0, 30.0);
-        let thickness = (half * 0.30).clamp(3.0, 8.0);
+        let (half, thickness) = self.bar_metrics();
         // Hover is a closed outline and one pixel thin: present, but plainly a
         // lighter mark than the brackets that say what is selected.
         painter.rect_stroke(
@@ -1310,6 +1358,60 @@ impl NetworkView {
         };
         painter.circle_filled(at, 2.5, crate::theme::INK_STRONG);
         callout(ui, painter, at + vec2(10.0, 6.0), label);
+    }
+
+    /// Half-length and thickness of a bus bar at the current zoom.
+    ///
+    /// One definition, because four places need both and they have to agree: the
+    /// bar itself, the hover outline, the selection brackets, and the footprint
+    /// the basemap's labels keep out of. The thickness in particular was written
+    /// out three times.
+    fn bar_metrics(&self) -> (f32, f32) {
+        let half = self.bar_half();
+        (half, (half * 0.30).clamp(3.0, 8.0))
+    }
+
+    /// Screen space each bus occupies, symbol and name together.
+    ///
+    /// For the basemap's labels to keep out of, so a city name never lands on a
+    /// substation's. Deliberately **conservative**: the height covers the
+    /// generator and load glyphs above and below the bar plus the name beneath
+    /// them, and the width is the wider of the bar and the name, without asking
+    /// which glyphs this particular bus actually has. Reserving more than is
+    /// strictly needed costs a city label that would have fitted; reserving less
+    /// costs two names in one place, and only one of those is recoverable by
+    /// panning.
+    fn bus_footprints(
+        &self,
+        painter: &eframe::egui::Painter,
+        rect: Rect,
+        net: &Network,
+        layout: &[Pos2],
+    ) -> Vec<Rect> {
+        let visible = self.visible(rect);
+        let (half, thickness) = self.bar_metrics();
+        let mut out = Vec::with_capacity(net.buses.len());
+        for (b, bus) in net.buses.iter().enumerate() {
+            let Some(&p) = layout.get(b) else { continue };
+            if !visible.contains(p) {
+                continue;
+            }
+            let s = self.screen_of(rect, p);
+            let name = painter.layout_no_wrap(
+                bus.name.clone(),
+                FontId::proportional(10.0),
+                crate::theme::INK_DIM,
+            );
+            // The bar, the glyph rows either side of it, and the name below.
+            let width = (half * 2.0).max(name.size().x) + 6.0;
+            let top = -thickness * 0.5 - 14.0;
+            let bottom = thickness * 0.5 + 19.0 + name.size().y * 0.5 + 2.0;
+            out.push(Rect::from_min_max(
+                s + vec2(-width * 0.5, top),
+                s + vec2(width * 0.5, bottom),
+            ));
+        }
+        out
     }
 
     fn screen_of(&self, rect: Rect, p: Pos2) -> Pos2 {
