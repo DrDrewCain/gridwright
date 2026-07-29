@@ -87,6 +87,9 @@ pub struct NetworkView {
     reveal_next: Option<usize>,
     /// A corridor to bring the camera to, likewise.
     reveal_line_next: Option<usize>,
+    /// Whether a corridor was under the pointer when the edges were drawn this
+    /// frame. Set by `draw_edges`, read by `draw_buses` a few lines later.
+    circuit_under_pointer: bool,
 }
 
 impl Default for NetworkView {
@@ -102,6 +105,7 @@ impl Default for NetworkView {
             snap_next_fit: true,
             reveal_next: None,
             reveal_line_next: None,
+            circuit_under_pointer: false,
         }
     }
 }
@@ -215,8 +219,8 @@ impl NetworkView {
             overlay,
             response.hover_pos(),
         );
-        let on_bus =
-            self.draw_buses(ui, &painter, net, layout, overlay, on_circuit.is_some(), &response);
+        self.circuit_under_pointer = on_circuit.is_some();
+        let on_bus = self.draw_buses(ui, &painter, net, layout, overlay, &response);
 
         // A bus wins a tie. The pointer sits within picking distance of both
         // whenever it is near a tap point, and the bus is the thing that can be
@@ -924,9 +928,12 @@ impl NetworkView {
         net: &Network,
         layout: &[Pos2],
         overlay: Overlay<'_>,
-        on_circuit: bool,
         response: &eframe::egui::Response,
     ) -> bool {
+        // Whether a corridor already claimed this click. Read from the field
+        // rather than passed, because it is state this frame produced a moment
+        // ago and threading it back in as an argument was the eighth one.
+        let on_circuit = self.circuit_under_pointer;
         let rect = response.rect;
         let visible = self.visible(rect);
         let Overlay {

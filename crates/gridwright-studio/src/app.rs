@@ -1209,7 +1209,7 @@ impl StudioApp {
                 }
             }
         }
-        if hi.iter().any(|v| *v == f64::MIN) {
+        if hi.contains(&f64::MIN) {
             return;
         }
 

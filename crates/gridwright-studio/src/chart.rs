@@ -203,6 +203,120 @@ pub fn duration(series: &[f64]) -> Vec<f64> {
     out
 }
 
+/// A horizontal reference line — a rating, a limit, a target.
+///
+/// Clipped to the frame rather than drawn outside it: a corridor that never
+/// approaches its rating would otherwise put the line off the top of the chart,
+/// where it is both invisible and, if the axis were expanded to include it,
+/// would flatten the series it exists to be compared against.
+pub fn threshold(painter: &egui::Painter, ax: &Axes, v: f64, color: Color32) {
+    let (lo, hi) = ax.range();
+    if v < lo || v > hi {
+        return;
+    }
+    let y = ax.y(v);
+    painter.line_segment(
+        [pos2(ax.rect.left(), y), pos2(ax.rect.right(), y)],
+        Stroke::new(1.0, color.gamma_multiply(0.7)),
+    );
+}
+
+/// Stacked bands: several series accumulated bottom-up.
+///
+/// The dispatch stack, which is the chart this domain reaches for first — it
+/// answers "what was running, and in what proportion" in one picture, and the
+/// order of the bands *is* the merit order, so the shape of the stack is the
+/// story of the day.
+///
+/// Takes the series already ordered cheapest-first, because the caller knows
+/// the merit order and this does not.
+pub fn stack(painter: &egui::Painter, ax: &Axes, bands: &[(&[f64], Color32)]) {
+    let n = bands.iter().map(|(s, _)| s.len()).max().unwrap_or(0);
+    if n == 0 {
+        return;
+    }
+    let mut floor = vec![0.0_f64; n];
+
+    for (series, color) in bands {
+        let mut top = floor.clone();
+        for (i, t) in top.iter_mut().enumerate() {
+            *t += series.get(i).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
+        }
+
+        // One mesh per band rather than a polygon per sample. A quad strip is
+        // two triangles per interval, which is the cheapest correct shape and
+        // avoids the seams that adjacent polygons leave at their shared edges.
+        let mut mesh = egui::Mesh::default();
+        for i in 0..n {
+            let x = ax.x(i, n);
+            mesh.colored_vertex(pos2(x, ax.y(floor[i])), *color);
+            mesh.colored_vertex(pos2(x, ax.y(top[i])), *color);
+            if i > 0 {
+                let b = (i as u32 - 1) * 2;
+                mesh.add_triangle(b, b + 1, b + 2);
+                mesh.add_triangle(b + 1, b + 2, b + 3);
+            }
+        }
+        painter.add(egui::Shape::mesh(mesh));
+
+        // A hairline along the top of each band.
+        //
+        // Six bands on a lightness ramp alone sit at the edge of what is
+        // distinguishable, and adjacent fills of similar value read as one
+        // shape. A boundary line is the standard fix for a stacked area and
+        // costs no hue -- which matters here, because hue is spent on voltage
+        // and on alarm state.
+        let edge: Vec<Pos2> = (0..n).map(|i| pos2(ax.x(i, n), ax.y(top[i]))).collect();
+        if edge.len() > 1 {
+            painter.add(egui::Shape::line(
+                edge,
+                Stroke::new(1.0, crate::theme::SLATE_WORK),
+            ));
+        }
+
+        floor = top;
+    }
+}
+
+/// The largest total a stack will reach, so its axis can be fitted before it is
+/// drawn.
+pub fn stack_peak(bands: &[&[f64]]) -> Vec<f64> {
+    let n = bands.iter().map(|s| s.len()).max().unwrap_or(0);
+    (0..n)
+        .map(|i| {
+            bands
+                .iter()
+                .filter_map(|s| s.get(i))
+                .filter(|v| v.is_finite())
+                .sum()
+        })
+        .collect()
+}
+
+/// The area between two series.
+///
+/// For a range rather than a value — the spread between the cheapest and the
+/// dearest bus in each hour, say, where the *width* is the quantity and either
+/// edge alone would be half the story.
+pub fn band(painter: &egui::Painter, ax: &Axes, lo: &[f64], hi: &[f64], color: Color32) {
+    let n = lo.len().min(hi.len());
+    if n < 2 {
+        return;
+    }
+    let mut mesh = egui::Mesh::default();
+    for i in 0..n {
+        let x = ax.x(i, n);
+        mesh.colored_vertex(pos2(x, ax.y(lo[i])), color);
+        mesh.colored_vertex(pos2(x, ax.y(hi[i])), color);
+        if i > 0 {
+            let b = (i as u32 - 1) * 2;
+            mesh.add_triangle(b, b + 1, b + 2);
+            mesh.add_triangle(b + 1, b + 2, b + 3);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,118 +445,4 @@ mod tests {
         // NaN in a comparison sort is how you get a silently scrambled series.
         assert_eq!(duration(&[3.0, f64::NAN, 1.0]), vec![3.0, 1.0]);
     }
-}
-
-/// A horizontal reference line — a rating, a limit, a target.
-///
-/// Clipped to the frame rather than drawn outside it: a corridor that never
-/// approaches its rating would otherwise put the line off the top of the chart,
-/// where it is both invisible and, if the axis were expanded to include it,
-/// would flatten the series it exists to be compared against.
-pub fn threshold(painter: &egui::Painter, ax: &Axes, v: f64, color: Color32) {
-    let (lo, hi) = ax.range();
-    if v < lo || v > hi {
-        return;
-    }
-    let y = ax.y(v);
-    painter.line_segment(
-        [pos2(ax.rect.left(), y), pos2(ax.rect.right(), y)],
-        Stroke::new(1.0, color.gamma_multiply(0.7)),
-    );
-}
-
-/// Stacked bands: several series accumulated bottom-up.
-///
-/// The dispatch stack, which is the chart this domain reaches for first — it
-/// answers "what was running, and in what proportion" in one picture, and the
-/// order of the bands *is* the merit order, so the shape of the stack is the
-/// story of the day.
-///
-/// Takes the series already ordered cheapest-first, because the caller knows
-/// the merit order and this does not.
-pub fn stack(painter: &egui::Painter, ax: &Axes, bands: &[(&[f64], Color32)]) {
-    let n = bands.iter().map(|(s, _)| s.len()).max().unwrap_or(0);
-    if n == 0 {
-        return;
-    }
-    let mut floor = vec![0.0_f64; n];
-
-    for (series, color) in bands {
-        let mut top = floor.clone();
-        for (i, t) in top.iter_mut().enumerate() {
-            *t += series.get(i).copied().filter(|v| v.is_finite()).unwrap_or(0.0);
-        }
-
-        // One mesh per band rather than a polygon per sample. A quad strip is
-        // two triangles per interval, which is the cheapest correct shape and
-        // avoids the seams that adjacent polygons leave at their shared edges.
-        let mut mesh = egui::Mesh::default();
-        for i in 0..n {
-            let x = ax.x(i, n);
-            mesh.colored_vertex(pos2(x, ax.y(floor[i])), *color);
-            mesh.colored_vertex(pos2(x, ax.y(top[i])), *color);
-            if i > 0 {
-                let b = (i as u32 - 1) * 2;
-                mesh.add_triangle(b, b + 1, b + 2);
-                mesh.add_triangle(b + 1, b + 2, b + 3);
-            }
-        }
-        painter.add(egui::Shape::mesh(mesh));
-
-        // A hairline along the top of each band.
-        //
-        // Six bands on a lightness ramp alone sit at the edge of what is
-        // distinguishable, and adjacent fills of similar value read as one
-        // shape. A boundary line is the standard fix for a stacked area and
-        // costs no hue -- which matters here, because hue is spent on voltage
-        // and on alarm state.
-        let edge: Vec<Pos2> = (0..n).map(|i| pos2(ax.x(i, n), ax.y(top[i]))).collect();
-        if edge.len() > 1 {
-            painter.add(egui::Shape::line(
-                edge,
-                Stroke::new(1.0, crate::theme::SLATE_WORK),
-            ));
-        }
-
-        floor = top;
-    }
-}
-
-/// The largest total a stack will reach, so its axis can be fitted before it is
-/// drawn.
-pub fn stack_peak(bands: &[&[f64]]) -> Vec<f64> {
-    let n = bands.iter().map(|s| s.len()).max().unwrap_or(0);
-    (0..n)
-        .map(|i| {
-            bands
-                .iter()
-                .filter_map(|s| s.get(i))
-                .filter(|v| v.is_finite())
-                .sum()
-        })
-        .collect()
-}
-
-/// The area between two series.
-///
-/// For a range rather than a value — the spread between the cheapest and the
-/// dearest bus in each hour, say, where the *width* is the quantity and either
-/// edge alone would be half the story.
-pub fn band(painter: &egui::Painter, ax: &Axes, lo: &[f64], hi: &[f64], color: Color32) {
-    let n = lo.len().min(hi.len());
-    if n < 2 {
-        return;
-    }
-    let mut mesh = egui::Mesh::default();
-    for i in 0..n {
-        let x = ax.x(i, n);
-        mesh.colored_vertex(pos2(x, ax.y(lo[i])), color);
-        mesh.colored_vertex(pos2(x, ax.y(hi[i])), color);
-        if i > 0 {
-            let b = (i as u32 - 1) * 2;
-            mesh.add_triangle(b, b + 1, b + 2);
-            mesh.add_triangle(b + 1, b + 2, b + 3);
-        }
-    }
-    painter.add(egui::Shape::mesh(mesh));
 }
