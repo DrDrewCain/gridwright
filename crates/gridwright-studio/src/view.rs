@@ -83,9 +83,10 @@ pub struct NetworkView {
     hovered: Option<usize>,
     /// Whether the next fit jumps rather than travels. True for a new network.
     snap_next_fit: bool,
-    /// Coastlines, decoded once. Twenty kilobytes of outline, parsed at
-    /// construction rather than per frame.
+    /// The map under the network. Levels are decoded on first use.
     basemap: crate::basemap::Basemap,
+    /// Which map layers the reader wants.
+    pub layers: crate::basemap::Show,
     /// A bus to bring the camera to on the next frame that has a layout.
     reveal_next: Option<usize>,
     /// A corridor to bring the camera to, likewise.
@@ -106,7 +107,8 @@ impl Default for NetworkView {
             goal: None,
             hovered: None,
             snap_next_fit: true,
-            basemap: crate::basemap::Basemap::load(),
+            basemap: crate::basemap::Basemap::default(),
+            layers: crate::basemap::Show::default(),
             reveal_next: None,
             reveal_line_next: None,
             circuit_under_pointer: false,
@@ -174,36 +176,6 @@ impl NetworkView {
 
         painter.rect_filled(rect, 0.0, ui.visuals().extreme_bg_color);
 
-        // Under everything, and only when the positions are a projection. A
-        // coastline beneath a spring embedding would place substations on a map
-        // they have no relationship to, which is a far worse lie than no map at
-        // all -- the whole point of the origin label in the status strip is that
-        // those two pictures are indistinguishable, and this would make one of
-        // them look authoritative.
-        if let Some(frame) = geo {
-            self.basemap.draw(
-                &painter,
-                self.visible(rect),
-                frame,
-                |p| self.screen_of(rect, p),
-                crate::basemap::Tone {
-                    // Land is *lighter* than the canvas and the sea is the
-                    // canvas itself. Painting the sea instead would put the
-                    // brighter tone on the larger area, and the canvas is
-                    // already the brightest surface in the window by design --
-                    // a sea brighter still would make the map the loudest thing
-                    // on screen, which is the one thing a backdrop must not be.
-                    land: crate::theme::SLATE_RAISED,
-                    sea: crate::theme::SLATE_WORK,
-                    coast: crate::theme::SLATE_LINE,
-                    // Dimmer than the coast: a national boundary is a fact
-                    // about people and a coastline is a fact about the ground,
-                    // and the reader is orienting by the second.
-                    border: crate::theme::SLATE_LINE.gamma_multiply(0.65),
-                },
-            );
-        }
-
         let Some(net) = net.filter(|_| !layout.is_empty()) else {
             self.draw_empty(&painter, rect);
             return;
@@ -218,33 +190,61 @@ impl NetworkView {
             self.needs_fit = false;
         }
 
-        // Deferred to here because centring on a bus needs its position, and
-        // the palette that asked for it has no layout to look in.
-        // A corridor is revealed at its *midpoint*, not at either end. Framing
-        // one end of a long line puts the other off screen, which is the half
-        // of it a reader asking about a corridor usually wants to see.
+        // Deferred to here because centring on a bus needs its position, and the
+        // palette that asked for it has no layout to look in.
+        if let Some(b) = self.reveal_next.take()
+            && let Some(&p) = layout.get(b)
+        {
+            self.goal = Some((p, self.zoom.max(220.0)));
+        }
         if let Some(e) = self.reveal_line_next.take()
             && let Some(line) = net.lines.get(e)
             && let (Some(&a), Some(&b)) = (layout.get(line.bus0), layout.get(line.bus1))
         {
+            // Framed at the *midpoint*: one end on screen puts the other off it,
+            // which is the half a reader asking about a corridor wants to see.
             let mid = a + (b - a) * 0.5;
-            // Zoomed to hold the whole corridor with room around it, rather
-            // than to a fixed level that would frame a short line from orbit
-            // and a long one from inside.
             let span = a.distance(b).max(1e-4);
             let fits = (rect.width().min(rect.height()) * 0.55) / span;
             self.goal = Some((mid, fits.clamp(MIN_ZOOM, MAX_ZOOM)));
         }
 
-        if let Some(b) = self.reveal_next.take()
-            && let Some(&p) = layout.get(b)
-        {
-            // Zoomed in enough to read the bus and its neighbours, but not so
-            // far that the reader loses which part of the network they are in.
-            self.goal = Some((p, self.zoom.max(220.0)));
-        }
-
         self.handle_camera(ui, &response, rect, net.buses.len());
+
+        // Under everything, and only when the positions are a projection. A
+        // coastline beneath a spring embedding would place substations on a map
+        // they have no relationship to, which is a far worse lie than no map at
+        // all -- the whole point of the origin label in the status strip is that
+        // those two pictures are indistinguishable, and this would make one of
+        // them look authoritative.
+        if let Some(frame) = geo {
+            // The camera is read out before the call, because `draw` now needs
+            // `&mut self.basemap` to cache the level it decodes and the closure
+            // would otherwise hold a shared borrow of the whole view.
+            let (zoom, centre) = (self.zoom, self.centre);
+            let visible = self.visible(rect);
+            let to_screen = move |p: eframe::egui::Pos2| rect.center() + (p - centre) * zoom;
+            let layers = self.layers;
+            self.basemap.draw(
+                &painter,
+                visible,
+                frame,
+                to_screen,
+                crate::basemap::Tone {
+                    // Land is *lighter* than the canvas and the sea *is* the
+                    // canvas. Painting the sea instead would put the brighter
+                    // tone on the larger area, and the canvas is already the
+                    // brightest surface in the window by design.
+                    land: crate::theme::SLATE_RAISED,
+                    sea: crate::theme::SLATE_WORK,
+                    coast: crate::theme::SLATE_LINE,
+                    border: crate::theme::SLATE_LINE.gamma_multiply(0.65),
+                    river: crate::theme::SLATE_LINE.gamma_multiply(0.9),
+                    urban: crate::theme::SLATE_LINE.gamma_multiply(0.5),
+                },
+                layers,
+            );
+        }
 
         let on_circuit = self.draw_edges(
             &painter,
