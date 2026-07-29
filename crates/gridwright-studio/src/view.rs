@@ -50,6 +50,10 @@ pub struct Overlay<'a> {
     pub prices: &'a [f64],
     /// Per line: peak flow as a fraction of rating, NaN where unrated.
     pub loading: &'a [f64],
+    /// Per line: signed flow at the chosen instant. Positive is from `bus0`
+    /// toward `bus1`, which is the convention every one-line label uses --
+    /// positive is away from the end you are standing on.
+    pub flow: &'a [f64],
 }
 
 pub struct NetworkView {
@@ -182,7 +186,7 @@ impl NetworkView {
             rect,
             net,
             layout,
-            overlay.loading,
+            overlay,
             response.hover_pos(),
         );
         let on_bus =
@@ -451,7 +455,7 @@ impl NetworkView {
         rect: Rect,
         net: &Network,
         layout: &[Pos2],
-        loading: &[f64],
+        overlay: Overlay<'_>,
         pointer: Option<Pos2>,
     ) -> Option<(Circuit, Pos2)> {
         let visible = self.visible(rect);
@@ -511,7 +515,7 @@ impl NetworkView {
             // Loading brightens the corridor, the same way price brightens a
             // busbar. An idle line is still drawn -- it is part of the network
             // whether or not it carried anything -- but it sits back.
-            let use_ = loading.get(e).copied().unwrap_or(f64::NAN);
+            let use_ = overlay.loading.get(e).copied().unwrap_or(f64::NAN);
             let color = if use_.is_nan() {
                 color
             } else {
@@ -527,6 +531,22 @@ impl NetworkView {
                 path.clone(),
                 Stroke::new(width, color),
             ));
+
+            // Which way the power is going.
+            //
+            // A static chevron, not a moving one. The experiment on this is
+            // unambiguous: encoding flow magnitude as animation speed showed no
+            // clear advantage and raised measured workload, with the moving
+            // arrows themselves named as the likely cause. Direction is a fact
+            // that does not change between frames, so it is drawn as one.
+            //
+            // Magnitude is already carried by the corridor's brightness, so the
+            // chevron carries direction alone -- one channel, one meaning.
+            if let Some(&f) = overlay.flow.get(e)
+                && f.abs() > 1e-6
+            {
+                chevron(painter, &path, f > 0.0, width, color);
+            }
             // A corridor at its rating is where the price separation across
             // this network comes from, so it is marked with the tick a diagram
             // uses for a constraint rather than with a fourth colour.
@@ -826,6 +846,7 @@ impl NetworkView {
             peak_shed,
             prices,
             loading: _,
+            flow: _,
         } = overlay;
         // A bus is drawn as a bar, not as a dot.
         //
@@ -1732,5 +1753,41 @@ mod voltage_tests {
             ..Default::default()
         };
         assert_eq!(line_kv(&net, &orphan), 0.0);
+    }
+}
+
+/// A single arrowhead partway along a corridor, pointing the way power flows.
+///
+/// Placed at forty percent rather than the midpoint, so on a pair of parallel
+/// circuits between the same substations the two chevrons do not land on top of
+/// each other. Drawn on the longest leg for the same reason the binding tick is:
+/// the midpoint of a tapped route can fall on a corner, where an arrow has no
+/// single direction to point along.
+fn chevron(painter: &Painter, path: &[Pos2], forward: bool, width: f32, color: Color32) {
+    let Some((a, b)) = path
+        .windows(2)
+        .map(|w| (w[0], w[1]))
+        .max_by(|x, y| (x.0 - x.1).length().total_cmp(&(y.0 - y.1).length()))
+    else {
+        return;
+    };
+    let (from, to) = if forward { (a, b) } else { (b, a) };
+    let along = (to - from).normalized();
+    if !along.is_finite() {
+        return;
+    }
+    let across = vec2(-along.y, along.x);
+    let at = from + (to - from) * 0.4;
+    let size = (width * 2.2).clamp(4.0, 9.0);
+
+    // An open chevron rather than a filled triangle: filled reads as a
+    // component on the line -- a load arrow is a filled triangle in this very
+    // diagram -- where two strokes read as an annotation about it.
+    let stroke = Stroke::new((width * 0.8).clamp(1.0, 2.0), color);
+    for side in [-1.0, 1.0] {
+        painter.line_segment(
+            [at, at - along * size + across * size * 0.6 * side],
+            stroke,
+        );
     }
 }

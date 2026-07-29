@@ -28,6 +28,13 @@ pub struct StudioApp {
     /// One utilisation per line, as a fraction of its rating. NaN where the
     /// line has no rating to be a fraction of.
     line_load: Vec<f64>,
+    /// Signed flow per line at the chosen instant, for drawing direction.
+    ///
+    /// Separate from `line_load`, which is a magnitude reduced by peak. A peak
+    /// magnitude has no direction to report -- the hour a corridor worked
+    /// hardest may not be an hour it flowed the way it usually does -- so
+    /// direction is taken at the instant on screen and nowhere else.
+    line_flow: Vec<f64>,
     /// Which snapshot the canvas is showing, or the whole horizon at once.
     instant: Instant,
     palette: crate::palette::Palette,
@@ -93,6 +100,7 @@ impl StudioApp {
             peak_shed: Vec::new(),
             bus_price: Vec::new(),
             line_load: Vec::new(),
+            line_flow: Vec::new(),
             instant: Instant::Horizon,
             palette: crate::palette::Palette::default(),
             solve_took: None,
@@ -122,6 +130,7 @@ impl StudioApp {
         self.peak_shed.clear();
         self.bus_price.clear();
         self.line_load.clear();
+        self.line_flow.clear();
         self.load_error = None;
         // A new file has a new horizon, and an instant chosen against the old
         // one is a position in a timeline that no longer exists. Reset rather
@@ -1071,6 +1080,7 @@ impl StudioApp {
         self.peak_shed = reduced.shed;
         self.bus_price = reduced.price;
         self.line_load = reduced.load;
+        self.line_flow = reduced.flow;
     }
 }
 
@@ -1119,6 +1129,7 @@ impl eframe::App for StudioApp {
                     peak_shed: &self.peak_shed,
                     prices: &self.bus_price,
                     loading: &self.line_load,
+                    flow: &self.line_flow,
                 },
             );
         });
@@ -1219,6 +1230,8 @@ struct Reduced {
     price: Vec<f64>,
     /// Per line: flow as a fraction of rating, NaN where unrated.
     load: Vec<f64>,
+    /// Per line: signed flow at the instant, for the direction chevrons.
+    flow: Vec<f64>,
 }
 
 /// Collapse a solve's per-snapshot series at the chosen instant.
@@ -1258,6 +1271,14 @@ fn reduce(solved: &Solved, net: &gridwright_net::Network, at: Instant) -> Reduce
                 }
             })
             .collect(),
+
+        // Signed, and reduced by *mean* at both settings rather than by peak
+        // like the magnitude above. At an instant the mean of one sample is
+        // that sample; over the horizon it is the net direction across the day,
+        // which is a real and useful quantity. A peak's direction, by contrast,
+        // is whichever way the corridor happened to be flowing in its single
+        // busiest hour, which is not a fact about the day.
+        flow: solved.flows.iter().map(|s| at.mean(s)).collect(),
     }
 }
 
