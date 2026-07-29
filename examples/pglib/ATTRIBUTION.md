@@ -10,8 +10,32 @@ The `.m` files in this directory are IEEE test cases as distributed by the
   systems test case archive, Copyright (c) 1999 Richard D. Christie,
   University of Washington, also under CC BY 4.0.
 
-Six of the files are not IEEE cases, and come from the same library under the
-same licence:
+The IEEE and adjacent reference families in PGLib-OPF v23.07 are all here, which
+is the point of carrying more than one: they differ in ways a formulation can be
+wrong about rather than only in size.
+
+| file | buses | what it is |
+| --- | --- | --- |
+| `case3_lmbd.m` | 3 | Lesieutre, Molzahn, Borden and DeMarco's three-bus case: the smallest network with a loop in it |
+| `case5_pjm.m` | 5 | PJM's five-bus case, which exists because it separates nodal prices where a smaller one cannot |
+| `case14_ieee.m` | 14 | the 1962 AEP case, and the field's default example |
+| `case24_ieee_rts.m` | 24 | the IEEE Reliability Test System, 33 generating units on 24 buses |
+| `case30_as.m` | 30 | Alsac and Stott's security-constrained variant of the 30-bus case |
+| `case30_ieee.m` | 30 | the IEEE 30-bus case |
+| `case39_epri.m` | 39 | the 39-bus New England case, the reference for transient stability work |
+| `case57_ieee.m` | 57 | the IEEE 57-bus case |
+| `case73_ieee_rts.m` | 73 | three Reliability Test System areas tied together, 99 units |
+| `case118_ieee.m` | 118 | the IEEE 118-bus case |
+| `case162_ieee_dtc.m` | 162 | the IEEE 162-bus Dynamic Test Case, twelve generators for 113 loads |
+| `case300_ieee.m` | 300 | the largest of the IEEE cases |
+
+All twelve read and solve to `Optimal`. None of them carry bus coordinates, so
+the studio arranges them by relaxing the topology and says so; the basemap stays
+off, because a coastline under invented positions is a map of somewhere that does
+not exist.
+
+Six of the files are not from those families, and come from the same library
+under the same licence:
 
 - `case1354_pegase.m`, `case2869_pegase.m`, `case9241_pegase.m` and
   `case13659_pegase.m` are the PEGASE models of the European transmission
