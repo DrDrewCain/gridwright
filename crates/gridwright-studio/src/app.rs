@@ -1057,6 +1057,65 @@ impl StudioApp {
         }
     }
 
+    /// Jump to the hour that best answers a question.
+    ///
+    /// A year has 8,760 hours and almost all of them are unremarkable. Finding
+    /// the three that are not, by dragging, is the kind of search a tool should
+    /// do rather than ask for -- and it is exactly the "dynamically extract it"
+    /// argument that justified the palette in the first place.
+    fn go_to(&mut self, what: Interesting) {
+        let Some(Ok(solved)) = &self.outcome else {
+            return;
+        };
+        let n = self.network().map(|n| n.n_snapshots()).unwrap_or(0);
+        if n < 2 {
+            return;
+        }
+
+        let score = |t: usize| -> f64 {
+            match what {
+                // The spread across buses in one hour. Congestion *is* price
+                // divergence -- if every bus prices the same, nothing was
+                // binding -- so the widest hour is the most congested one.
+                Interesting::Spread => {
+                    let (lo, hi) = solved
+                        .prices
+                        .iter()
+                        .filter_map(|s| s.get(t))
+                        .filter(|v| v.is_finite())
+                        .fold((f64::MAX, f64::MIN), |(l, h), &v| (l.min(v), h.max(v)));
+                    if lo > hi { 0.0 } else { hi - lo }
+                }
+                // Unserved energy first, and only the highest price if there
+                // was none anywhere. A system that failed to serve its load has
+                // a worst hour that is not up for debate; one that never failed
+                // has a worst hour defined by what it had to pay.
+                Interesting::Stress => {
+                    let shed: f64 = solved.shed.iter().filter_map(|s| s.get(t)).sum();
+                    if shed > 0.0 {
+                        1e9 + shed
+                    } else {
+                        solved
+                            .prices
+                            .iter()
+                            .filter_map(|s| s.get(t))
+                            .filter(|v| v.is_finite())
+                            .fold(0.0_f64, |m, &v| m.max(v))
+                    }
+                }
+            }
+        };
+
+        // Ties go to the earliest hour, which is what `max_by` on a forward
+        // scan gives -- a flat day should land on hour one rather than on
+        // whichever hour the comparison happened to prefer.
+        if let Some(t) = (0..n).max_by(|&a, &b| score(a).total_cmp(&score(b))) {
+            self.instant = Instant::At(t);
+            self.reduce();
+        }
+    }
+
+    /// The shape of the day, drawn behind the slider.
     /// The shape of the day, drawn behind the slider.
     ///
     /// An empty track tells a reader nothing about where to drag. This one
@@ -1199,6 +1258,8 @@ impl StudioApp {
                 self.instant = Instant::Horizon;
                 self.reduce();
             }
+            Action::MostCongested => self.go_to(Interesting::Spread),
+            Action::WorstHour => self.go_to(Interesting::Stress),
         }
     }
 
@@ -1499,6 +1560,15 @@ fn reduce(solved: &Solved, net: &gridwright_net::Network, at: Instant) -> Reduce
         // busiest hour, which is not a fact about the day.
         flow: solved.flows.iter().map(|s| at.mean(s)).collect(),
     }
+}
+
+/// What makes an hour worth jumping to.
+#[derive(Debug, Clone, Copy)]
+enum Interesting {
+    /// Prices diverged most across the network: the most congested hour.
+    Spread,
+    /// The system was under most stress: unserved energy if any, else price.
+    Stress,
 }
 
 /// Which part of the horizon the canvas is showing.

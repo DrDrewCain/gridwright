@@ -28,6 +28,10 @@ pub enum Action {
     OpenSample,
     /// Show the whole horizon rather than one snapshot.
     Horizon,
+    /// Go to the hour the system was under most stress.
+    WorstHour,
+    /// Go to the hour prices diverged most across the network.
+    MostCongested,
 }
 
 /// A command, as opposed to a place.
@@ -41,7 +45,7 @@ struct Command {
     make: fn() -> Action,
 }
 
-const COMMANDS: [Command; 4] = [
+const COMMANDS: [Command; 6] = [
     Command {
         label: "Solve",
         keys: "",
@@ -51,6 +55,16 @@ const COMMANDS: [Command; 4] = [
         label: "Fit to window",
         keys: "F",
         make: || Action::Fit,
+    },
+    Command {
+        label: "Go to the most congested hour",
+        keys: "",
+        make: || Action::MostCongested,
+    },
+    Command {
+        label: "Go to the worst hour",
+        keys: "",
+        make: || Action::WorstHour,
     },
     Command {
         label: "Show whole horizon",
