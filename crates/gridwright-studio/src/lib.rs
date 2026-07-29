@@ -30,6 +30,7 @@ mod chart;
 mod backend;
 mod fuzzy;
 mod palette;
+mod samples;
 mod places;
 mod layout;
 mod theme;
@@ -54,22 +55,47 @@ mod web_entry {
     use wasm_bindgen::JsCast as _;
     use wasm_bindgen::prelude::*;
 
+    /// Which embedded case the URL asks for, if any.
+    ///
+    /// `#demo` opens the default. `#case118_ieee` opens that case by name, which
+    /// makes a view shareable: a link that lands on the network being discussed is
+    /// the difference between "look at the 118-bus case" and "open this, then find
+    /// it". It is also the only way to reach a populated screen without a file to
+    /// drop, which includes automated screenshots.
+    ///
+    /// Matched against the file name with its extension optional, so `#case14_ieee`
+    /// and `#case14_ieee.m` both work -- nobody types the extension in a URL.
+    fn wants_sample() -> Option<usize> {
+        let w = web_sys::window()?;
+        let hash = w.location().hash().unwrap_or_default();
+        let search = w.location().search().unwrap_or_default();
+        let asked = format!("{hash} {search}").to_lowercase();
+        if asked.is_empty() {
+            return None;
+        }
+
+        // Longest name first, so `case30_ieee` is not matched by `case30_as` and
+        // neither is shadowed by a shorter name that is a prefix of it.
+        let mut by_length: Vec<usize> = (0..crate::samples::ALL.len()).collect();
+        by_length.sort_by_key(|i| std::cmp::Reverse(crate::samples::ALL[*i].name.len()));
+        for i in by_length {
+            let name = crate::samples::ALL[i].name.to_lowercase();
+            let stem = name.rsplit_once('.').map_or(name.as_str(), |(s, _)| s);
+            if asked.contains(stem) {
+                return Some(i);
+            }
+        }
+        asked
+            .contains("demo")
+            .then_some(crate::samples::DEFAULT)
+    }
+
     /// Mount the studio onto the canvas with the given element id.
     ///
     /// Returns immediately. eframe's start-up is async — it has to negotiate a
-    /// WebGL context — and a `#[wasm_bindgen]` export cannot be, so the future
-    /// is handed to the browser's microtask queue and the errors it can produce
-    /// are reported to the console rather than lost.
-    /// Whether the page was asked for the sample, via `#demo` or `?demo`.
-    fn wants_demo() -> bool {
-        let Some(w) = web_sys::window() else {
-            return false;
-        };
-        let hash = w.location().hash().unwrap_or_default();
-        let search = w.location().search().unwrap_or_default();
-        hash.contains("demo") || search.contains("demo")
-    }
-
+    /// WebGL context — and a `#[wasm_bindgen]` export cannot be, so the future is
+    /// handed to the browser's microtask queue and the errors it can produce are
+    /// reported to the console rather than lost.
     #[wasm_bindgen]
     pub fn mount(canvas_id: &str) -> Result<(), JsValue> {
         let canvas = web_sys::window()
@@ -86,13 +112,8 @@ mod web_entry {
                     eframe::WebOptions::default(),
                     Box::new(|cc| {
                         let mut app = crate::StudioApp::new(cc);
-                        // `#demo` opens the bundled sample before the first
-                        // frame. It exists so a link can be shared and land on
-                        // something rather than on an empty canvas, and it is
-                        // the only way to reach a populated screen without a
-                        // file to drop — which includes automated screenshots.
-                        if wants_demo() {
-                            app.open_sample();
+                        if let Some(i) = wants_sample() {
+                            app.open_sample(i);
                         }
                         Ok(Box::new(app))
                     }),
