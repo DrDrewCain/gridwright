@@ -395,6 +395,18 @@ impl Frame {
     pub fn scale(&self) -> f32 {
         self.scale
     }
+
+    /// Layout space back to Mercator.
+    ///
+    /// Needed by anything that has to ask a question of the *source* data about a
+    /// region the reader is looking at -- which cities are here, which country is
+    /// this -- because the gazetteer is in Mercator and the diagram is not.
+    pub fn invert(&self, p: Pos2) -> Pos2 {
+        if self.scale.abs() < 1e-12 {
+            return self.centre;
+        }
+        self.centre + p.to_vec2() / self.scale
+    }
 }
 
 #[cfg(test)]
@@ -634,4 +646,41 @@ mod spread_tests {
     fn spreading_is_deterministic() {
         assert_eq!(layout(&cluster()).pos, layout(&cluster()).pos);
     }
+    #[test]
+    fn a_frame_inverts_what_it_applied() {
+        // A geographic layout normalises Mercator into a unit-ish box, and the
+        // basemap and the gazetteer both need the way back. If these two drift the
+        // labels slide against the coastline and both halves look plausible alone.
+        let frame = Frame {
+            centre: pos2(0.234, -0.918),
+            scale: 37.5,
+        };
+        for p in [
+            pos2(0.0, 0.0),
+            pos2(0.234, -0.918),
+            pos2(1.5, 2.5),
+            pos2(-3.0, 0.75),
+        ] {
+            let back = frame.invert(frame.apply(p));
+            assert!(
+                (back - p).length() < 1e-5,
+                "{p:?} came back as {back:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_degenerate_frame_inverts_to_its_centre_rather_than_to_infinity() {
+        // A single-bus network has no extent to normalise, so the scale can be
+        // zero. Dividing by it would put every label at NaN, and a NaN position
+        // silently drops out of every rect test rather than failing.
+        let frame = Frame {
+            centre: pos2(1.0, 2.0),
+            scale: 0.0,
+        };
+        let back = frame.invert(pos2(5.0, 5.0));
+        assert!(back.x.is_finite() && back.y.is_finite());
+        assert_eq!(back, pos2(1.0, 2.0));
+    }
+
 }
