@@ -352,6 +352,8 @@ impl StudioApp {
         let bus = &net.buses[b];
 
         ui.add_space(theme::UNIT * 3.0);
+        let solved = self.outcome.as_ref().and_then(|o| o.as_ref().ok());
+
         ui.label(theme::eyebrow("selected bus"));
         ui.add_space(theme::UNIT);
         ui.label(
@@ -391,6 +393,31 @@ impl StudioApp {
             }
         }
 
+        // The price over the whole horizon, under the number for right now.
+        //
+        // A single price is a fact; the series is the *behaviour*, and on a
+        // congested network they are different stories -- a bus that averages
+        // 80 per MWh because it sits at 78 all day is a different bus from one
+        // that sits at 2 all night and 210 for three evening hours, and the
+        // panel could not tell them apart.
+        if let Some(series) = solved.and_then(|s| s.prices.get(b)).filter(|s| s.len() > 1) {
+            ui.add_space(theme::UNIT);
+            let (rect, _) = ui.allocate_exact_size(
+                egui::Vec2::new(ui.available_width(), 44.0),
+                egui::Sense::hover(),
+            );
+            let ax = crate::chart::Axes::fit(rect, series);
+            let p = ui.painter();
+            crate::chart::frame(p, &ax);
+            crate::chart::line(p, &ax, series, theme::INK_STRONG);
+            // Where the scrubber is, so the number above and the shape below
+            // are visibly the same instant rather than two unrelated readings.
+            if let Instant::At(t) = self.instant {
+                crate::chart::marker(p, &ax, t, series.len());
+            }
+            crate::chart::bounds(p, &ax, " /MWh");
+        }
+
         // Attachments, named rather than counted. "3 generators" tells you
         // nothing you cannot see on the canvas; their names and sizes do.
         //
@@ -398,7 +425,6 @@ impl StudioApp {
         // have run at. That ratio is the question an operator has about a
         // generator -- a plant sitting at 6 of 60 MW is being told by the
         // market it is not worth running, and the nameplate alone never says so.
-        let solved = self.outcome.as_ref().and_then(|o| o.as_ref().ok());
         let mut rows = 0;
         egui::Grid::new("inspector").num_columns(2).show(ui, |ui| {
             for (g_i, g) in net.generators.iter().enumerate().filter(|(_, g)| g.bus == b) {
