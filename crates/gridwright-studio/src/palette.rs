@@ -27,7 +27,8 @@ pub enum Action {
     GoToLine(usize),
     Solve,
     Fit,
-    OpenSample,
+    /// Open the embedded case at this index in `samples::ALL`.
+    OpenSample(usize),
     /// Show the whole horizon rather than one snapshot.
     Horizon,
     /// Go to the hour the system was under most stress.
@@ -47,7 +48,7 @@ struct Command {
     make: fn() -> Action,
 }
 
-const COMMANDS: [Command; 6] = [
+const COMMANDS: [Command; 5] = [
     Command {
         label: "Solve",
         keys: "",
@@ -72,11 +73,6 @@ const COMMANDS: [Command; 6] = [
         label: "Show whole horizon",
         keys: "",
         make: || Action::Horizon,
-    },
-    Command {
-        label: "Open the sample case",
-        keys: "",
-        make: || Action::OpenSample,
     },
 ];
 
@@ -231,6 +227,47 @@ impl Palette {
                 hits.push((s + 6 - i as i32, Hit::Command(i)));
             }
         }
+        // Every embedded case, matched on its file name *and* its label. A reader
+        // looking for the 24-bus Reliability Test System might type "rts", "24",
+        // or "reliability", and only one of those three is in the file name.
+        //
+        // **Only once something is typed.** There are thirteen of them, and on an
+        // empty query they would fill a twelve-row list on their own -- so a reader
+        // who opened the palette to jump to a bus would be shown a catalogue of
+        // test cases instead. Browsing the cases is the panel's picker; finding one
+        // by name is this.
+        for (i, sample) in crate::samples::ALL.iter().enumerate().filter(|_| !q.is_empty()) {
+            // Names are matched fuzzily, because that is what fuzzy matching is
+            // for: `c300i` should find `case300_ieee.m`.
+            //
+            // **The note is matched as a substring instead**, and that is not a
+            // shortcut. Fuzzy matching finds a query as a *subsequence*, which on
+            // a line of prose succeeds almost always -- "alpha" is in "the largest
+            // case a meshed diagram still reads at" if the letters may be spread
+            // across it. So every query would match every note and the list would
+            // be noise. A reader searching prose means the words, and searching an
+            // identifier means the letters.
+            //
+            // It is worth having because "congestion" finds the PJM case and
+            // "storage" finds the demo grid, and neither word is in either name.
+            let described = sample
+                .note
+                .to_lowercase()
+                .contains(&q.to_lowercase())
+                .then_some(2);
+            let best = fuzzy::score(q, sample.name)
+                .into_iter()
+                .chain(fuzzy::score(q, sample.label))
+                .chain(described)
+                .max();
+            if let Some(s) = best {
+                // Above buses, below commands. A network in the list is a thing a
+                // reader opens once and then navigates inside, so it should be
+                // easy to find and should not sit on top of the bus they are
+                // actually looking for.
+                hits.push((s + 2, Hit::Sample(i)));
+            }
+        }
         for (b, name) in names.buses.iter().enumerate() {
             if let Some(s) = fuzzy::score(q, name) {
                 hits.push((s, Hit::Bus(b, name.clone())));
@@ -287,6 +324,8 @@ impl Palette {
 enum Hit {
     Bus(usize, String),
     Line(usize, String),
+    /// An index into `samples::ALL`.
+    Sample(usize),
     Command(usize),
 }
 
@@ -300,6 +339,7 @@ impl Hit {
     fn label(&self) -> &str {
         match self {
             Hit::Bus(_, name) | Hit::Line(_, name) => name,
+            Hit::Sample(i) => crate::samples::ALL[*i].label,
             Hit::Command(i) => COMMANDS[*i].label,
         }
     }
@@ -309,6 +349,7 @@ impl Hit {
         match self {
             Hit::Bus(..) => "bus",
             Hit::Line(..) => "line",
+            Hit::Sample(..) => "case",
             Hit::Command(i) => COMMANDS[*i].keys,
         }
     }
@@ -317,6 +358,7 @@ impl Hit {
         match self {
             Hit::Bus(b, _) => Action::GoTo(*b),
             Hit::Line(e, _) => Action::GoToLine(*e),
+            Hit::Sample(i) => Action::OpenSample(*i),
             Hit::Command(i) => (COMMANDS[*i].make)(),
         }
     }
@@ -345,6 +387,65 @@ mod tests {
         let got = labels(&p, &strs(&["bus1", "bus2"]), &[]);
         assert_eq!(got[0], "Solve");
         assert!(got.contains(&"bus1".to_string()));
+    }
+
+    #[test]
+    fn an_empty_query_does_not_bury_the_network_under_the_case_list() {
+        // Thirteen cases would fill a twelve-row list on their own, so a reader
+        // who opened the palette to jump to a bus would be shown a catalogue.
+        let p = Palette::default();
+        let got = labels(&p, &strs(&["bus1", "bus2"]), &[]);
+        assert!(
+            !got.iter().any(|l| l.contains("IEEE")),
+            "cases are offered before anything is typed: {got:?}",
+        );
+    }
+
+    #[test]
+    fn a_case_is_reachable_by_name_and_by_what_it_is_called() {
+        // Three ways a reader might look for the Reliability Test System, only one
+        // of which is in the file name.
+        for q in ["case24", "rts", "Reliability Test"] {
+            let p = Palette {
+                query: q.into(),
+                ..Default::default()
+            };
+            let got = labels(&p, &strs(&["bus1"]), &[]);
+            assert!(
+                got.iter().any(|l| l.contains("24-bus RTS")),
+                "{q:?} did not find the 24-bus RTS: {got:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn a_case_is_reachable_by_what_it_is_for() {
+        // A reader who remembers what a case demonstrates rather than its number
+        // is the common one, and neither word here is in any file name.
+        let p = Palette {
+            query: "congestion".into(),
+            ..Default::default()
+        };
+        let got = labels(&p, &strs(&["bus1"]), &[]);
+        assert!(
+            got.iter().any(|l| l.contains("PJM")),
+            "\"congestion\" did not find the PJM case: {got:?}",
+        );
+    }
+
+    #[test]
+    fn a_name_outranks_a_description() {
+        // Otherwise a case whose note happens to contain a common word would sit
+        // above the case the reader actually typed the name of.
+        let p = Palette {
+            query: "case300".into(),
+            ..Default::default()
+        };
+        assert!(
+            labels(&p, &[], &[])[0].contains("300-bus"),
+            "got {:?}",
+            labels(&p, &[], &[]),
+        );
     }
 
     #[test]
