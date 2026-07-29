@@ -118,9 +118,21 @@ fn build_layer(layer: Layer, rings: &[shapefile::Ring], tolerance: f64) -> Vec<S
 
     let mut out = Vec::new();
     let mut dropped = 0usize;
+    let (mut loops, mut stubborn) = (0usize, 0usize);
 
     for ring in rings {
-        let simple = simplify::dedup_closed(&simplify::douglas_peucker(ring, tolerance));
+        let mut simple = simplify::dedup_closed(&simplify::douglas_peucker(ring, tolerance));
+
+        // Only for the layers that get triangulated. A crossing in a river or a
+        // border line is not a defect -- rivers meet and boundaries meet -- and
+        // cutting the loop out would delete real geometry to fix nothing.
+        if layer.filled() {
+            let fixed = simplify::repair(&simple);
+            loops += fixed.removed;
+            stubborn += fixed.stubborn;
+            simple = fixed.ring;
+        }
+
         if simple.len() < MIN_POINTS {
             continue;
         }
@@ -147,12 +159,21 @@ fn build_layer(layer: Layer, rings: &[shapefile::Ring], tolerance: f64) -> Vec<S
         }
     }
 
+    // Reported, never swallowed. A layer quietly losing a tenth of its shapes is
+    // exactly the regression that ships -- and it did ship: every continent was
+    // dropped here for a while, and the count that would have said so was printed
+    // above the layer it belonged to.
     if dropped > 0 {
-        // Reported, never swallowed. A layer quietly losing a tenth of its
-        // shapes is exactly the regression that ships.
         eprintln!(
-            "    {dropped} of {} shapes defeated triangulation and were dropped",
+            "    {}: {dropped} of {} shapes defeated triangulation and were dropped",
+            layer.name(),
             rings.len()
+        );
+    }
+    if loops > 0 || stubborn > 0 {
+        eprintln!(
+            "    {}: {loops} simplification loops cut out, {stubborn} left in place",
+            layer.name(),
         );
     }
     out
