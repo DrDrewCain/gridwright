@@ -643,16 +643,42 @@ impl NetworkView {
         let by_voltage = voltages_are_stated(net);
         let mut kinds: Vec<(bool, Color32, String)> = Vec::new();
         if by_voltage {
-            for (i, (from, color)) in VOLTAGE_SCALE.iter().enumerate() {
-                let present = net.lines.iter().any(|l| {
-                    !l.is_transport() && voltage_color(line_kv(net, l)) == *color
-                });
+            for (i, (_, color)) in VOLTAGE_SCALE.iter().enumerate() {
+                // Labelled with the voltages this network actually runs at, not
+                // with the band's lower bound. A 380 kV network whose legend
+                // reads "310 kV" is a legend describing the palette rather than
+                // the grid, and a reader checking it against what they know
+                // about their own system finds a number that is simply not in
+                // it.
+                let mut present: Vec<i64> = net
+                    .lines
+                    .iter()
+                    .filter(|l| !l.is_transport())
+                    .map(|l| line_kv(net, l))
+                    .filter(|kv| voltage_color(*kv) == *color)
+                    .map(|kv| kv.round() as i64)
+                    .collect();
+                present.sort_unstable();
+                present.dedup();
+                if present.is_empty() {
+                    continue;
+                }
                 let label = if i == 0 {
                     "unknown kV".to_string()
                 } else {
-                    format!("{from:.0} kV")
+                    // Several levels can land in one band -- 132 and 150 kV do,
+                    // and both are common in the same network -- so the row
+                    // names all of them rather than picking one.
+                    format!(
+                        "{} kV",
+                        present
+                            .iter()
+                            .map(|kv| kv.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
                 };
-                kinds.push((present, *color, label));
+                kinds.push((true, *color, label));
             }
         } else {
             kinds.push((

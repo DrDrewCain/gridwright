@@ -45,12 +45,24 @@ pub struct StudioApp {
 
 /// A network to open when there is nothing else to open.
 ///
-/// IEEE 14-bus: small enough to read at a glance, real enough to be worth
-/// solving, and the case every power-systems engineer already knows — so the
-/// first thing the studio shows is something the user can check against their
-/// own expectations rather than something they have to take on trust.
-const SAMPLE: &[u8] = include_bytes!("../../../examples/pglib/case14_ieee.m");
-const SAMPLE_NAME: &str = "case14_ieee.m";
+/// It used to be IEEE 14-bus, and that was the wrong choice for a *demo* even
+/// though it is the right choice for a test case. Opening it showed almost
+/// nothing this interface can do: MATPOWER carries no coordinates, so the
+/// layout fell back to the spring embedder; its `baseKV` is 1.0 throughout
+/// because the case is written in per unit, so voltage colouring stayed off;
+/// it has one snapshot, so the timeline hid itself; and it has no congestion,
+/// so every bus priced identically and the ramp was flat. Four features, all
+/// silently inert, on the one file most people will ever open.
+///
+/// This is a small north-south German corridor instead: eight substations at
+/// real coordinates across 380, 220 and 110 kV, with offshore wind in the north
+/// and gas in the south, over a day at hourly resolution. The corridor between
+/// them is deliberately tight, so cheap northern wind cannot always reach
+/// southern load and the nodal prices actually separate -- which is the output
+/// this engine exists to produce and was, until now, demonstrated by a picture
+/// of one flat number.
+const SAMPLE: &[u8] = include_bytes!("../../../examples/demo-grid.json");
+const SAMPLE_NAME: &str = "demo-grid.json";
 
 /// Rows below which a freshly opened network is solved without being asked.
 ///

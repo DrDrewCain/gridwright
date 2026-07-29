@@ -1,0 +1,8 @@
+name,bus0,bus1,s_nom,susceptance
+Bruns-Hamburg,Brunsbuettel,Hamburg,1800,60
+Hamburg-Wolmi,Hamburg,Wolmirstedt,900,40
+Wolmi-Grafen,Wolmirstedt,Grafenrheinfeld,700,35
+Grafen-Grossg,Grafenrheinfeld,Grossgartach,600,30
+Grossg-Hoheneck,Grossgartach,Hoheneck,500,30
+Hoheneck-Wendl,Hoheneck,Wendlingen,300,25
+Wendl-Metzingen,Wendlingen,Metzingen,200,25
