@@ -1,0 +1,17 @@
+[package]
+name = "gridwright-mapgen"
+description = "Builds the studio's bundled map pyramid from public-domain source data. A development tool, not part of the shipped engine."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# Never published: this exists to regenerate committed artefacts, and a
+# consumer of the engine has no use for it.
+publish = false
+
+[[bin]]
+name = "mapgen"
+path = "src/main.rs"
+
+[dependencies]

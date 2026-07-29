@@ -1459,6 +1459,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "gridwright-mapgen"
+version = "0.1.0"
+
+[[package]]
 name = "gridwright-model"
 version = "0.1.0"
 dependencies = [
