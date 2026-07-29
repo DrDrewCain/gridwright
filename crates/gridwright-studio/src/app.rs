@@ -729,6 +729,8 @@ impl StudioApp {
                     }
                 });
 
+                self.dispatch_stack(ui, solved);
+
                 if solved.total_shed > 0.0 {
                     ui.colored_label(
                         ui.visuals().warn_fg_color,
@@ -736,6 +738,104 @@ impl StudioApp {
                     );
                 }
             }
+        }
+    }
+
+    /// What ran, hour by hour, cheapest at the bottom.
+    ///
+    /// The chart this domain reaches for first. The bands are ordered by
+    /// marginal cost, so the *order* is the merit order and the shape of the
+    /// stack is the story of the day: a wide cheap base that thins in the
+    /// evening while an expensive band opens above it is a system leaning on
+    /// its peakers, and that is legible here without reading a single number.
+    fn dispatch_stack(&self, ui: &mut egui::Ui, solved: &Solved) {
+        use crate::theme;
+
+        let Some(net) = self.network() else { return };
+        if solved.dispatch.is_empty() || net.n_snapshots() < 2 {
+            return;
+        }
+
+        // Cheapest first, which puts the must-run renewables at the bottom
+        // where they belong and the peakers at the top where their appearance
+        // is the event worth seeing.
+        let mut order: Vec<usize> = (0..net.generators.len().min(solved.dispatch.len())).collect();
+        order.sort_by(|&a, &b| {
+            net.generators[a]
+                .marginal_cost
+                .total_cmp(&net.generators[b].marginal_cost)
+        });
+
+        let series: Vec<&[f64]> = order.iter().map(|&g| solved.dispatch[g].as_slice()).collect();
+        let totals = crate::chart::stack_peak(&series);
+        if totals.iter().all(|v| *v <= 0.0) {
+            return;
+        }
+
+        ui.add_space(theme::UNIT * 2.0);
+        ui.label(theme::eyebrow("dispatch"));
+        ui.add_space(theme::UNIT);
+
+        let (rect, _) = ui.allocate_exact_size(
+            egui::Vec2::new(ui.available_width(), 56.0),
+            egui::Sense::hover(),
+        );
+        // Fitted to the totals rather than to any one band, and from zero:
+        // this is a stack of magnitudes, which is the case where a truncated
+        // axis genuinely misleads.
+        let ax = crate::chart::Axes::from_zero(rect, &totals);
+        let p = ui.painter();
+        crate::chart::frame(p, &ax);
+
+        // Cheap bands recede and expensive ones step forward, on the same
+        // lightness axis price uses on the busbars. One quantity, one channel,
+        // whichever picture it appears in.
+        let n = series.len().max(1);
+        let bands: Vec<(&[f64], egui::Color32)> = series
+            .iter()
+            .enumerate()
+            .map(|(i, s)| {
+                // Spread across the whole ramp rather than [0, n-1)/n, which
+                // leaves the brightest end unused and wastes the contrast the
+                // top bands most need.
+                let t = if n > 1 { i as f32 / (n - 1) as f32 } else { 1.0 };
+                (*s, crate::view::ramp(t))
+            })
+            .collect();
+        crate::chart::stack(p, &ax, &bands);
+
+        if let Instant::At(t) = self.instant {
+            crate::chart::marker(p, &ax, t, totals.len());
+        }
+        crate::chart::bounds(p, &ax, " MW");
+
+        // Named bottom to top in the same order as the bands, so the legend is
+        // the merit order written out.
+        ui.add_space(theme::UNIT * 0.5);
+        for (i, &g) in order.iter().enumerate().take(8) {
+            let t = if n > 1 { i as f32 / (n - 1) as f32 } else { 1.0 };
+            ui.horizontal(|ui| {
+                // A block rather than a rule, and outlined in the same hairline
+                // that separates the bands, so a swatch reads as the band it
+                // stands for rather than as a dash before a name.
+                let (sw, _) = ui.allocate_exact_size(
+                    egui::Vec2::new(11.0, 9.0),
+                    egui::Sense::hover(),
+                );
+                let p = ui.painter();
+                p.rect_filled(sw, 1.0, crate::view::ramp(t));
+                p.rect_stroke(
+                    sw,
+                    1.0,
+                    egui::Stroke::new(1.0, theme::SLATE_WORK),
+                    egui::StrokeKind::Inside,
+                );
+                ui.label(
+                    egui::RichText::new(&net.generators[g].name)
+                        .size(10.0)
+                        .color(theme::INK_DIM),
+                );
+            });
         }
     }
 

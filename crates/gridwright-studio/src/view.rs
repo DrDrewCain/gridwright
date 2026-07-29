@@ -1254,6 +1254,15 @@ impl TapSlots {
     }
 }
 
+/// A point on the lightness ramp, from receding to prominent.
+///
+/// Shared with the charts on purpose: price on a busbar and merit order in a
+/// dispatch stack are both "how expensive", and one quantity should not change
+/// its encoding between two pictures in the same window.
+pub fn ramp(t: f32) -> Color32 {
+    lerp_color(crate::theme::INK_DIM, crate::theme::INK_STRONG, t.clamp(0.0, 1.0))
+}
+
 /// Blend two colours, for the price ramp.
 fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
     let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
