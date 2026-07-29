@@ -7,9 +7,9 @@
 //! the output is a flat list of rings, and the projection is known from the
 //! source rather than read from the file.
 //!
-//! Deliberately narrow. Points, multipoints, measured and Z-bearing variants are
-//! all *rejected* rather than half-handled, because a silently skipped shape type
-//! is a layer that comes out mysteriously incomplete.
+//! Deliberately narrow. Multipoints, measured and Z-bearing variants are all
+//! *rejected* rather than half-handled, because a silently skipped shape type is a
+//! layer that comes out mysteriously incomplete.
 
 /// A ring or polyline part, in source coordinates (degrees, WGS 84).
 pub type Ring = Vec<[f64; 2]>;
@@ -17,7 +17,14 @@ pub type Ring = Vec<[f64; 2]>;
 /// What a record turned out to be.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum Kind {
-    /// Shape type 3: an open polyline. Rivers and boundary lines.
+    /// Shape type 1: a single position. Populated places.
+    ///
+    /// Carried as a one-point ring rather than a separate variant of the return
+    /// type. A point is not geometry anyone simplifies or triangulates, but it
+    /// *is* something the reader has to pair with a `.dbf` row by position, and
+    /// keeping one flat list per record is what makes that pairing trivial.
+    Point,
+    /// Shape type 3: an open polyline. Rivers, boundary lines and roads.
     Polyline,
     /// Shape type 5: a closed polygon. Land, lakes, urban areas.
     Polygon,
@@ -47,7 +54,24 @@ impl std::fmt::Display for Error {
 /// Parts rather than shapes: a polygon's outer ring and its islands arrive as
 /// separate parts of one record, and for a backdrop they are drawn identically.
 /// Flattening here means nothing downstream has to know about multi-part shapes.
+///
+/// **A caller that needs to join against a `.dbf` cannot use this**, because
+/// flattening loses which record a part came from. Use [`read_by_record`], which
+/// keeps them grouped.
 pub fn read(bytes: &[u8]) -> Result<Vec<(Kind, Ring)>, Error> {
+    Ok(read_by_record(bytes)?
+        .into_iter()
+        .flat_map(|(kind, parts)| parts.into_iter().map(move |p| (kind, p)))
+        .collect())
+}
+
+/// Every record, with its parts still grouped under it.
+///
+/// One entry per record in file order, including a record whose geometry is null
+/// and therefore has no parts. That is what makes a positional join to the
+/// attribute table sound: record `k` here is row `k` there, and a null shape that
+/// silently vanished would shift every name after it onto the wrong place.
+pub fn read_by_record(bytes: &[u8]) -> Result<Vec<(Kind, Vec<Ring>)>, Error> {
     if bytes.len() < 100 {
         return Err(Error::Truncated { at: bytes.len() });
     }
@@ -68,8 +92,22 @@ pub fn read(bytes: &[u8]) -> Result<Vec<(Kind, Ring)>, Error> {
         let shape_type = i32::from_le_bytes(bytes[at..at + 4].try_into().unwrap());
         let kind = match shape_type {
             0 => {
-                // A null shape is legal and carries no geometry. Skipped rather
-                // than refused, because a file may legitimately contain one.
+                // A null shape is legal and carries no geometry. Recorded with no
+                // parts rather than skipped, so the record count still matches the
+                // attribute table's.
+                out.push((Kind::Point, Vec::new()));
+                at = end;
+                continue;
+            }
+            1 => {
+                // A point is just the two doubles after the type, with none of
+                // the box, part and offset machinery the other types carry.
+                if at + 20 > end {
+                    return Err(Error::Truncated { at });
+                }
+                let x = f64::from_le_bytes(bytes[at + 4..at + 12].try_into().unwrap());
+                let y = f64::from_le_bytes(bytes[at + 12..at + 20].try_into().unwrap());
+                out.push((Kind::Point, vec![vec![[x, y]]]));
                 at = end;
                 continue;
             }
@@ -78,8 +116,8 @@ pub fn read(bytes: &[u8]) -> Result<Vec<(Kind, Ring)>, Error> {
             other => return Err(Error::Unsupported { shape_type: other }),
         };
 
-        // Both types share a layout: bounding box, part count, point count,
-        // part offsets, then interleaved x/y doubles.
+        // Both remaining types share a layout: bounding box, part count, point
+        // count, part offsets, then interleaved x/y doubles.
         let head = at + 4 + 32; // shape type, then the box
         if head + 8 > end {
             return Err(Error::Truncated { at: head });
@@ -105,6 +143,7 @@ pub fn read(bytes: &[u8]) -> Result<Vec<(Kind, Ring)>, Error> {
             ]
         };
 
+        let mut parts = Vec::with_capacity(n_parts);
         for k in 0..n_parts {
             let from = part_start(k);
             let to = if k + 1 < n_parts {
@@ -115,8 +154,9 @@ pub fn read(bytes: &[u8]) -> Result<Vec<(Kind, Ring)>, Error> {
             if from >= to || to > n_points {
                 continue;
             }
-            out.push((kind, (from..to).map(point).collect()));
+            parts.push((from..to).map(point).collect());
         }
+        out.push((kind, parts));
 
         at = end;
     }
@@ -216,6 +256,71 @@ mod tests {
         f.extend(((content.len() / 2) as i32).to_be_bytes());
         f.extend(content);
         assert!(read(&f).unwrap().is_empty());
+    }
+
+    /// A file of point records, which is how populated places arrive.
+    fn point_file(points: &[[f64; 2]]) -> Vec<u8> {
+        let mut file = vec![0u8; 100];
+        for (i, p) in points.iter().enumerate() {
+            let mut content = Vec::new();
+            content.extend(1i32.to_le_bytes());
+            content.extend(p[0].to_le_bytes());
+            content.extend(p[1].to_le_bytes());
+            file.extend((i as i32 + 1).to_be_bytes());
+            file.extend(((content.len() / 2) as i32).to_be_bytes());
+            file.extend(content);
+        }
+        file
+    }
+
+    #[test]
+    fn reads_point_records() {
+        let got = read(&point_file(&[[13.405, 52.52], [9.993, 53.551]])).unwrap();
+        assert_eq!(got.len(), 2);
+        assert_eq!(got[0].0, Kind::Point);
+        assert_eq!(got[0].1, vec![[13.405, 52.52]]);
+        assert_eq!(got[1].1, vec![[9.993, 53.551]]);
+    }
+
+    #[test]
+    fn a_truncated_point_record_is_an_error() {
+        let mut f = point_file(&[[13.405, 52.52]]);
+        f.truncate(f.len() - 6);
+        assert!(matches!(read(&f), Err(Error::Truncated { .. })));
+    }
+
+    #[test]
+    fn a_record_read_keeps_one_entry_per_record() {
+        // **This is what makes a join to the .dbf sound.** Flattening parts is
+        // right for drawing and wrong for naming: a two-part polygon would look
+        // like two records and every name after it would land on the wrong shape.
+        let a: &[[f64; 2]] = &[[0.0, 0.0], [2.0, 0.0], [2.0, 2.0]];
+        let b: &[[f64; 2]] = &[[5.0, 5.0], [6.0, 5.0], [6.0, 6.0], [5.0, 6.0]];
+        let f = polygon_file(&[a, b]);
+        assert_eq!(read(&f).unwrap().len(), 2, "flattened parts");
+        let by_record = read_by_record(&f).unwrap();
+        assert_eq!(by_record.len(), 1, "one record");
+        assert_eq!(by_record[0].1.len(), 2, "two parts under it");
+    }
+
+    #[test]
+    fn a_null_shape_still_occupies_a_record() {
+        // Legal, carries no geometry, and must not shift the records after it --
+        // the attribute table has a row for it either way.
+        let mut f = vec![0u8; 100];
+        let content = 0i32.to_le_bytes();
+        f.extend(1i32.to_be_bytes());
+        f.extend(((content.len() / 2) as i32).to_be_bytes());
+        f.extend(content);
+        let mut tail = point_file(&[[1.0, 2.0]]);
+        f.extend(tail.drain(100..));
+
+        let by_record = read_by_record(&f).unwrap();
+        assert_eq!(by_record.len(), 2);
+        assert!(by_record[0].1.is_empty(), "null record has no parts");
+        assert_eq!(by_record[1].1, vec![vec![[1.0, 2.0]]]);
+        // And the flat view still drops it, because there is nothing to draw.
+        assert_eq!(read(&f).unwrap().len(), 1);
     }
 
     #[test]
