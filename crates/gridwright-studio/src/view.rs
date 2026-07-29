@@ -870,18 +870,25 @@ impl NetworkView {
         // What is attached to each bus, computed once. Asking
         // `generators.iter().any(...)` inside the bus loop is quadratic, which
         // is invisible at fourteen buses and is not at thirteen thousand.
-        let mut has_gen = vec![false; net.buses.len()];
-        let mut has_load = vec![false; net.buses.len()];
+        let mut gens = vec![0usize; net.buses.len()];
+        let mut loads = vec![0usize; net.buses.len()];
         for g in &net.generators {
-            if let Some(f) = has_gen.get_mut(g.bus) {
-                *f = true;
+            if let Some(c) = gens.get_mut(g.bus) {
+                *c += 1;
             }
         }
         for l in &net.loads {
-            if let Some(f) = has_load.get_mut(l.bus) {
-                *f = true;
+            if let Some(c) = loads.get_mut(l.bus) {
+                *c += 1;
             }
         }
+        let has_gen: Vec<bool> = gens.iter().map(|&c| c > 0).collect();
+        let has_load: Vec<bool> = loads.iter().map(|&c| c > 0).collect();
+
+        // The threshold for drawing individual machines rather than one symbol
+        // standing for all of them. Tied to the busbar's on-screen half-width,
+        // because that is literally how much room there is to fan them across.
+        let detail = half >= 16.0;
         let mut has_store = vec![false; net.buses.len()];
         for st in &net.storage {
             if let Some(f) = has_store.get_mut(st.bus) {
@@ -943,15 +950,30 @@ impl NetworkView {
             // Injection above the bar, withdrawal below — the convention a
             // one-line diagram uses, and it means a glance tells you where
             // power enters and where it leaves without reading a legend.
+            //
+            // How *many* symbols is a question of zoom, not of the model. This
+            // is semantic zoom, which the control-room study named as one of
+            // three critical needs: zoomed out, one generator symbol says
+            // "generation here" and eight say "unreadable mat"; zoomed in, the
+            // count is the useful part, because a substation with six machines
+            // is a different place from one with one.
             if has_gen[b] {
-                generator(painter, s - vec2(0.0, thickness * 0.5), glyph, ink);
+                let n = if detail { gens[b].min(4) } else { 1 };
+                for k in 0..n {
+                    let dx = fan(k, n, glyph);
+                    generator(painter, s + vec2(dx, -thickness * 0.5), glyph, ink);
+                }
             }
             if has_store[b] {
                 let x = if has_gen[b] { glyph * 2.6 } else { 0.0 };
                 storage(painter, s + vec2(x, -thickness * 0.5), glyph, ink);
             }
             if has_load[b] {
-                load(painter, s + vec2(0.0, thickness * 0.5), glyph, ink);
+                let n = if detail { loads[b].min(4) } else { 1 };
+                for k in 0..n {
+                    let dx = fan(k, n, glyph);
+                    load(painter, s + vec2(dx, thickness * 0.5), glyph, ink);
+                }
             }
 
             // Where the system failed, which the domain model treats as the
@@ -1798,5 +1820,49 @@ fn chevron(painter: &Painter, path: &[Pos2], forward: bool, width: f32, color: C
             [at, at - along * size + across * size * 0.6 * side],
             stroke,
         );
+    }
+}
+
+/// Where the `k`th of `n` fanned symbols sits, relative to the bar's centre.
+///
+/// Centred as a group, so one symbol stays exactly on the bar's midline and the
+/// arrangement stays symmetric as more appear. An off-centre single symbol is
+/// the tell that a fan was bolted onto a design that assumed one.
+fn fan(k: usize, n: usize, glyph: f32) -> f32 {
+    if n <= 1 {
+        return 0.0;
+    }
+    let pitch = glyph * 2.6;
+    (k as f32 - (n as f32 - 1.0) * 0.5) * pitch
+}
+
+#[cfg(test)]
+mod fan_tests {
+    use super::fan;
+
+    #[test]
+    fn a_lone_symbol_sits_on_the_midline() {
+        // The tell that a fan was bolted onto a design that assumed one symbol
+        // is that the single case drifts off centre.
+        assert_eq!(fan(0, 1, 6.0), 0.0);
+    }
+
+    #[test]
+    fn a_fan_is_centred_as_a_group() {
+        for n in 2..=4 {
+            let sum: f32 = (0..n).map(|k| fan(k, n, 6.0)).sum();
+            assert!(sum.abs() < 1e-4, "n = {n} fanned off centre by {sum}");
+        }
+    }
+
+    #[test]
+    fn symbols_do_not_overlap_each_other() {
+        // The pitch has to clear the glyph, or "four generators" draws as one
+        // smudge and the detail was worse than the summary.
+        let glyph = 6.0;
+        for n in 2..=4 {
+            let gap = fan(1, n, glyph) - fan(0, n, glyph);
+            assert!(gap >= glyph * 2.0, "n = {n} packed them {gap} apart");
+        }
     }
 }
