@@ -7,6 +7,7 @@
 //! cargo run -p gridwright-mapgen -- /path/to/naturalearth crates/gridwright-studio/src/map
 //! ```
 
+mod pyramid;
 mod shapefile;
 mod simplify;
 mod triangulate;
