@@ -30,6 +30,7 @@ mod chart;
 mod backend;
 mod fuzzy;
 mod palette;
+mod places;
 mod layout;
 mod theme;
 mod view;
