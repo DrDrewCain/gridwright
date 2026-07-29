@@ -473,8 +473,12 @@ impl StudioApp {
                 ui.add_space(theme::UNIT);
                 ui.separator();
                 egui::Grid::new("balance").num_columns(2).show(ui, |ui| {
-                    reading(ui, "Generated", format!("{made:.0} MW"));
-                    reading(ui, "Consumed", format!("{taken:.0} MW"));
+                    // `+ 0.0` normalises negative zero. A bus with no load
+                    // formatted as "-0 MW" reads as a tiny negative quantity
+                    // rather than as nothing, which is exactly the confusion a
+                    // signed balance must not create.
+                    reading(ui, "Generated", format!("{:.0} MW", made + 0.0));
+                    reading(ui, "Consumed", format!("{:.0} MW", taken + 0.0));
                     // The remainder is what the network moved. Positive means
                     // this bus exported and negative means it imported, which
                     // is the sign convention a corridor label uses too:

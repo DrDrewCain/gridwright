@@ -1,6 +1,7 @@
 name,bus,p_nom,marginal_cost
-Wind Nordsee,Brunsbuettel,2200,1
-Wind Altmark,Wolmirstedt,600,2
+Wind Nordsee,Brunsbuettel,2400,1
+Wind Altmark,Wolmirstedt,700,2
+Gas Moorburg,Hamburg,900,64
 Gas Franken,Grafenrheinfeld,1100,78
 Gas Neckar,Hoheneck,1200,92
 Peaker Metzingen,Metzingen,400,210
