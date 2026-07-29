@@ -1,0 +1,2 @@
+name,bus,p_nom,max_hours,efficiency_store,efficiency_dispatch,cyclic
+Pumpspeicher Glems,Wendlingen,180,2,0.87,0.9,true

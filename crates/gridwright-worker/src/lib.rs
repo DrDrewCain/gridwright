@@ -72,6 +72,18 @@ pub struct Solved {
     pub dispatch: Vec<Vec<f64>>,
     /// Per line, per snapshot.
     pub flows: Vec<Vec<f64>>,
+    /// Per storage unit, per snapshot: state of charge in MWh.
+    ///
+    /// Carried rather than left to be reconstructed from charge and discharge.
+    /// Those are two series that only mean something together, and integrating
+    /// them by hand loses the initial level and every rounding the solver made.
+    pub soc: Vec<Vec<f64>>,
+    /// Per storage unit, per snapshot: net power, discharge positive.
+    ///
+    /// One signed series rather than the two the model carries, because the two
+    /// are complementary by construction -- a unit charging is not also
+    /// discharging -- and a reader wants "is it absorbing or delivering".
+    pub storage_power: Vec<Vec<f64>>,
     /// Per bus, per snapshot. Non-zero anywhere means the system could not be
     /// served, and *where* and *when* is the useful part of that.
     pub shed: Vec<Vec<f64>>,
@@ -163,6 +175,16 @@ pub fn solve(network: &Network) -> Result<Solved, Failure> {
             .collect(),
         shed: (0..network.buses.len())
             .map(|b| owned(sol.shed(&lopf.vars, b)))
+            .collect(),
+        soc: (0..network.storage.len())
+            .map(|s| owned(sol.soc(&lopf.vars, s)))
+            .collect(),
+        storage_power: (0..network.storage.len())
+            .map(|s| {
+                let out = sol.discharge(&lopf.vars, s);
+                let inn = sol.charge(&lopf.vars, s);
+                out.iter().zip(inn).map(|(d, c)| d - c).collect()
+            })
             .collect(),
         built,
     })

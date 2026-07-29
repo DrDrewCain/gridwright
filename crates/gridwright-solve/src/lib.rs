@@ -122,6 +122,25 @@ impl Solution {
         self.trajectory(vars.shed[b])
     }
 
+    /// State of charge of storage unit `s` over time, in MWh.
+    ///
+    /// The quantity that makes a storage unit legible: power in and out are two
+    /// series that only mean something together, and their integral is the one
+    /// number an operator reasons about.
+    pub fn soc(&self, vars: &VarIndex, s: usize) -> &[f64] {
+        self.trajectory(vars.soc[s])
+    }
+
+    /// Charging power drawn by storage unit `s`.
+    pub fn charge(&self, vars: &VarIndex, s: usize) -> &[f64] {
+        self.trajectory(vars.charge[s])
+    }
+
+    /// Discharging power delivered by storage unit `s`.
+    pub fn discharge(&self, vars: &VarIndex, s: usize) -> &[f64] {
+        self.trajectory(vars.discharge[s])
+    }
+
     /// Marginal price at bus `b` per snapshot.
     ///
     /// Balance rows are emitted first and in bus order, so bus `b` at snapshot

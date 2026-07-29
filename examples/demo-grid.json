@@ -508,7 +508,26 @@
       "shift_cost": 0.0
     }
   ],
-  "storage": [],
+  "storage": [
+    {
+      "name": "Pumpspeicher Glems",
+      "bus": 6,
+      "p_nom": 180.0,
+      "max_hours": 2.0,
+      "efficiency_store": 0.87,
+      "efficiency_dispatch": 0.9,
+      "cyclic": true,
+      "p_nom_extendable": false,
+      "p_nom_max": "inf",
+      "capital_cost": 0.0,
+      "head_min_pu": 1.0,
+      "head_bands": 0,
+      "downstream": null,
+      "travel_time": 0,
+      "soc_initial": null,
+      "spillable": false
+    }
+  ],
   "links": [],
   "investment_periods": [],
   "scenarios": [],

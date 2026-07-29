@@ -490,7 +490,14 @@ impl StudioApp {
                 rows += 1;
             }
             for st in net.storage.iter().filter(|s| s.bus == b) {
-                attached(ui, &st.name, format!("{:.0} MW", st.p_nom));
+                // Power *and* energy. A battery described only by its megawatts
+                // is half described -- 180 MW for six hours and 180 MW for
+                // fifteen minutes are different assets and the same number.
+                attached(
+                    ui,
+                    &st.name,
+                    format!("{:.0} MW · {:.0} MWh", st.p_nom, st.p_nom * st.max_hours),
+                );
                 rows += 1;
             }
         });
@@ -532,6 +539,36 @@ impl StudioApp {
                     // positive is flow away from the end you are standing on.
                     reading(ui, "Net to network", format!("{:+.0} MW", made - taken));
                 });
+            }
+        }
+
+        // Storage gets its own chart, because state of charge is the quantity
+        // that makes one legible: charge and discharge are two series that only
+        // mean something together, and their integral is what an operator
+        // actually reasons about.
+        if let Some(solved) = solved {
+            for (i, st) in net.storage.iter().enumerate().filter(|(_, s)| s.bus == b) {
+                let Some(soc) = solved.soc.get(i).filter(|s| s.len() > 1) else {
+                    continue;
+                };
+                ui.add_space(theme::UNIT);
+                let (rect, _) = ui.allocate_exact_size(
+                    egui::Vec2::new(ui.available_width(), 38.0),
+                    egui::Sense::hover(),
+                );
+                // From zero to the unit's *capacity*, not to whatever it
+                // happened to reach. A state of charge that peaks at 40% should
+                // look four tenths full; fitted to its own maximum it would
+                // look full, which is the opposite of the fact.
+                let full = st.p_nom * st.max_hours;
+                let ax = crate::chart::Axes::from_zero(rect, &[full.max(1.0)]);
+                let p = ui.painter();
+                crate::chart::frame(p, &ax);
+                crate::chart::line(p, &ax, soc, theme::INK_STRONG);
+                if let Instant::At(t) = self.instant {
+                    crate::chart::marker(p, &ax, t, soc.len());
+                }
+                crate::chart::bounds(p, &ax, " MWh");
             }
         }
 
@@ -1526,6 +1563,8 @@ mod reduce_tests {
             prices: vec![vec![10.0, 40.0, 10.0], vec![10.0, 10.0, 10.0]],
             dispatch: Vec::new(),
             flows: vec![vec![50.0, -100.0, 0.0]],
+            soc: Vec::new(),
+            storage_power: Vec::new(),
             shed: vec![vec![0.0, 5.0, 0.0], vec![0.0, 0.0, 0.0]],
             built: Vec::new(),
         };
