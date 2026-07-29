@@ -62,6 +62,7 @@ pub fn layout(net: &Network) -> Placement {
     if located == n {
         let mut pos: Vec<Pos2> = placed.into_iter().map(Option::unwrap).collect();
         normalise(&mut pos);
+        spread(&mut pos, net);
         return Placement {
             pos,
             kind: Origin::Geographic,
@@ -195,6 +196,67 @@ impl Origin {
                 format!("schematic, {located} of {total} placed")
             }
         }
+    }
+}
+
+/// Push apart substations that are too close together to draw.
+///
+/// A geographic layout has a problem a relaxation does not: real substations
+/// cluster. Four of them within thirty kilometres are four legitimate points on
+/// the map and one unreadable pile on the screen, with their symbols overlapping
+/// and their labels colliding out of existence.
+///
+/// **Greedy, and deliberately not force-directed.** Birchfield and Overbye
+/// measured both for exactly this problem: a greedy nudge left *"more than 90%
+/// of substations not moved at all"* and never displaced one by more than 5 km,
+/// where a force-directed pass moved some by 30 km and left *"almost no
+/// substations untouched"*. On a map, being nearly right everywhere is worse
+/// than being exactly right almost everywhere -- a reader trusts a map, and one
+/// that has quietly relaxed is lying uniformly.
+///
+/// So: each bus is tested against those already placed, and only a bus that
+/// actually collides moves, by the smallest push that separates it.
+fn spread(pos: &mut [Pos2], net: &Network) {
+    // In units of the normalised box, which is one across. This is roughly the
+    // on-screen footprint of a busbar plus its label at a fit-to-window zoom --
+    // below it the symbols themselves overlap, which is the thing being fixed.
+    const MIN_GAP: f32 = 0.045;
+
+    // Ordered by how much is attached, so the busiest substation keeps its true
+    // position and the quiet ones move around it. A bus with six circuits and a
+    // power station on it is the one a reader is orienting by.
+    let mut weight = vec![0usize; pos.len()];
+    for l in &net.lines {
+        for b in [l.bus0, l.bus1] {
+            if let Some(w) = weight.get_mut(b) {
+                *w += 1;
+            }
+        }
+    }
+    let mut order: Vec<usize> = (0..pos.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(weight[i]));
+
+    let mut settled: Vec<usize> = Vec::with_capacity(pos.len());
+    for i in order {
+        // A bounded search: eight directions at growing radius, taking the
+        // first free spot. Bounded because an unbounded one on a dense national
+        // model is how a "small nudge" becomes a relocation.
+        'placed: for step in 0..6 {
+            let r = MIN_GAP * (step as f32) * 0.55;
+            for k in 0..8 {
+                let a = std::f32::consts::TAU * k as f32 / 8.0;
+                let at = if step == 0 {
+                    pos[i]
+                } else {
+                    pos[i] + Vec2::new(r * a.cos(), r * a.sin())
+                };
+                if settled.iter().all(|&j| at.distance(pos[j]) >= MIN_GAP) {
+                    pos[i] = at;
+                    break 'placed;
+                }
+            }
+        }
+        settled.push(i);
     }
 }
 
@@ -427,5 +489,82 @@ mod geographic_tests {
             "a pole produced {pos:?}",
         );
         assert!(pos[1].distance(pos[2]) > 1e-6, "the other buses collapsed");
+    }
+}
+
+#[cfg(test)]
+mod spread_tests {
+    use super::*;
+    use gridwright_net::{Bus, Coord, Line, Snapshots};
+
+    /// Four substations within a few kilometres, as real ones cluster.
+    fn cluster() -> Network {
+        let mut net = Network::new(Snapshots::hourly(1));
+        for (i, (lon, lat)) in [
+            (9.10, 49.15),
+            (9.20, 48.90),
+            (9.37, 48.66),
+            (9.28, 48.54),
+            // One far away, so the bounding box is not the cluster itself.
+            (10.0, 53.5),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            net.buses.push(Bus {
+                name: format!("s{i}"),
+                position: Coord::new(lon, lat),
+                ..Default::default()
+            });
+        }
+        for (a, b) in [(0, 1), (1, 2), (2, 3), (0, 4)] {
+            net.lines.push(Line {
+                bus0: a,
+                bus1: b,
+                s_nom: 100.0,
+                ..Default::default()
+            });
+        }
+        net
+    }
+
+    #[test]
+    fn clustered_substations_end_up_far_enough_apart_to_draw() {
+        let pos = layout(&cluster()).pos;
+        for i in 0..pos.len() {
+            for j in (i + 1)..pos.len() {
+                let d = pos[i].distance(pos[j]);
+                assert!(d >= 0.04, "buses {i} and {j} are {d} apart, still a pile");
+            }
+        }
+    }
+
+    #[test]
+    fn the_layout_stays_geographic_and_bounded() {
+        let placed = layout(&cluster());
+        assert_eq!(placed.kind, Origin::Geographic);
+        for p in &placed.pos {
+            assert!(p.x.is_finite() && p.y.is_finite());
+            // Spreading happens after normalisation, so it can push slightly
+            // outside the unit box; the camera fits to the bounding box either
+            // way, but an unbounded push would mean the search never converged.
+            assert!(p.x.abs() <= 2.0 && p.y.abs() <= 2.0, "{p:?} escaped");
+        }
+    }
+
+    #[test]
+    fn the_relative_arrangement_survives() {
+        // The whole reason for a greedy nudge rather than a relaxation: the
+        // northern bus must still be north of the southern ones afterwards.
+        let pos = layout(&cluster()).pos;
+        let north = pos[4];
+        for s in &pos[..4] {
+            assert!(north.y < s.y, "the northern bus moved south of a cluster bus");
+        }
+    }
+
+    #[test]
+    fn spreading_is_deterministic() {
+        assert_eq!(layout(&cluster()).pos, layout(&cluster()).pos);
     }
 }
