@@ -1025,7 +1025,9 @@ impl StudioApp {
                     let slider = egui::Slider::new(&mut t, 0..=(n - 1))
                         .show_value(false)
                         .handle_shape(egui::style::HandleShape::Rect { aspect_ratio: 0.4 });
-                    if ui.add(slider).changed() {
+                    let r = ui.add(slider);
+                    self.timeline_track(ui, r.rect, n);
+                    if r.changed() {
                         self.instant = Instant::At(t);
                         changed = true;
                     }
@@ -1055,6 +1057,51 @@ impl StudioApp {
         }
     }
 
+    /// The shape of the day, drawn behind the slider.
+    ///
+    /// An empty track tells a reader nothing about where to drag. This one
+    /// carries the system price envelope, so the expensive hours are visible
+    /// before you scrub to them -- the evening peak shows as a bulge and you
+    /// aim at it rather than hunting.
+    ///
+    /// Highest and lowest across all buses rather than a mean, because the
+    /// *spread* is the interesting quantity: an hour where every bus prices
+    /// the same is an uncongested hour, and one where they diverge is not, and
+    /// a mean hides exactly that.
+    fn timeline_track(&self, ui: &egui::Ui, rect: egui::Rect, n: usize) {
+        use crate::theme;
+
+        let Some(Ok(solved)) = &self.outcome else {
+            return;
+        };
+        if solved.prices.is_empty() || n < 2 {
+            return;
+        }
+
+        let mut hi = vec![f64::MIN; n];
+        let mut lo = vec![f64::MAX; n];
+        for series in &solved.prices {
+            for (t, v) in series.iter().enumerate().take(n) {
+                if v.is_finite() {
+                    hi[t] = hi[t].max(*v);
+                    lo[t] = lo[t].min(*v);
+                }
+            }
+        }
+        if hi.iter().any(|v| *v == f64::MIN) {
+            return;
+        }
+
+        // Inset vertically so the slider's own handle and rail stay readable on
+        // top of it. This is a backdrop, not a chart competing with the control.
+        let band = rect.shrink2(egui::vec2(0.0, 3.0));
+        let ax = crate::chart::Axes::fit(band, &hi);
+        let p = ui.painter();
+        crate::chart::band(p, &ax, &lo, &hi, theme::SLATE_RAISED);
+        crate::chart::line(p, &ax, &hi, theme::INK_DIM);
+    }
+
+    /// Arrow keys walk the horizon one snapshot at a time.
     /// Arrow keys walk the horizon one snapshot at a time.
     ///
     /// Scrubbing a slider finds a region; stepping finds an hour. Both are

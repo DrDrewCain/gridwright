@@ -422,3 +422,27 @@ pub fn stack_peak(bands: &[&[f64]]) -> Vec<f64> {
         })
         .collect()
 }
+
+/// The area between two series.
+///
+/// For a range rather than a value — the spread between the cheapest and the
+/// dearest bus in each hour, say, where the *width* is the quantity and either
+/// edge alone would be half the story.
+pub fn band(painter: &egui::Painter, ax: &Axes, lo: &[f64], hi: &[f64], color: Color32) {
+    let n = lo.len().min(hi.len());
+    if n < 2 {
+        return;
+    }
+    let mut mesh = egui::Mesh::default();
+    for i in 0..n {
+        let x = ax.x(i, n);
+        mesh.colored_vertex(pos2(x, ax.y(lo[i])), color);
+        mesh.colored_vertex(pos2(x, ax.y(hi[i])), color);
+        if i > 0 {
+            let b = (i as u32 - 1) * 2;
+            mesh.add_triangle(b, b + 1, b + 2);
+            mesh.add_triangle(b + 1, b + 2, b + 3);
+        }
+    }
+    painter.add(egui::Shape::mesh(mesh));
+}
