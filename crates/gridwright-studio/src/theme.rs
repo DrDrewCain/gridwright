@@ -248,3 +248,47 @@ pub fn number(text: impl Into<String>) -> egui::RichText {
         .monospace()
         .color(INK_STRONG)
 }
+
+/// Colours for energy carriers, for charts that break generation down by fuel.
+///
+/// **This is the one place hue is spent on something other than state, and the
+/// reason it is allowed here is that it is a different surface.** On the canvas,
+/// hue means voltage on a corridor and alarm state on a busbar, and a fourth
+/// meaning would compete with those. A dispatch chart in the side panel shares
+/// no space with either, and the thing being distinguished there — which fuel —
+/// is exactly the categorical distinction hue is best at. Nine bands on a
+/// lightness ramp are not distinguishable; nine carriers are, instantly.
+///
+/// Chosen against the conventions the field already reads: wind blue, solar
+/// amber, gas a warm grey, coal near-black, nuclear violet, hydro teal, biomass
+/// green, storage a cool green. A reader who has seen one PyPSA or ENTSO-E
+/// dispatch plot will not have to consult the legend for most of them.
+pub fn carrier_color(carrier: &str) -> Option<egui::Color32> {
+    // Matched loosely, because carrier strings are not standardised across the
+    // formats this reads: PyPSA says "onwind" and "offwind-ac", MATPOWER says
+    // nothing at all, CGMES uses its own vocabulary. Substring matching against
+    // a lowercase copy handles all of them without a per-format table.
+    let c = carrier.to_ascii_lowercase();
+    let hit = |k: &str| c.contains(k);
+
+    Some(match () {
+        _ if hit("wind") => egui::Color32::from_rgb(0x5B, 0x9B, 0xD5),
+        _ if hit("solar") || hit("pv") => egui::Color32::from_rgb(0xE0, 0xA8, 0x3C),
+        _ if hit("hydro") || hit("ror") || hit("run-of") => {
+            egui::Color32::from_rgb(0x3E, 0x9E, 0x9E)
+        }
+        _ if hit("nuclear") || hit("uranium") => egui::Color32::from_rgb(0x8E, 0x6F, 0xC0),
+        _ if hit("coal") || hit("lignite") => egui::Color32::from_rgb(0x5A, 0x51, 0x4C),
+        _ if hit("gas") || hit("ccgt") || hit("ocgt") => egui::Color32::from_rgb(0xA8, 0x8A, 0x76),
+        _ if hit("oil") || hit("diesel") => egui::Color32::from_rgb(0x7A, 0x5F, 0x4A),
+        _ if hit("bio") || hit("waste") => egui::Color32::from_rgb(0x6E, 0xA8, 0x5E),
+        _ if hit("geothermal") => egui::Color32::from_rgb(0xB0, 0x6A, 0x5A),
+        _ if hit("battery") || hit("storage") || hit("hydrogen") || hit("pump") => {
+            egui::Color32::from_rgb(0x4F, 0xB8, 0x8A)
+        }
+        // Not a carrier this recognises. The caller falls back to the lightness
+        // ramp rather than inventing a colour, because a hue nobody assigned is
+        // a hue that means nothing.
+        _ => return None,
+    })
+}

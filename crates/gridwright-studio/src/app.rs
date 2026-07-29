@@ -775,6 +775,52 @@ impl StudioApp {
         }
     }
 
+    /// One colour per band of the dispatch stack, in the stack's own order.
+    ///
+    /// Carrier where the file named one, and the lightness ramp where it did
+    /// not -- a hue nobody assigned is a hue that means nothing, and inventing
+    /// one for "unknown" would make two unrelated fuels look related.
+    ///
+    /// Same-carrier units are separated by lightness within their hue, so two
+    /// gas sets at one station are visibly two bands and still visibly gas.
+    fn band_colors(&self) -> Vec<egui::Color32> {
+        let Some(net) = self.network() else {
+            return Vec::new();
+        };
+        let mut order: Vec<usize> = (0..net.generators.len()).collect();
+        order.sort_by(|&a, &b| {
+            net.generators[a]
+                .marginal_cost
+                .total_cmp(&net.generators[b].marginal_cost)
+        });
+
+        let carriers: Vec<&str> = order
+            .iter()
+            .map(|&g| net.generators[g].carrier.as_str())
+            .chain(net.storage.iter().map(|_| "storage"))
+            .collect();
+
+        let mut seen: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        let n = carriers.len().max(1);
+        carriers
+            .iter()
+            .enumerate()
+            .map(|(i, c)| match crate::theme::carrier_color(c) {
+                Some(base) => {
+                    // Each repeat of a carrier steps a little lighter, so a
+                    // second gas set is distinguishable from the first without
+                    // leaving the hue that says both are gas.
+                    let k = seen.entry(c).or_insert(0);
+                    let shade = 1.0 - (*k as f32 * 0.18).min(0.45);
+                    *k += 1;
+                    base.gamma_multiply(shade)
+                }
+                None => crate::view::ramp(if n > 1 { i as f32 / (n - 1) as f32 } else { 1.0 }),
+            })
+            .collect()
+    }
+
+    /// Allocate a chart's rectangle, and let dragging inside it scrub time.
     /// Allocate a chart's rectangle, and let dragging inside it scrub time.
     ///
     /// The charts and the map are one instrument, not a picture beside a
@@ -866,18 +912,16 @@ impl StudioApp {
         // Cheap bands recede and expensive ones step forward, on the same
         // lightness axis price uses on the busbars. One quantity, one channel,
         // whichever picture it appears in.
-        let n = series.len().max(1);
-        let bands: Vec<(&[f64], egui::Color32)> = series
-            .iter()
-            .enumerate()
-            .map(|(i, s)| {
-                // Spread across the whole ramp rather than [0, n-1)/n, which
-                // leaves the brightest end unused and wastes the contrast the
-                // top bands most need.
-                let t = if n > 1 { i as f32 / (n - 1) as f32 } else { 1.0 };
-                (*s, crate::view::ramp(t))
-            })
-            .collect();
+        // Coloured by carrier, not by position on a ramp.
+        //
+        // Nine bands of near-identical grey is not a chart, it is a gradient --
+        // and this is the one surface where hue is free to mean something else,
+        // because a panel chart shares no space with the canvas where hue means
+        // voltage and alarm state. Which fuel is running is exactly the
+        // categorical distinction hue is best at.
+        let colors = self.band_colors();
+        let bands: Vec<(&[f64], egui::Color32)> =
+            series.iter().zip(&colors).map(|(s, c)| (*s, *c)).collect();
         crate::chart::stack(p, &ax, &bands);
 
         if let Instant::At(t) = self.instant {
@@ -894,7 +938,7 @@ impl StudioApp {
             .chain(net.storage.iter().map(|s| s.name.as_str()))
             .collect();
         for (i, name) in named.iter().enumerate().take(9) {
-            let t = if n > 1 { i as f32 / (n - 1) as f32 } else { 1.0 };
+            let swatch = colors.get(i).copied().unwrap_or(theme::INK_DIM);
             ui.horizontal(|ui| {
                 // A block rather than a rule, and outlined in the same hairline
                 // that separates the bands, so a swatch reads as the band it
@@ -904,7 +948,7 @@ impl StudioApp {
                     egui::Sense::hover(),
                 );
                 let p = ui.painter();
-                p.rect_filled(sw, 1.0, crate::view::ramp(t));
+                p.rect_filled(sw, 1.0, swatch);
                 p.rect_stroke(
                     sw,
                     1.0,

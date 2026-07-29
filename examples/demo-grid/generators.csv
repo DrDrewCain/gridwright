@@ -1,9 +1,9 @@
-name,bus,p_nom,marginal_cost
-Wind Nordsee,Brunsbuettel,2400,1
-Wind Altmark,Wolmirstedt,700,2
-Solar Kraichgau,Grossgartach,450,0
-Gas Moorburg,Hamburg,900,64
-Gas Franken A,Grafenrheinfeld,600,76
-Gas Franken B,Grafenrheinfeld,500,81
-Gas Neckar,Hoheneck,1200,92
-Peaker Metzingen,Metzingen,400,210
+name,bus,p_nom,marginal_cost,carrier
+Wind Nordsee,Brunsbuettel,2400,1,offwind
+Wind Altmark,Wolmirstedt,700,2,onwind
+Solar Kraichgau,Grossgartach,450,0,solar
+Gas Moorburg,Hamburg,900,64,CCGT
+Gas Franken A,Grafenrheinfeld,600,76,CCGT
+Gas Franken B,Grafenrheinfeld,500,81,CCGT
+Gas Neckar,Hoheneck,1200,92,CCGT
+Peaker Metzingen,Metzingen,400,210,OCGT

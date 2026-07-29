@@ -820,7 +820,49 @@ impl NetworkView {
         // then the ramp, then its end values. The numbers go under the ramp so
         // they sit against the swatch they label rather than across a gap from
         // it.
-        let bar = Rect::from_min_size(pos2(rect.left() + 12.0, floor - 22.0), vec2(108.0, 5.0));
+        // Above the price ramp: corridor loading, on the same lightness axis.
+        //
+        // Two encodings share that axis -- price on the busbars, utilisation on
+        // the corridors -- and until now only one of them was explained. A
+        // reader could reasonably conclude the bright lines were expensive.
+        let key_w = 108.0;
+        let load_bar = Rect::from_min_size(pos2(rect.left() + 12.0, floor - 44.0), vec2(key_w, 5.0));
+        let steps = 24;
+        for i in 0..steps {
+            let t = i as f32 / (steps - 1) as f32;
+            let cell = Rect::from_min_size(
+                load_bar.min + vec2(load_bar.width() * t, 0.0),
+                vec2(load_bar.width() / steps as f32 + 1.0, load_bar.height()),
+            );
+            painter.rect_filled(
+                cell,
+                0.0,
+                lerp_color(AC_COLOR.gamma_multiply(0.55), theme::INK_STRONG, t),
+            );
+        }
+        painter.text(
+            load_bar.left_top() + vec2(0.0, -3.0),
+            Align2::LEFT_BOTTOM,
+            "corridor loading",
+            font.clone(),
+            theme::INK_DIM,
+        );
+        painter.text(
+            load_bar.left_bottom() + vec2(0.0, 2.0),
+            Align2::LEFT_TOP,
+            "idle",
+            font.clone(),
+            theme::INK_DIM,
+        );
+        painter.text(
+            load_bar.right_bottom() + vec2(0.0, 2.0),
+            Align2::RIGHT_TOP,
+            "at rating",
+            font.clone(),
+            theme::INK_DIM,
+        );
+
+        let bar = Rect::from_min_size(pos2(rect.left() + 12.0, floor - 22.0), vec2(key_w, 5.0));
         // Painted in steps rather than as a gradient mesh: at this size the
         // banding is invisible, and it keeps the paint list to plain rects.
         let steps = 24;
