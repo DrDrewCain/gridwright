@@ -46,6 +46,20 @@ pub struct StudioApp {
     /// A `Cell` because charts are drawn from `&self` -- they run while the
     /// solve result is borrowed -- and this is the one thing they need to write.
     scrub_to: std::cell::Cell<Option<Instant>>,
+    /// Which embedded case is loaded, if the network came from the list.
+    ///
+    /// Recorded rather than recovered by matching the loaded network's name
+    /// against the list. The readers derive that name from the file stem or from
+    /// what the file calls itself, so it is not the list's file name and matching
+    /// on it would leave the picker showing nothing as selected -- or worse,
+    /// marking the wrong row when two cases share a stem.
+    from_sample: Option<usize>,
+    /// A case chosen from the picker this frame, opened once at the end of it.
+    ///
+    /// Deferred for the same reason as `scrub_to`, and more sharply: the picker is
+    /// drawn while `self.loaded` is borrowed to read the current name from, and
+    /// opening a network replaces it.
+    pending_sample: Option<usize>,
     /// How long the last solve took, in seconds, as reported by the backend.
     ///
     /// Asked of the backend rather than measured here, because only it knows
@@ -76,8 +90,7 @@ pub struct StudioApp {
 /// southern load and the nodal prices actually separate -- which is the output
 /// this engine exists to produce and was, until now, demonstrated by a picture
 /// of one flat number.
-const SAMPLE: &[u8] = include_bytes!("../../../examples/demo-grid.json");
-const SAMPLE_NAME: &str = "demo-grid.json";
+
 
 /// Rows below which a freshly opened network is solved without being asked.
 ///
@@ -113,6 +126,8 @@ impl StudioApp {
             instant: Instant::Horizon,
             palette: crate::palette::Palette::default(),
             scrub_to: std::cell::Cell::new(None),
+            from_sample: None,
+            pending_sample: None,
             solve_took: None,
             load_error: None,
         }
@@ -132,6 +147,9 @@ impl StudioApp {
 
     /// Everything that happens once a network has been read, however it was.
     fn adopt(&mut self, loaded: gridwright_worker::Loaded) {
+        // Cleared here rather than in every caller. A dropped file is not one of
+        // the embedded cases, and `open_sample` sets this again straight after.
+        self.from_sample = None;
         let placed = layout(&loaded.network);
         self.positions = placed.pos;
         self.origin = placed.kind;
@@ -186,8 +204,20 @@ impl StudioApp {
     /// Public because the browser entry point reaches for it when the page is
     /// asked for `#demo`, and because it is the same thing the empty state's
     /// button does — one code path, so the two cannot drift.
-    pub fn open_sample(&mut self) {
-        self.open_bytes(Some(SAMPLE_NAME), SAMPLE);
+    /// Open one of the embedded cases.
+    ///
+    /// Out of range is ignored rather than clamped. The index comes from a list
+    /// the caller was handed, so a bad one is a bug in the caller, and silently
+    /// opening a different network than the reader asked for would hide it.
+    pub fn open_sample(&mut self, which: usize) {
+        if let Some(s) = crate::samples::ALL.get(which) {
+            self.open_bytes(Some(s.name), s.bytes);
+            // After, because `open_bytes` clears this: a network arriving by any
+            // other route is not one of these, and the picker must not claim it is.
+            if self.loaded.is_some() {
+                self.from_sample = Some(which);
+            }
+        }
     }
 
     fn network(&self) -> Option<&Network> {
@@ -257,13 +287,27 @@ impl StudioApp {
                 ui.add_space(theme::UNIT);
                 ui.label("Drop a file onto the canvas,");
                 ui.add_space(theme::UNIT);
-                // An empty state that can only wait is a dead end. The sample
-                // is embedded rather than fetched so it works offline, from a
+                // An empty state that can only wait is a dead end. The cases are
+                // embedded rather than fetched so they work offline, from a
                 // file:// URL, and on the first paint — and because a browser
-                // tab has no working directory to open it from.
-                if ui.button("or open the IEEE 14-bus case").clicked() {
-                    self.open_sample();
+                // tab has no working directory to open them from.
+                //
+                // Named, not described. The button used to read "open the IEEE
+                // 14-bus case" and opened the demo grid, which is the kind of
+                // wrong that survives because nobody re-reads a button.
+                let first = &crate::samples::ALL[crate::samples::DEFAULT];
+                if ui.button(format!("or open {}", first.name)).clicked() {
+                    self.open_sample(crate::samples::DEFAULT);
                 }
+                ui.add_space(theme::UNIT);
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} cases are built in — ⌘K to pick one",
+                        crate::samples::ALL.len()
+                    ))
+                    .size(11.0)
+                    .color(theme::INK_DIM),
+                );
                 ui.add_space(theme::UNIT * 2.0);
                 ui.label(theme::eyebrow("reads"));
                 ui.add_space(theme::UNIT);
@@ -285,12 +329,44 @@ impl StudioApp {
             Some(loaded) => {
                 ui.label(theme::eyebrow("network"));
                 ui.add_space(theme::UNIT);
-                ui.label(
-                    egui::RichText::new(&loaded.name)
-                        .size(13.0)
-                        .color(theme::INK_STRONG)
-                        .strong(),
-                );
+                // A picker rather than a label. The name was the one piece of the
+                // panel that looked like it should be clickable and was not, and
+                // the only route to a second case was the palette — which a
+                // reader has to already know exists.
+                //
+                // `selected_text` is whatever is loaded, including a dropped file
+                // that is not in the list at all. Showing the nearest entry
+                // instead would claim the reader had opened something they had not.
+                egui::ComboBox::from_id_salt("case")
+                    .selected_text(
+                        egui::RichText::new(&loaded.name)
+                            .size(13.0)
+                            .color(theme::INK_STRONG)
+                            .strong(),
+                    )
+                    .width(ui.available_width() - theme::UNIT * 2.0)
+                    .show_ui(ui, |ui| {
+                        for (i, s) in crate::samples::ALL.iter().enumerate() {
+                            let here = self.from_sample == Some(i);
+                            // Label over file name, with the size and the note
+                            // beneath. A list of file names is unreadable and a
+                            // list of sizes does not say why anyone would pick one.
+                            let row = ui.selectable_label(
+                                here,
+                                egui::RichText::new(format!(
+                                    "{}\n{} buses · {}{}",
+                                    s.label,
+                                    s.buses,
+                                    s.note,
+                                    if s.located { "" } else { " · no positions" },
+                                ))
+                                .size(11.5),
+                            );
+                            if row.clicked() && !here {
+                                self.pending_sample = Some(i);
+                            }
+                        }
+                    });
             }
         }
 
@@ -1330,7 +1406,7 @@ impl StudioApp {
                 }
             }
             Action::Fit => self.view.refit(),
-            Action::OpenSample => self.open_sample(),
+            Action::OpenSample(i) => self.open_sample(i),
             Action::Horizon => {
                 self.instant = Instant::Horizon;
                 self.reduce();
@@ -1486,6 +1562,13 @@ impl eframe::App for StudioApp {
                     .then_some(self.frame),
             );
         });
+
+        // Before the scrub, because opening a network resets the instant and
+        // applying a scrub into the old horizon first would be a position in a
+        // timeline that is about to stop existing.
+        if let Some(i) = self.pending_sample.take() {
+            self.open_sample(i);
+        }
 
         // Applied here, after every panel has drawn, because a chart cannot
         // reduce while the result it is drawing from is borrowed.
