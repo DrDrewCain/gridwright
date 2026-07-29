@@ -712,6 +712,22 @@ impl NetworkView {
         let font = eframe::egui::FontId::proportional(10.0);
         let mut y = rect.bottom() - 12.0;
 
+        // Carriers present, above the corridor kinds. Generators are coloured
+        // by fuel on the canvas now, and a colour with no key is a colour a
+        // reader has to guess at -- which is exactly the failure the ENTSO-E
+        // map ships, where two voltage bands share a class and the legend never
+        // says so.
+        let mut fuels: Vec<(&'static str, Color32)> = Vec::new();
+        for g in &net.generators {
+            if let Some((family, c)) = crate::theme::carrier_color(&g.carrier)
+                && !fuels.iter().any(|(seen, _)| *seen == family)
+            {
+                fuels.push((family, c));
+            }
+        }
+        // Alphabetical, so the key does not reshuffle when a file is reordered.
+        fuels.sort_by(|a, b| a.0.cmp(b.0));
+
         // Corridor kinds, and only the ones this network has. A legend row for
         // a category with no members teaches a distinction the reader will
         // never see, and on a single-area MATPOWER case that is two of the
@@ -775,6 +791,9 @@ impl NetworkView {
             "transport".into(),
         ));
         kinds.push((!net.links.is_empty(), LINK_COLOR, "link".into()));
+        for (name, color) in fuels {
+            kinds.push((true, color, name.to_string()));
+        }
         // Bottom up, so adding a kind pushes the stack away from the edge
         // rather than shifting every row already on screen.
         for (present, color, name) in kinds.into_iter().rev() {
@@ -958,7 +977,7 @@ impl NetworkView {
         let mut at_bus: Vec<Vec<Option<Color32>>> = vec![Vec::new(); net.buses.len()];
         for g in &net.generators {
             if let Some(v) = at_bus.get_mut(g.bus) {
-                v.push(crate::theme::carrier_color(&g.carrier));
+                v.push(crate::theme::carrier_color(&g.carrier).map(|(_, c)| c));
             }
         }
         let has_load: Vec<bool> = loads.iter().map(|&c| c > 0).collect();
@@ -1058,6 +1077,12 @@ impl NetworkView {
                 storage(painter, s + vec2(x, -thickness * 0.5), glyph, ink);
             }
             if has_load[b] {
+                // Loads keep the bus ink rather than taking a carrier colour.
+                // A load has no fuel -- it is demand, and what it is *for* is a
+                // different question the model does not answer. Colouring it by
+                // the bus's carrier would say "electricity" on every load in an
+                // electricity network, which is a colour carrying no
+                // information.
                 let n = if detail { loads[b].min(4) } else { 1 };
                 for k in 0..n {
                     let dx = fan(k, n, glyph);

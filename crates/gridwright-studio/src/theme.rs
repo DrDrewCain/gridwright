@@ -263,7 +263,11 @@ pub fn number(text: impl Into<String>) -> egui::RichText {
 /// amber, gas a warm grey, coal near-black, nuclear violet, hydro teal, biomass
 /// green, storage a cool green. A reader who has seen one PyPSA or ENTSO-E
 /// dispatch plot will not have to consult the legend for most of them.
-pub fn carrier_color(carrier: &str) -> Option<egui::Color32> {
+/// Returns the *family* name alongside the colour, not the carrier string that
+/// matched. Several spellings share one colour -- `onwind`, `offwind-ac` and
+/// `offwind-dc` are all wind -- and a legend row labelled with whichever
+/// happened to be read first is a legend that lies about the other two.
+pub fn carrier_color(carrier: &str) -> Option<(&'static str, egui::Color32)> {
     // Matched loosely, because carrier strings are not standardised across the
     // formats this reads: PyPSA says "onwind" and "offwind-ac", MATPOWER says
     // nothing at all, CGMES uses its own vocabulary. Substring matching against
@@ -272,23 +276,79 @@ pub fn carrier_color(carrier: &str) -> Option<egui::Color32> {
     let hit = |k: &str| c.contains(k);
 
     Some(match () {
-        _ if hit("wind") => egui::Color32::from_rgb(0x5B, 0x9B, 0xD5),
-        _ if hit("solar") || hit("pv") => egui::Color32::from_rgb(0xE0, 0xA8, 0x3C),
+        _ if hit("wind") => ("wind", egui::Color32::from_rgb(0x5B, 0x9B, 0xD5)),
+        _ if hit("solar") || hit("pv") => ("solar", egui::Color32::from_rgb(0xE0, 0xA8, 0x3C)),
         _ if hit("hydro") || hit("ror") || hit("run-of") => {
-            egui::Color32::from_rgb(0x3E, 0x9E, 0x9E)
+            ("hydro", egui::Color32::from_rgb(0x3E, 0x9E, 0x9E))
         }
-        _ if hit("nuclear") || hit("uranium") => egui::Color32::from_rgb(0x8E, 0x6F, 0xC0),
-        _ if hit("coal") || hit("lignite") => egui::Color32::from_rgb(0x5A, 0x51, 0x4C),
-        _ if hit("gas") || hit("ccgt") || hit("ocgt") => egui::Color32::from_rgb(0xA8, 0x8A, 0x76),
-        _ if hit("oil") || hit("diesel") => egui::Color32::from_rgb(0x7A, 0x5F, 0x4A),
-        _ if hit("bio") || hit("waste") => egui::Color32::from_rgb(0x6E, 0xA8, 0x5E),
-        _ if hit("geothermal") => egui::Color32::from_rgb(0xB0, 0x6A, 0x5A),
+        _ if hit("nuclear") || hit("uranium") => {
+            ("nuclear", egui::Color32::from_rgb(0x8E, 0x6F, 0xC0))
+        }
+        _ if hit("coal") || hit("lignite") => ("coal", egui::Color32::from_rgb(0x5A, 0x51, 0x4C)),
+        _ if hit("gas") || hit("ccgt") || hit("ocgt") => {
+            ("gas", egui::Color32::from_rgb(0xA8, 0x8A, 0x76))
+        }
+        _ if hit("oil") || hit("diesel") => ("oil", egui::Color32::from_rgb(0x7A, 0x5F, 0x4A)),
+        _ if hit("bio") || hit("waste") => ("biomass", egui::Color32::from_rgb(0x6E, 0xA8, 0x5E)),
+        _ if hit("geothermal") => ("geothermal", egui::Color32::from_rgb(0xB0, 0x6A, 0x5A)),
         _ if hit("battery") || hit("storage") || hit("hydrogen") || hit("pump") => {
-            egui::Color32::from_rgb(0x4F, 0xB8, 0x8A)
+            ("storage", egui::Color32::from_rgb(0x4F, 0xB8, 0x8A))
         }
         // Not a carrier this recognises. The caller falls back to the lightness
         // ramp rather than inventing a colour, because a hue nobody assigned is
         // a hue that means nothing.
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod carrier_tests {
+    use super::carrier_color;
+
+    #[test]
+    fn spellings_of_one_fuel_share_a_colour_and_a_name() {
+        // PyPSA writes all three of these, and they are one thing. A legend
+        // labelled with whichever was read first lies about the other two.
+        let a = carrier_color("onwind").unwrap();
+        let b = carrier_color("offwind-ac").unwrap();
+        let c = carrier_color("Offshore Wind").unwrap();
+        assert_eq!(a, b);
+        assert_eq!(b, c);
+        assert_eq!(a.0, "wind");
+    }
+
+    #[test]
+    fn gas_spellings_agree() {
+        assert_eq!(carrier_color("CCGT").unwrap().0, "gas");
+        assert_eq!(carrier_color("OCGT").unwrap().0, "gas");
+        assert_eq!(carrier_color("natural gas").unwrap().0, "gas");
+    }
+
+    #[test]
+    fn distinct_fuels_get_distinct_colours() {
+        // The whole point. Two fuels that render the same are two fuels a
+        // reader cannot tell apart in a stack.
+        let names = [
+            "wind", "solar", "hydro", "nuclear", "coal", "gas", "oil", "biomass", "geothermal",
+            "battery",
+        ];
+        for (i, a) in names.iter().enumerate() {
+            for b in &names[i + 1..] {
+                let (_, ca) = carrier_color(a).unwrap();
+                let (_, cb) = carrier_color(b).unwrap();
+                let d = (ca.r() as i32 - cb.r() as i32).abs()
+                    + (ca.g() as i32 - cb.g() as i32).abs()
+                    + (ca.b() as i32 - cb.b() as i32).abs();
+                assert!(d > 40, "{a} and {b} are only {d} apart");
+            }
+        }
+    }
+
+    #[test]
+    fn an_unknown_carrier_gets_no_colour() {
+        // Rather than an invented one, which would make two unrelated fuels
+        // look related.
+        assert!(carrier_color("unknown").is_none());
+        assert!(carrier_color("").is_none());
+    }
 }

@@ -805,7 +805,7 @@ impl StudioApp {
         carriers
             .iter()
             .enumerate()
-            .map(|(i, c)| match crate::theme::carrier_color(c) {
+            .map(|(i, c)| match crate::theme::carrier_color(c).map(|(_, col)| col) {
                 Some(base) => {
                     // Each repeat of a carrier steps a little lighter, so a
                     // second gas set is distinguishable from the first without
