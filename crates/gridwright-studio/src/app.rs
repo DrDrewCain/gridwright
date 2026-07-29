@@ -346,6 +346,9 @@ impl StudioApp {
         let Some(net) = self.network() else {
             return false;
         };
+        if let Some(e) = self.view.selected_line() {
+            return self.corridor(ui, net, e);
+        }
         let Some(b) = self.view.selected().filter(|&b| b < net.buses.len()) else {
             return false;
         };
@@ -540,6 +543,81 @@ impl StudioApp {
                     .color(theme::INK_DIM),
             );
         }
+
+        true
+    }
+
+    /// What a corridor is, and what it carried.
+    ///
+    /// The counterpart to the bus block. A corridor's interesting quantity is
+    /// signed -- flow has a direction, and the hour it reverses is usually the
+    /// hour something changed -- which is why the chart here always shows its
+    /// zero and the bus chart does not.
+    fn corridor(&self, ui: &mut egui::Ui, net: &gridwright_net::Network, e: usize) -> bool {
+        use crate::theme;
+
+        let Some(line) = net.lines.get(e) else {
+            return false;
+        };
+        let ends = |b: usize| {
+            net.buses
+                .get(b)
+                .map(|x| x.name.as_str())
+                .unwrap_or("?")
+                .to_string()
+        };
+
+        ui.add_space(theme::UNIT * 3.0);
+        ui.label(theme::eyebrow("selected corridor"));
+        ui.add_space(theme::UNIT);
+        ui.label(
+            egui::RichText::new(&line.name)
+                .size(13.0)
+                .color(theme::INK_STRONG)
+                .strong(),
+        );
+        ui.label(
+            egui::RichText::new(format!("{} — {}", ends(line.bus0), ends(line.bus1)))
+                .size(11.0)
+                .color(theme::INK_DIM),
+        );
+
+        let solved = self.outcome.as_ref().and_then(|o| o.as_ref().ok());
+        if let Some(series) = solved.and_then(|s| s.flows.get(e)).filter(|s| s.len() > 1) {
+            ui.add_space(theme::UNIT);
+            let (rect, _) = ui.allocate_exact_size(
+                egui::Vec2::new(ui.available_width(), 44.0),
+                egui::Sense::hover(),
+            );
+            let ax = crate::chart::Axes::fit(rect, series);
+            let p = ui.painter();
+            crate::chart::frame(p, &ax);
+            // The rating drawn as a line across the chart, so "at its limit" is
+            // something you see rather than something you compute. Both signs,
+            // because a corridor is equally constrained running backwards.
+            crate::chart::threshold(p, &ax, line.s_nom, theme::ALARM);
+            crate::chart::threshold(p, &ax, -line.s_nom, theme::ALARM);
+            crate::chart::line(p, &ax, series, theme::INK_STRONG);
+            if let Instant::At(t) = self.instant {
+                crate::chart::marker(p, &ax, t, series.len());
+            }
+            crate::chart::bounds(p, &ax, " MW");
+        }
+
+        egui::Grid::new("corridor").num_columns(2).show(ui, |ui| {
+            reading(ui, "Rating", format!("{:.0} MW", line.s_nom));
+            if let Some(used) = self.line_load.get(e).copied().filter(|v| v.is_finite()) {
+                reading(ui, "Peak loading", format!("{:.0}%", used * 100.0));
+            }
+            reading(
+                ui,
+                "Voltage",
+                match net.buses.get(line.bus0).map(|b| b.v_nom).unwrap_or(0.0) {
+                    kv if kv >= 1.0 => format!("{kv:.0} kV"),
+                    _ => "—".into(),
+                },
+            );
+        });
 
         true
     }

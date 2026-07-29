@@ -61,6 +61,10 @@ pub struct NetworkView {
     /// frames it. Deferred to draw time because fitting needs the pane size,
     /// and nothing knows that until there is a pane.
     needs_fit: bool,
+    /// The circuit the user has chosen. Mutually exclusive with `selected`:
+    /// the inspector describes one thing, and two selections would make "the
+    /// selection" ambiguous in a panel with room for one answer.
+    selected_line: Option<usize>,
     /// The bus the user has chosen, which outlives the pointer leaving it.
     ///
     /// Distinct from hover on purpose: hover answers "what is under my cursor"
@@ -85,6 +89,7 @@ impl Default for NetworkView {
             zoom: 400.0,
             centre: Pos2::ZERO,
             needs_fit: true,
+            selected_line: None,
             selected: None,
             goal: None,
             hovered: None,
@@ -112,7 +117,13 @@ impl NetworkView {
     /// what tells them.
     pub fn reveal(&mut self, bus: usize) {
         self.selected = Some(bus);
+        self.selected_line = None;
         self.reveal_next = Some(bus);
+    }
+
+    /// Which circuit is selected, for whoever draws the inspector.
+    pub fn selected_line(&self) -> Option<usize> {
+        self.selected_line
     }
 
     /// Refit at the next frame, travelling rather than cutting.
@@ -174,7 +185,8 @@ impl NetworkView {
             overlay.loading,
             response.hover_pos(),
         );
-        let on_bus = self.draw_buses(ui, &painter, net, layout, overlay, &response);
+        let on_bus =
+            self.draw_buses(ui, &painter, net, layout, overlay, on_circuit.is_some(), &response);
 
         // A bus wins a tie. The pointer sits within picking distance of both
         // whenever it is near a tap point, and the bus is the thing that can be
@@ -182,6 +194,29 @@ impl NetworkView {
         // the cursor.
         if let Some((c, at)) = on_circuit.filter(|_| !on_bus) {
             self.circuit_readout(ui, &painter, net, overlay.loading, c, at);
+            // A corridor is selectable now, not merely hoverable. Hover answers
+            // "what is under my cursor" and vanishes when you move to read the
+            // panel; a corridor's flow over a day is exactly the thing you
+            // cannot read while keeping the pointer on it.
+            if response.clicked()
+                && let Circuit::Line(e) = c
+            {
+                self.selected_line = Some(e);
+                self.selected = None;
+            }
+        }
+
+        // The selected corridor stays marked once the pointer leaves it.
+        if let Some(e) = self.selected_line
+            && let Some(line) = net.lines.get(e)
+            && let Some((a, b)) = self.segment(rect, self.visible(rect), layout, line.bus0, line.bus1)
+        {
+            let taps = TapSlots::build(net, layout);
+            let (a, b) = taps.place(a, b, line.bus0, line.bus1, Circuit::Line(e), self.bar_half());
+            painter.add(eframe::egui::Shape::line(
+                self.tapped(a, b),
+                Stroke::new(3.0, crate::theme::INK_STRONG),
+            ));
         }
         self.draw_key(&painter, rect, net, overlay.prices);
         self.draw_keys_hint(&painter, rect);
@@ -289,6 +324,7 @@ impl NetworkView {
         }
         if clear {
             self.selected = None;
+            self.selected_line = None;
         }
         // A fixed step rather than the scroll factor, so a held key walks the
         // zoom at a predictable rate and each press is undone by one press of
@@ -781,6 +817,7 @@ impl NetworkView {
         net: &Network,
         layout: &[Pos2],
         overlay: Overlay<'_>,
+        on_circuit: bool,
         response: &eframe::egui::Response,
     ) -> bool {
         let rect = response.rect;
@@ -975,7 +1012,19 @@ impl NetworkView {
         // deselect is to select something else, and there is no gesture for
         // "nothing".
         if response.clicked() {
-            self.selected = best.map(|(b, _)| b);
+            if let Some((b, _)) = best {
+                self.selected = Some(b);
+                self.selected_line = None;
+            } else if !on_circuit {
+                // Clearing on empty canvas clears *both*, or a stale corridor
+                // stays in the panel describing something the reader has
+                // visibly deselected. Guarded on `on_circuit` because a click
+                // that landed on a corridor reaches here too, having already
+                // selected it -- without the guard it would be cleared in the
+                // same frame it was chosen.
+                self.selected = None;
+                self.selected_line = None;
+            }
         }
         // Recorded for the cursor: over a bus the pointer should promise a
         // click, not a pan.

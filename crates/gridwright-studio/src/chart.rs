@@ -255,3 +255,21 @@ mod tests {
         assert_eq!(duration(&[3.0, f64::NAN, 1.0]), vec![3.0, 1.0]);
     }
 }
+
+/// A horizontal reference line — a rating, a limit, a target.
+///
+/// Clipped to the frame rather than drawn outside it: a corridor that never
+/// approaches its rating would otherwise put the line off the top of the chart,
+/// where it is both invisible and, if the axis were expanded to include it,
+/// would flatten the series it exists to be compared against.
+pub fn threshold(painter: &egui::Painter, ax: &Axes, v: f64, color: Color32) {
+    let (lo, hi) = ax.range();
+    if v < lo || v > hi {
+        return;
+    }
+    let y = ax.y(v);
+    painter.line_segment(
+        [pos2(ax.rect.left(), y), pos2(ax.rect.right(), y)],
+        Stroke::new(1.0, color.gamma_multiply(0.7)),
+    );
+}
