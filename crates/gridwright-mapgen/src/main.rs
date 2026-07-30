@@ -16,12 +16,7 @@
 //! **Release matters.** Triangulating the 10m land layer unoptimised takes
 //! minutes; the same work in release takes seconds.
 
-mod dbf;
-mod places;
-mod pyramid;
-mod shapefile;
-mod simplify;
-mod triangulate;
+use gridwright_mapgen::{dbf, places, pyramid, shapefile, simplify, triangulate};
 
 use std::path::{Path, PathBuf};
 

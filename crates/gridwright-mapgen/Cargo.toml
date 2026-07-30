@@ -10,8 +10,24 @@ rust-version.workspace = true
 # consumer of the engine has no use for it.
 publish = false
 
+# A library face as well as two binaries, so the shapefile, attribute-table and
+# gazetteer readers below are shared rather than written twice. Both tools exist
+# to turn public source data into an artefact this repository commits.
+[lib]
+name = "gridwright_mapgen"
+path = "src/lib.rs"
+
 [[bin]]
 name = "mapgen"
 path = "src/main.rs"
 
+# Builds an example network from published transmission data. Separate from
+# mapgen because it produces a network rather than a map, and needs the engine's
+# own types to do it.
+[[bin]]
+name = "netgen"
+path = "src/bin/netgen.rs"
+
 [dependencies]
+gridwright-net.workspace = true
+gridwright-io.workspace = true
