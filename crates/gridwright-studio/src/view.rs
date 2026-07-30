@@ -92,6 +92,14 @@ pub struct NetworkView {
     /// Whether the next fit jumps rather than travels. True for a new network.
     snap_next_fit: bool,
     /// The map under the network. Levels are decoded on first use.
+    /// Countries the reader has switched off, by the code the network file uses.
+    ///
+    /// Off rather than on, so the default is everything and a network with no
+    /// country codes at all is unaffected. A continental model is the only place
+    /// this matters: 7,893 substations across sixty countries is a question about
+    /// scale, and answering a question about Portugal inside it means being able
+    /// to put the other fifty-nine away.
+    hidden: std::collections::HashSet<String>,
     basemap: crate::basemap::Basemap,
     places: crate::places::Places,
     /// Which map layers the reader wants.
@@ -116,6 +124,7 @@ impl Default for NetworkView {
             goal: None,
             hovered: None,
             snap_next_fit: true,
+            hidden: std::collections::HashSet::new(),
             basemap: crate::basemap::Basemap::default(),
             places: crate::places::Places::load(),
             layers: crate::basemap::Show::default(),
@@ -610,7 +619,34 @@ impl NetworkView {
         let taps = TapSlots::build(net, layout);
         let by_voltage = voltages_are_stated(net);
 
+        // **The lowest voltage worth drawing at this zoom.**
+        //
+        // Semantic zoom on the network itself, and the same rule every published
+        // grid map follows: at continental scale ENTSO-E's own map shows the
+        // 380 kV backbone and nothing else, because ten thousand corridors in a
+        // thousand-pixel box is one texture rather than ten thousand lines. The
+        // European extract at fit zoom was exactly that -- the busbars had already
+        // been reduced to points and the *lines* became the mat.
+        //
+        // The threshold is chosen by how much room there is, not by a bus count,
+        // for the same reason the label rule is: eight thousand buses zoomed into
+        // one country has all the room it needs. It comes from the same spacing
+        // estimate the busbars use, so the two simplify together and a reader
+        // never sees points joined by nothing.
+        let floor_kv = self.voltage_floor(rect, layout, net);
+
         for (e, line) in net.lines.iter().enumerate() {
+            // Kept whatever its voltage if the reader is pointing at it or has
+            // selected it. A corridor that vanishes while being inspected is the
+            // one case where decluttering contradicts the interface.
+            // Either end hidden and the corridor goes nowhere, so it goes too.
+            if !self.shows(net, line.bus0) || !self.shows(net, line.bus1) {
+                continue;
+            }
+            let mine = self.selected_line == Some(e);
+            if !mine && by_voltage && line_kv(net, line) < floor_kv {
+                continue;
+            }
             let Some((a, b)) = self.segment(rect, visible, layout, line.bus0, line.bus1) else {
                 continue;
             };
@@ -1077,6 +1113,37 @@ impl NetworkView {
         // standing for all of them. Tied to the busbar's on-screen half-width,
         // because that is literally how much room there is to fan them across.
         let detail = half >= 16.0;
+
+        // **And the threshold below which a bar stops being a bar.**
+        //
+        // A busbar is drawn as a bar for a good reason, stated above, and that
+        // reason has a precondition: the bar has to be legible *as* a bar. On the
+        // 7,893-bus European network at continental zoom every bus is a 12-point
+        // bar with about two points between it and its neighbour, and eight
+        // thousand of them tile into a solid white mat. Nothing about that reads
+        // as a power system; the shape that says "busbar" only says it when there
+        // is space around it.
+        //
+        // So below that point each bus becomes a point. This is semantic zoom, the
+        // same rule the symbol count above follows: what to draw is a question
+        // about how much room there is, not about the model.
+        //
+        // Spacing is estimated from the visible count over the visible area rather
+        // than measured pairwise -- a nearest-neighbour distance over eight
+        // thousand buses every frame is the one thing this loop cannot afford, and
+        // the estimate is within a factor of two of the truth for anything that is
+        // not a single dense cluster.
+        let shown = layout
+            .iter()
+            .enumerate()
+            .filter(|(b, p)| visible.contains(**p) && self.shows(net, *b))
+            .count()
+            .max(1);
+        let spacing = (rect.area() / shown as f32).sqrt();
+        let crowded = spacing < half * 2.0;
+        // Never smaller than a pixel, or the network vanishes instead of
+        // simplifying.
+        let dot = (spacing * 0.22).clamp(1.0, thickness);
         let mut has_store = vec![false; net.buses.len()];
         for st in &net.storage {
             if let Some(f) = has_store.get_mut(st.bus) {
@@ -1098,6 +1165,9 @@ impl NetworkView {
         let mut best: Option<(usize, f32)> = None;
 
         for (b, _bus) in net.buses.iter().enumerate() {
+            if !self.shows(net, b) {
+                continue;
+            }
             let Some(&p) = layout.get(b) else { continue };
             if !visible.expand(half / self.zoom).contains(p) {
                 continue;
@@ -1132,7 +1202,15 @@ impl NetworkView {
                 _ => ink,
             };
 
-            let bar = Rect::from_center_size(s, vec2(half * 2.0, thickness));
+            // A short bar rather than a circle even when crowded: at two points
+            // across, a rectangle and a circle are the same handful of pixels, and
+            // the rectangle keeps the primitive and the picking geometry the same
+            // shape at every zoom.
+            let bar = if crowded {
+                Rect::from_center_size(s, vec2(dot * 2.0, dot))
+            } else {
+                Rect::from_center_size(s, vec2(half * 2.0, thickness))
+            };
             painter.rect_filled(bar, 0.0, ink);
 
             // Injection above the bar, withdrawal below — the convention a
@@ -1145,7 +1223,7 @@ impl NetworkView {
             // "generation here" and eight say "unreadable mat"; zoomed in, the
             // count is the useful part, because a substation with six machines
             // is a different place from one with one.
-            if has_gen[b] {
+            if has_gen[b] && !crowded {
                 // Machines take their carrier's colour, where the file named
                 // one. A generator symbol is its own shape class, so this
                 // collides with nothing: hue on a corridor means voltage, hue
@@ -1163,11 +1241,11 @@ impl NetworkView {
                     generator(painter, s + vec2(dx, -thickness * 0.5), glyph, c);
                 }
             }
-            if has_store[b] {
+            if has_store[b] && !crowded {
                 let x = if has_gen[b] { glyph * 2.6 } else { 0.0 };
                 storage(painter, s + vec2(x, -thickness * 0.5), glyph, ink);
             }
-            if has_load[b] {
+            if has_load[b] && !crowded {
                 // Loads keep the bus ink rather than taking a carrier colour.
                 // A load has no fuel -- it is demand, and what it is *for* is a
                 // different question the model does not answer. Colouring it by
@@ -1457,7 +1535,9 @@ impl NetworkView {
         }
 
         let mut order: Vec<usize> = (0..net.buses.len())
-            .filter(|b| layout.get(*b).is_some_and(|p| visible.contains(*p)))
+            .filter(|b| {
+                self.shows(net, *b) && layout.get(*b).is_some_and(|p| visible.contains(*p))
+            })
             .collect();
         order.sort_by(|a, b| {
             // The selected bus first, so it is never the one that loses a
@@ -1476,6 +1556,151 @@ impl NetworkView {
                 .then(a.cmp(b))
         });
         order
+    }
+
+    /// Whether a bus is drawn at all.
+    ///
+    /// One predicate, used by the bars, the labels, the corridors and the density
+    /// estimate that decides how much detail any of them get. If they disagreed the
+    /// reader would see corridors ending in nothing, or a network thinned to a
+    /// backbone because of buses that are not on screen.
+    fn shows(&self, net: &Network, b: usize) -> bool {
+        self.hidden.is_empty()
+            || net
+                .buses
+                .get(b)
+                .is_none_or(|bus| !self.hidden.contains(&bus.country))
+    }
+
+    /// Countries in this network, with how many buses each has.
+    ///
+    /// Ordered by bus count, largest first: on a continental model the answer a
+    /// reader is looking for is almost always one of the big grids, and an
+    /// alphabetical list puts Albania above Germany.
+    pub fn regions(net: &Network) -> Vec<(String, usize)> {
+        let mut counted: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for bus in &net.buses {
+            if !bus.country.trim().is_empty() {
+                *counted.entry(bus.country.as_str()).or_default() += 1;
+            }
+        }
+        let mut out: Vec<(String, usize)> = counted
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect();
+        // Count first, then the code, so the order is stable when two countries
+        // have the same number of buses.
+        out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        out
+    }
+
+    /// The gazetteer, for a caller that needs to name a country code.
+    pub fn places(&self) -> &crate::places::Places {
+        &self.places
+    }
+
+    pub fn region_hidden(&self, code: &str) -> bool {
+        self.hidden.contains(code)
+    }
+
+    pub fn set_region_hidden(&mut self, code: &str, hide: bool) {
+        if hide {
+            self.hidden.insert(code.to_string());
+        } else {
+            self.hidden.remove(code);
+        }
+    }
+
+    /// Show every country again.
+    pub fn show_all_regions(&mut self) {
+        self.hidden.clear();
+    }
+
+    /// Show only this country.
+    pub fn only_region(&mut self, net: &Network, code: &str) {
+        self.hidden = Self::regions(net)
+            .into_iter()
+            .map(|(c, _)| c)
+            .filter(|c| c != code)
+            .collect();
+    }
+
+    pub fn any_region_hidden(&self) -> bool {
+        !self.hidden.is_empty()
+    }
+
+    /// The lowest line voltage worth drawing, given how much room there is.
+    ///
+    /// Zero when everything fits, which is the common case and every case that is
+    /// not a continental model. Above that it climbs through the voltage levels
+    /// the network actually states, so the picture thins to a backbone rather than
+    /// to an arbitrary subset -- there is no point hiding 219 kV and keeping
+    /// 220 kV.
+    ///
+    /// Returns a *voltage*, not a count, because the reader can be told a voltage.
+    fn voltage_floor(&self, rect: Rect, layout: &[Pos2], net: &Network) -> f64 {
+        let visible = self.visible(rect);
+        let shown = layout
+            .iter()
+            .enumerate()
+            .filter(|(b, p)| visible.contains(**p) && self.shows(net, *b))
+            .count();
+        // Roughly one corridor per two hundred and fifty square points. A budget,
+        // not a limit -- see the floor below it.
+        let room = (rect.area() / 250.0) as usize;
+        if shown <= room.max(1) {
+            return 0.0;
+        }
+
+        // The levels this network states, ascending, so the floor lands on a real
+        // one. Collected each call rather than cached: it is one pass over the
+        // buses against the ten thousand segments this decides for.
+        let mut levels: Vec<f64> = net
+            .buses
+            .iter()
+            .map(|b| b.v_nom)
+            .filter(|v| *v > 0.0)
+            .collect();
+        levels.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        levels.dedup();
+        if levels.len() < 2 {
+            return 0.0;
+        }
+
+        // **A floor on how much may be hidden, and it is the part that matters.**
+        //
+        // Raising the floor until the count fits sounds right and is wrong, because
+        // the levels are not evenly populated. The European extract has 4,261 lines
+        // at 380 kV and above and 462 at 500 kV and above, and a budget landing
+        // between those two numbers jumps straight over the 380 kV backbone --
+        // which left Russia's 750 kV and Egypt's 500 kV on screen and the whole of
+        // western Europe blank. Technically the highest voltages present. Exactly
+        // the wrong picture.
+        //
+        // So the budget yields to keeping a sixth of the network. Better a denser
+        // picture than a picture of somewhere else.
+        let keep = (net.lines.len() / 6).max(1);
+        let mut chosen = 0.0;
+        for &floor in &levels {
+            let above = net
+                .lines
+                .iter()
+                .filter(|l| {
+                    line_kv(net, l) >= floor
+                        && self.shows(net, l.bus0)
+                        && self.shows(net, l.bus1)
+                })
+                .count();
+            if above < keep {
+                break;
+            }
+            chosen = floor;
+            if above <= room {
+                break;
+            }
+        }
+        chosen
     }
 
     /// Half-length and thickness of a bus bar at the current zoom.
@@ -1510,6 +1735,9 @@ impl NetworkView {
         let (half, thickness) = self.bar_metrics();
         let mut out = Vec::with_capacity(net.buses.len());
         for (b, bus) in net.buses.iter().enumerate() {
+            if !self.shows(net, b) {
+                continue;
+            }
             let Some(&p) = layout.get(b) else { continue };
             if !visible.contains(p) {
                 continue;
@@ -2052,6 +2280,114 @@ fn voltages_are_stated(net: &Network) -> bool {
 fn line_kv(net: &Network, line: &gridwright_net::Line) -> f64 {
     let at = |b: usize| net.buses.get(b).map(|b| b.v_nom).unwrap_or(0.0);
     at(line.bus0).max(at(line.bus1))
+}
+
+#[cfg(test)]
+mod region_tests {
+    use super::*;
+    use gridwright_net::{Bus, Snapshots};
+
+    fn net_of(countries: &[&str]) -> Network {
+        let mut net = Network::new(Snapshots::hourly(1));
+        for (i, c) in countries.iter().enumerate() {
+            net.buses.push(Bus {
+                name: format!("b{i}"),
+                country: (*c).to_string(),
+                v_nom: 380.0,
+                ..Bus::default()
+            });
+        }
+        net
+    }
+
+    #[test]
+    fn regions_are_counted_and_ordered_by_size() {
+        // Largest first, because on a continental model the grid a reader wants is
+        // almost always one of the big ones and an alphabetical list puts Albania
+        // above Germany.
+        let net = net_of(&["DE", "FR", "DE", "ES", "DE", "FR"]);
+        assert_eq!(
+            NetworkView::regions(&net),
+            vec![
+                ("DE".to_string(), 3),
+                ("FR".to_string(), 2),
+                ("ES".to_string(), 1)
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bus_with_no_country_is_not_a_region() {
+        // MATPOWER has no column for it, so every IEEE case would otherwise offer
+        // a filter with one blank entry in it.
+        let net = net_of(&["DE", "", "  ", "FR"]);
+        let regions = NetworkView::regions(&net);
+        assert_eq!(regions.len(), 2);
+        assert!(regions.iter().all(|(c, _)| !c.trim().is_empty()));
+    }
+
+    #[test]
+    fn ties_are_broken_so_the_list_does_not_reshuffle() {
+        // Two countries with the same bus count must come out in the same order
+        // every frame, or the list moves under the reader's cursor.
+        let net = net_of(&["FR", "DE", "ES", "AT"]);
+        let once = NetworkView::regions(&net);
+        assert_eq!(once, NetworkView::regions(&net));
+        assert_eq!(
+            once.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>(),
+            vec!["AT", "DE", "ES", "FR"],
+        );
+    }
+
+    #[test]
+    fn everything_shows_until_something_is_hidden() {
+        let net = net_of(&["DE", "FR"]);
+        let mut view = NetworkView::default();
+        assert!(!view.any_region_hidden());
+        assert!((0..net.buses.len()).all(|b| view.shows(&net, b)));
+
+        view.set_region_hidden("FR", true);
+        assert!(view.any_region_hidden());
+        assert!(view.shows(&net, 0));
+        assert!(!view.shows(&net, 1));
+    }
+
+    #[test]
+    fn isolating_one_country_hides_the_others_and_nothing_else() {
+        let net = net_of(&["DE", "FR", "ES"]);
+        let mut view = NetworkView::default();
+        view.only_region(&net, "FR");
+        assert!(!view.shows(&net, 0));
+        assert!(view.shows(&net, 1));
+        assert!(!view.shows(&net, 2));
+
+        // And it is reversible in one action, or a reader who isolated a country
+        // on a sixty-country model has to click fifty-nine times to get back.
+        view.show_all_regions();
+        assert!(!view.any_region_hidden());
+        assert!((0..net.buses.len()).all(|b| view.shows(&net, b)));
+    }
+
+    #[test]
+    fn hiding_a_country_that_is_not_in_the_network_changes_nothing_visible() {
+        // The filter is keyed by the code the file uses, and a stale code left over
+        // from a previous network must not blank the current one.
+        let net = net_of(&["DE", "FR"]);
+        let mut view = NetworkView::default();
+        view.set_region_hidden("ZZ", true);
+        assert!((0..net.buses.len()).all(|b| view.shows(&net, b)));
+    }
+
+    #[test]
+    fn a_country_with_no_code_is_never_hidden() {
+        // Otherwise switching off the blank entry that `regions` refuses to offer
+        // would still be reachable, and would hide every uncoded bus at once.
+        let net = net_of(&["", "DE"]);
+        let mut view = NetworkView::default();
+        view.set_region_hidden("DE", true);
+        assert!(view.shows(&net, 0), "an uncoded bus was hidden");
+        assert!(!view.shows(&net, 1));
+    }
 }
 
 #[cfg(test)]
