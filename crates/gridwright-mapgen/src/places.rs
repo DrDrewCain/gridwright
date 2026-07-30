@@ -35,7 +35,7 @@
 //!   i16  x, i16 y      quantised over the globe, as in the pyramid
 //!   u8   rank << 4 | kind
 //!   u16  population in thousands, saturating
-//!   u16  region label, u16 country label   (0xFFFF for none)
+//!   u16  region label, u16 country label, u16 iso label   (0xFFFF for none)
 //!   u8   name length, UTF-8 bytes
 //! ```
 
@@ -88,6 +88,13 @@ pub struct Place {
     /// First-level region: a state, province or Land. Empty if the source has none.
     pub region: String,
     pub country: String,
+    /// Two-letter country code.
+    ///
+    /// Carried so a country *name* can be found from the code a network file uses.
+    /// Transmission data identifies countries by ISO code and a reader wants
+    /// "Germany", and this table is the only public thing in the bundle that holds
+    /// both halves of that pair.
+    pub iso: String,
     pub kind: Kind,
     /// Natural Earth's `LABELRANK`, 1 to 10, lower being more prominent. Clamped
     /// into four bits, which is exactly the range it uses.
@@ -107,12 +114,14 @@ pub fn encode(places: &[Place]) -> Vec<u8> {
     for p in places {
         let region = intern(&p.region, &mut labels);
         let country = intern(&p.country, &mut labels);
+        let iso = intern(&p.iso, &mut labels);
         body.extend(quantise(p.lon, 180.0).to_le_bytes());
         body.extend(quantise(p.lat, 90.0).to_le_bytes());
         body.push((p.rank.min(15) << 4) | p.kind.tag());
         body.extend(((p.population / 1000).min(u16::MAX as u32) as u16).to_le_bytes());
         body.extend(region.to_le_bytes());
         body.extend(country.to_le_bytes());
+        body.extend(iso.to_le_bytes());
         let name = truncate(&p.name);
         body.push(name.len() as u8);
         body.extend(name.as_bytes());
@@ -186,10 +195,25 @@ mod tests {
             name: name.to_string(),
             region: region.to_string(),
             country: country.to_string(),
+            iso: if country.is_empty() { String::new() } else { "DE".into() },
             kind: Kind::City,
             rank: 3,
             population: 1_757_000,
         }
+    }
+
+    /// Where the first place record starts, past the interned label table.
+    ///
+    /// Computed rather than written down. The tests below used to carry the offset
+    /// as arithmetic on field widths, and every one of them broke the moment a
+    /// field was added -- which said nothing about the format being wrong.
+    fn first_record(blob: &[u8]) -> usize {
+        let labels = u16::from_le_bytes(blob[..2].try_into().unwrap()) as usize;
+        let mut at = 2;
+        for _ in 0..labels {
+            at += 1 + blob[at] as usize;
+        }
+        at + 4 // the place count
     }
 
     #[test]
@@ -219,8 +243,8 @@ mod tests {
         let blob = encode(&many);
         assert_eq!(
             u16::from_le_bytes(blob[..2].try_into().unwrap()),
-            2,
-            "region and country, once each",
+            3,
+            "region, country and code, once each",
         );
         let needle = "Baden-Württemberg".as_bytes();
         let copies = blob.windows(needle.len()).filter(|w| *w == needle).count();
@@ -234,9 +258,16 @@ mod tests {
         // would claim to be in Uruguay.
         let blob = encode(&[place("Somewhere", "", "")]);
         assert_eq!(u16::from_le_bytes(blob[..2].try_into().unwrap()), 0);
-        // header, then count, x, y, packed, population
-        let at = 2 + 4 + 2 + 2 + 1 + 2;
-        assert_eq!(u16::from_le_bytes(blob[at..at + 2].try_into().unwrap()), NO_LABEL);
+        // x, y, packed, population, then the three label references.
+        let at = first_record(&blob) + 2 + 2 + 1 + 2;
+        for k in 0..3 {
+            let o = at + k * 2;
+            assert_eq!(
+                u16::from_le_bytes(blob[o..o + 2].try_into().unwrap()),
+                NO_LABEL,
+                "label {k} points at a name",
+            );
+        }
     }
 
     #[test]
@@ -247,7 +278,7 @@ mod tests {
                 p.rank = rank;
                 p.kind = kind;
                 let blob = encode(&[p]);
-                let packed = blob[2 + 4 + 4];
+                let packed = blob[first_record(&blob) + 4];
                 assert_eq!(packed >> 4, rank, "rank {rank}");
                 assert_eq!(packed & 0x0F, kind.tag(), "kind {kind:?}");
             }
@@ -261,7 +292,7 @@ mod tests {
         let mut p = place("X", "", "");
         p.rank = 200;
         let blob = encode(&[p]);
-        assert_eq!(blob[2 + 4 + 4] >> 4, 15);
+        assert_eq!(blob[first_record(&blob) + 4] >> 4, 15);
     }
 
     #[test]
@@ -269,7 +300,7 @@ mod tests {
         let mut p = place("X", "", "");
         p.population = 4_000_000_000;
         let blob = encode(&[p]);
-        let at = 2 + 4 + 4 + 1;
+        let at = first_record(&blob) + 4 + 1;
         assert_eq!(u16::from_le_bytes(blob[at..at + 2].try_into().unwrap()), u16::MAX);
     }
 

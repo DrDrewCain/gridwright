@@ -139,7 +139,15 @@ fn read_places(stem: &Path) -> Result<Vec<Place>, String> {
     let shapes = shapefile::read_by_record(&shp).map_err(|e| e.to_string())?;
     let rows = dbf::read(
         &dbf,
-        &["NAME", "ADM1NAME", "ADM0NAME", "FEATURECLA", "POP_MAX", "LABELRANK"],
+        &[
+            "NAME",
+            "ADM1NAME",
+            "ADM0NAME",
+            "FEATURECLA",
+            "POP_MAX",
+            "LABELRANK",
+            "ISO_A2",
+        ],
     )
     .map_err(|e| e.to_string())?;
 
@@ -175,6 +183,12 @@ fn read_places(stem: &Path) -> Result<Vec<Place>, String> {
             name,
             region: row.values[1].clone(),
             country: row.values[2].clone(),
+            // Natural Earth writes -99 where a place has no recognised code, and
+            // an interned "-99" would become a country nothing can match.
+            iso: match row.values[6].trim() {
+                "-99" | "" => String::new(),
+                code => code.to_string(),
+            },
             rank,
             population,
         });
