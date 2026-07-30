@@ -92,6 +92,16 @@ pub struct NetworkView {
     /// Whether the next fit jumps rather than travels. True for a new network.
     snap_next_fit: bool,
     /// The map under the network. Levels are decoded on first use.
+    /// Whether the last frame reduced the busbars to points.
+    ///
+    /// Set by `draw_buses` and read by `draw_regions`, which runs after it. It
+    /// decides who wins a click: at a zoom where individual buses are two-pixel
+    /// dots, a reader clicking a country's name means the country, and the bus that
+    /// happens to be within picking distance is not what they were pointing at.
+    /// Threading it through as an argument would mean returning it from one draw
+    /// call to hand to another, which is what the comment in `draw_buses` about the
+    /// eighth argument was already about.
+    crowded: bool,
     /// Countries the reader has switched off, by the code the network file uses.
     ///
     /// Off rather than on, so the default is everything and a network with no
@@ -124,6 +134,7 @@ impl Default for NetworkView {
             goal: None,
             hovered: None,
             snap_next_fit: true,
+            crowded: false,
             hidden: std::collections::HashSet::new(),
             basemap: crate::basemap::Basemap::default(),
             places: crate::places::Places::load(),
@@ -308,6 +319,10 @@ impl NetworkView {
             }
         }
 
+        // Recorded before the network is drawn, so a click that turns out to have
+        // been meant for a country name can be undone.
+        let selected_before = self.selected;
+
         let on_circuit = self.draw_edges(
             &painter,
             rect,
@@ -318,6 +333,42 @@ impl NetworkView {
         );
         self.circuit_under_pointer = on_circuit.is_some();
         let on_bus = self.draw_buses(ui, &painter, net, layout, overlay, &response);
+
+        // Country names last, over everything, as a watermark.
+        //
+        // **Under the network was the obvious place and it was wrong.** Drawn there
+        // the names were legible over open sea and buried in exactly the dense
+        // regions a reader needs them -- half a word showing through a mat of
+        // corridors, which reads as a label that has been cut off rather than one
+        // that is behind something.
+        //
+        // So: on top, and quiet enough not to compete. Large, letter-spaced, in a
+        // fraction of the dimmest ink, with a dark halo so it survives crossing a
+        // bright 380 kV corridor. That is the register a country name belongs in on
+        // any map -- present when looked for, ignorable otherwise -- and it keeps
+        // faith with the finding this basemap is built around, which is about a
+        // background competing with the grid rather than about it being visible.
+        if let Some(frame) = geo
+            && let Some(code) =
+                self.draw_regions(ui, &painter, rect, net, layout, frame, on_bus)
+        {
+            // The bus this click also landed on is given back. At a zoom where the
+            // busbars are points a country name covers hundreds of them, so the
+            // click that isolated Spain had already selected whichever one happened
+            // to be under the word -- and the inspector then described a substation
+            // the reader had not asked about.
+            self.selected = selected_before;
+            // Clicking a name isolates that country; clicking it again brings the
+            // rest back. Two states rather than a per-country toggle, because the
+            // gesture is "show me this one" and the way out has to be the same
+            // gesture -- otherwise a reader who isolated Portugal has to go and
+            // find the panel to escape it.
+            if self.hidden.is_empty() {
+                self.only_region(net, &code);
+            } else {
+                self.show_all_regions();
+            }
+        }
 
         // A bus wins a tie. The pointer sits within picking distance of both
         // whenever it is near a tap point, and the bus is the thing that can be
@@ -1141,6 +1192,7 @@ impl NetworkView {
             .max(1);
         let spacing = (rect.area() / shown as f32).sqrt();
         let crowded = spacing < half * 2.0;
+        self.crowded = crowded;
         // Never smaller than a pixel, or the network vanishes instead of
         // simplifying.
         let dot = (spacing * 0.22).clamp(1.0, thickness);
@@ -1558,6 +1610,148 @@ impl NetworkView {
         order
     }
 
+    /// Country names on the map, and the one the reader clicked.
+    ///
+    /// **Asked for because a list of names in a panel is the wrong place for them.**
+    /// A reader looking at a continental network wants to know which country they
+    /// are pointing at, and a name in a side panel makes them work that out from
+    /// bus counts. On the map the answer is where the question is.
+    ///
+    /// Clicking one isolates it, and clicking it again brings the rest back — so
+    /// the countries *are* the regions, switchable in place, and the panel list is
+    /// the index rather than the only route.
+    ///
+    /// Drawn under the network and above the coastline, in the dimmest ink that is
+    /// still readable at size. A country label competing with a busbar for
+    /// attention would be the background camouflaging the foreground, which is the
+    /// finding this whole basemap is built around.
+    fn draw_regions(
+        &self,
+        ui: &mut eframe::egui::Ui,
+        painter: &eframe::egui::Painter,
+        rect: Rect,
+        net: &Network,
+        layout: &[Pos2],
+        frame: crate::layout::Frame,
+        blocked: bool,
+    ) -> Option<String> {
+        let extents = Self::region_extents(net, layout, frame);
+        if extents.len() < 2 {
+            return None;
+        }
+
+        let pointer = ui.input(|i| i.pointer.hover_pos());
+        let clicked = ui.input(|i| i.pointer.primary_clicked());
+        let mut hit = None;
+        // Placed largest-first so a big country wins a collision with a small one
+        // it encloses, rather than the alphabetical order the extents come in.
+        let mut order: Vec<usize> = (0..extents.len()).collect();
+        order.sort_by(|a, b| {
+            extents[*b]
+                .1
+                .area()
+                .partial_cmp(&extents[*a].1.area())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut taken: Vec<Rect> = Vec::new();
+
+        for i in order {
+            let (code, box_, centre) = &extents[i];
+            let on_screen = Rect::from_min_max(
+                self.screen_of(rect, frame.apply(box_.min)),
+                self.screen_of(rect, frame.apply(box_.max)),
+            );
+            // Sized to the country, so a label reads as belonging to the area it
+            // covers rather than floating at a fixed size over anything.
+            let size = (on_screen.width().min(on_screen.height() * 2.0) * 0.11).clamp(9.0, 34.0);
+            // Skip a country with no room for its own name. On a continental view
+            // that is Luxembourg and Malta; zoom in and they appear.
+            if on_screen.width() < size * 2.5 || !rect.intersects(on_screen) {
+                continue;
+            }
+
+            let hidden = self.hidden.contains(code);
+            // The name where the gazetteer can vouch for the code against these
+            // buses, and the code itself where it cannot -- never a guess.
+            let pad = (box_.size() * 0.25).max(Vec2::splat(0.02));
+            let label = self
+                .places
+                .country_named_within(code, box_.expand2(pad))
+                .unwrap_or(code);
+
+            let at = self.screen_of(rect, frame.apply(*centre));
+            // Letter-spaced, which is what says "region" rather than "thing".
+            // Every atlas does it and it is the cheapest way to keep a large word
+            // from reading as a label attached to whatever it happens to overlap.
+            let spaced: String = label
+                .to_uppercase()
+                .chars()
+                .flat_map(|c| [c, ' '])
+                .collect();
+            let galley = painter.layout_no_wrap(
+                spaced.trim_end().to_string(),
+                FontId::proportional(size),
+                crate::theme::INK_DIM,
+            );
+            let where_ = Rect::from_center_size(at, galley.size()).expand(4.0);
+            if !rect.contains(where_.center()) || taken.iter().any(|t| t.intersects(where_)) {
+                continue;
+            }
+            taken.push(where_);
+
+            // A busbar under the pointer wins -- it is the more specific thing --
+            // but only while a busbar is still a thing a reader can aim at. Once
+            // the view is dense enough that every bus is a two-pixel dot, the
+            // pointer is always within picking distance of one, and requiring an
+            // empty spot made the country names unclickable across the whole of
+            // central Europe. Which is where they are most useful.
+            let over = (!blocked || self.crowded)
+                && pointer.is_some_and(|p| where_.contains(p));
+            // A hidden country keeps its name and loses everything else, which is
+            // what makes it possible to switch back on. Struck through, because a
+            // dimmer label alone reads as a country that is merely far away.
+            let ink = if over {
+                crate::theme::INK_STRONG
+            } else if hidden {
+                crate::theme::INK_DIM.gamma_multiply(0.5)
+            } else {
+                crate::theme::INK_DIM.gamma_multiply(0.42)
+            };
+            // A halo, not a plate. A filled plate behind a word this large would
+            // punch a hole in the network under it, which is the one thing a label
+            // drawn on top must not do.
+            let origin = where_.min + Vec2::splat(4.0);
+            for d in [
+                Vec2::new(1.5, 0.0),
+                Vec2::new(-1.5, 0.0),
+                Vec2::new(0.0, 1.5),
+                Vec2::new(0.0, -1.5),
+            ] {
+                painter.galley(
+                    origin + d,
+                    galley.clone(),
+                    crate::theme::SLATE_DEEP.gamma_multiply(0.75),
+                );
+            }
+            painter.galley(origin, galley, ink);
+            if hidden {
+                let y = where_.center().y;
+                painter.line_segment(
+                    [pos2(where_.left() + 4.0, y), pos2(where_.right() - 4.0, y)],
+                    Stroke::new(1.0, ink),
+                );
+            }
+            if over {
+                ui.ctx()
+                    .set_cursor_icon(eframe::egui::CursorIcon::PointingHand);
+                if clicked {
+                    hit = Some(code.clone());
+                }
+            }
+        }
+        hit
+    }
+
     /// Whether a bus is drawn at all.
     ///
     /// One predicate, used by the bars, the labels, the corridors and the density
@@ -1570,6 +1764,46 @@ impl NetworkView {
                 .buses
                 .get(b)
                 .is_none_or(|bus| !self.hidden.contains(&bus.country))
+    }
+
+    /// Countries in this network, each with the box its buses occupy.
+    ///
+    /// In **Mercator**, so it can be asked of the gazetteer, which is the only
+    /// thing that can turn a code into a name — and which must be asked about the
+    /// right part of the world, because a file's codes are only mostly ISO. See
+    /// `Places::country_named_within`.
+    pub fn region_extents(
+        net: &Network,
+        layout: &[Pos2],
+        frame: crate::layout::Frame,
+    ) -> Vec<(String, Rect, Pos2)> {
+        let mut boxes: std::collections::HashMap<&str, (Rect, Pos2, f32)> =
+            std::collections::HashMap::new();
+        for (b, bus) in net.buses.iter().enumerate() {
+            let code = bus.country.trim();
+            if code.is_empty() {
+                continue;
+            }
+            let Some(&p) = layout.get(b) else { continue };
+            let m = frame.invert(p);
+            let e = boxes
+                .entry(code)
+                .or_insert((Rect::from_min_max(m, m), Pos2::ZERO, 0.0));
+            e.0 = e.0.union(Rect::from_min_max(m, m));
+            // A running sum, turned into a mean below. The *centroid* rather than
+            // the box centre, because a country like Norway has its buses down one
+            // edge of its bounding box and the centre of that box is the sea.
+            e.1 += m.to_vec2();
+            e.2 += 1.0;
+        }
+        let mut out: Vec<(String, Rect, Pos2)> = boxes
+            .into_iter()
+            .map(|(code, (b, sum, n))| {
+                (code.to_string(), b, (sum.to_vec2() / n.max(1.0)).to_pos2())
+            })
+            .collect();
+        out.sort_by(|a, b| a.0.cmp(&b.0));
+        out
     }
 
     /// Countries in this network, with how many buses each has.
@@ -1618,12 +1852,24 @@ impl NetworkView {
     }
 
     /// Show only this country.
+    ///
+    /// The buses with no country code go too. They are kept visible by every other
+    /// path through this filter -- switching one country off should not blank a
+    /// bus that never claimed to be anywhere -- but *isolating* a country and
+    /// leaving 1,195 uncoded nodes scattered over the rest of the continent is not
+    /// isolation, it is a network with the recognisable parts removed.
+    ///
+    /// The empty string is never offered as a row, so this is the only way it can
+    /// be set, and `show_all_regions` clears it with everything else.
     pub fn only_region(&mut self, net: &Network, code: &str) {
         self.hidden = Self::regions(net)
             .into_iter()
             .map(|(c, _)| c)
             .filter(|c| c != code)
             .collect();
+        if !code.is_empty() {
+            self.hidden.insert(String::new());
+        }
     }
 
     pub fn any_region_hidden(&self) -> bool {
@@ -2365,6 +2611,23 @@ mod region_tests {
         // on a sixty-country model has to click fifty-nine times to get back.
         view.show_all_regions();
         assert!(!view.any_region_hidden());
+        assert!((0..net.buses.len()).all(|b| view.shows(&net, b)));
+    }
+
+    #[test]
+    fn isolating_a_country_also_puts_away_the_buses_with_no_country() {
+        // Otherwise isolating Spain leaves every uncoded node in the extract -- 1,195
+        // of them, scattered across the continent -- on screen, which is a network
+        // with the recognisable parts removed rather than one country shown.
+        let net = net_of(&["ES", "FR", "", ""]);
+        let mut view = NetworkView::default();
+        view.only_region(&net, "ES");
+        assert!(view.shows(&net, 0), "the isolated country is hidden");
+        assert!(!view.shows(&net, 1));
+        assert!(!view.shows(&net, 2), "an uncoded bus survived isolation");
+        assert!(!view.shows(&net, 3));
+
+        view.show_all_regions();
         assert!((0..net.buses.len()).all(|b| view.shows(&net, b)));
     }
 

@@ -21,6 +21,11 @@
 //! impedances, so the studio arranges them by relaxing the topology and says so in
 //! the status strip. The basemap and the place names stay off, deliberately: a
 //! coastline under invented positions is a map of somewhere that does not exist.
+//! One caveat that belongs next to the list rather than inside it: `eu-grid` builds
+//! a program of 18,737 rows, which is past what this page will solve inline. It
+//! loads, draws, filters and inspects; pressing Solve says so rather than freezing
+//! the tab, and the network solves in about a second natively.
+//!
 //! Two cases here do have positions. `demo-grid` is the default, being small
 //! enough to read and the only one with a day of hourly data. `eu-grid` is the
 //! other, and it is the reason the basemap exists: 7,893 named substations across
@@ -75,7 +80,7 @@ pub const ALL: &[Sample] = &[
     Sample {
         name: "eu-grid.json",
         label: "Europe — the ENTSO-E map, 7,893 substations",
-        note: "real positions and names at continental scale",
+        note: "real positions and names at continental scale — too large to solve in a browser tab",
         buses: 7893,
         located: true,
         abstracts: "the GridKit extract of the ENTSO-E interactive map (May 2016, unofficial) joined to published national demand; where the demand sits and what each fuel costs are this project's assumptions, not published data",

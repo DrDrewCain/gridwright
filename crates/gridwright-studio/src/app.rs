@@ -486,17 +486,33 @@ impl StudioApp {
     /// inside it means being able to put the other fifty-nine away.
     fn regions(&mut self, ui: &mut egui::Ui) {
         let Some(net) = self.network() else { return };
-        let regions = crate::NetworkView::regions(net);
-        if regions.len() < 2 {
+        let counts = crate::NetworkView::regions(net);
+        if counts.len() < 2 {
             return;
         }
         // Names resolved before the list is drawn. The gazetteer lives on the view
         // and switching a country off mutates the view, so reading one while
         // holding the other is a borrow this cannot have.
-        let regions: Vec<(String, usize, Option<String>)> = regions
+        //
+        // Each code is looked up **against its own buses' extent**, widened a
+        // little, so a code that does not mean what ISO says shows the code rather
+        // than a country on the other side of the world. The extract writes PA for
+        // the Palestinian territories and NI for Northern Ireland, and a blind
+        // lookup called them Panama and Nicaragua.
+        let extents = crate::NetworkView::region_extents(net, &self.positions, self.frame);
+        let regions: Vec<(String, usize, Option<String>)> = counts
             .into_iter()
             .map(|(code, buses)| {
-                let name = self.view.places().country_named(&code).map(str::to_string);
+                let name = extents
+                    .iter()
+                    .find(|(c, _, _)| *c == code)
+                    .and_then(|(_, box_, _)| {
+                        let pad = (box_.size() * 0.25).max(egui::Vec2::splat(0.02));
+                        self.view
+                            .places()
+                            .country_named_within(&code, box_.expand2(pad))
+                    })
+                    .map(str::to_string);
                 (code, buses, name)
             })
             .collect();
@@ -553,11 +569,12 @@ impl StudioApp {
                     // country, and reaching it by switching off fifty-nine others
                     // is not a route anybody would take.
                     if row.clicked() && ui.input(|i| i.modifiers.alt) {
-                        self.pending_only_region = Some(code.clone());
+                        self.pending_only_region = Some(code.to_string());
                     }
                     if named.is_none() {
                         row.on_hover_text(format!(
-                            "{code}: the gazetteer has no country by this code"
+                            "{code}: the file's own code — the gazetteer has no \
+                             country of that code anywhere near these buses"
                         ));
                     } else {
                         row.on_hover_text("alt-click to show only this one");
