@@ -277,7 +277,13 @@ pub fn draw(
     for r in reserved {
         taken.claim(*r);
     }
-    let font = FontId::monospace(9.5);
+    // **Proportional, not monospace.** A monospace face is right for the numbers
+    // in the panel, where a column of them has to share a decimal position, and
+    // wrong for a place name: it forces even the narrow letters to a full em, and
+    // at ten points the result is a row of blocky glyphs that reads as a
+    // low-resolution image of text rather than as text. Every atlas sets its place
+    // names proportionally.
+    let font = FontId::proportional(10.5);
     let mut drawn = 0usize;
 
     for p in places.within(extent, limit) {
@@ -299,18 +305,21 @@ pub fn draw(
             continue;
         }
 
-        // A halo rather than a filled plate. A plate punches a hole in the
-        // coastline under it and the map stops being continuous; a halo lets the
-        // line show through while keeping the glyph edges legible.
-        for d in [
-            Vec2::new(1.0, 0.0),
-            Vec2::new(-1.0, 0.0),
-            Vec2::new(0.0, 1.0),
-            Vec2::new(0.0, -1.0),
-        ] {
-            painter.galley(box_.min + Vec2::splat(1.5) + d, galley.clone(), tone.halo);
-        }
-        painter.galley(box_.min + Vec2::splat(1.5), galley.clone(), tone.name);
+        // One shadow, offset half a point, rather than a ring of four.
+        //
+        // A plate is wrong here -- it punches a hole in the coastline under it and
+        // the map stops being continuous. But the four-way halo that replaced it was
+        // worse in a way that took a fresh pair of eyes to name: the glyph strokes
+        // at this size are about one point wide, so drawing the whole word four
+        // times a point away in each direction does not outline the letters, it
+        // fattens them into blobs. It is the single biggest reason the labels looked
+        // bitty.
+        //
+        // A single offset copy still lifts the text off a line crossing behind it,
+        // and leaves the letterforms alone.
+        let origin = box_.min + Vec2::splat(1.5);
+        painter.galley(origin + Vec2::splat(0.5), galley.clone(), tone.halo);
+        painter.galley(origin, galley.clone(), tone.name);
 
         let r = p.kind.dot();
         match p.kind {

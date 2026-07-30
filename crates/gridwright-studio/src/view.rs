@@ -1650,10 +1650,13 @@ impl NetworkView {
             );
             // Sized to the country, so a label reads as belonging to the area it
             // covers rather than floating at a fixed size over anything.
-            let size = (on_screen.width().min(on_screen.height() * 2.0) * 0.11).clamp(9.0, 34.0);
-            // Skip a country with no room for its own name. On a continental view
-            // that is Luxembourg and Malta; zoom in and they appear.
-            if on_screen.width() < size * 2.5 || !rect.intersects(on_screen) {
+            let size = (on_screen.width().min(on_screen.height() * 2.0) * 0.11).clamp(11.0, 34.0);
+            // Skip a country with no room for its own name, and be generous about
+            // what counts as room. Sixty countries on one continental view produced
+            // a band of eleven-point words across the Balkans and the Levant that
+            // was denser than the coastline under it -- an atlas names the countries
+            // there when you zoom to them, and so does this.
+            if on_screen.width() < size * 3.5 || !rect.intersects(on_screen) {
                 continue;
             }
             // **And skip a country the reader is inside.** A country name is for
@@ -1723,24 +1726,40 @@ impl NetworkView {
                 hit = Some(code.clone());
             }
             // A hidden country keeps its name and loses everything else, which is
-            // what makes it possible to switch back on. Struck through, because a
-            // dimmer label alone reads as a country that is merely far away.
+            // what makes it possible to switch back on.
+            //
+            // **Told apart by weight alone.** A rule through the word was the first
+            // attempt and it was a bad one: struck through letter-spaced small caps
+            // does not read as "switched off", it reads as text that has been
+            // corrupted, and at the sizes small countries get the line runs straight
+            // through the letterforms and destroys them. The signal a reader
+            // actually uses is that the country's network is gone; the label only
+            // has to stay legible and clickable, and the panel says which is which
+            // without ambiguity.
             let ink = if over {
                 crate::theme::INK_STRONG
             } else if hidden {
-                crate::theme::INK_DIM.gamma_multiply(0.5)
+                crate::theme::INK_DIM.gamma_multiply(0.22)
             } else {
                 crate::theme::INK_DIM.gamma_multiply(0.42)
             };
             // A halo, not a plate. A filled plate behind a word this large would
             // punch a hole in the network under it, which is the one thing a label
             // drawn on top must not do.
+            //
+            // **The offset scales with the type.** A fixed one-and-a-half points is
+            // a tenth of a thirty-point word and a seventh of an eleven-point one,
+            // and at the small end four copies that far out stop outlining the
+            // glyphs and start fattening them. This is the same mistake that made
+            // the place labels look bitty, and country names are drawn at a range of
+            // sizes so it shows at one end and not the other.
             let origin = where_.min + Vec2::splat(4.0);
+            let spread = (size * 0.055).clamp(0.5, 1.6);
             for d in [
-                Vec2::new(1.5, 0.0),
-                Vec2::new(-1.5, 0.0),
-                Vec2::new(0.0, 1.5),
-                Vec2::new(0.0, -1.5),
+                Vec2::new(spread, 0.0),
+                Vec2::new(-spread, 0.0),
+                Vec2::new(0.0, spread),
+                Vec2::new(0.0, -spread),
             ] {
                 painter.galley(
                     origin + d,
@@ -1749,13 +1768,6 @@ impl NetworkView {
                 );
             }
             painter.galley(origin, galley, ink);
-            if hidden {
-                let y = where_.center().y;
-                painter.line_segment(
-                    [pos2(where_.left() + 4.0, y), pos2(where_.right() - 4.0, y)],
-                    Stroke::new(1.0, ink),
-                );
-            }
             if over {
                 ui.ctx()
                     .set_cursor_icon(eframe::egui::CursorIcon::PointingHand);
