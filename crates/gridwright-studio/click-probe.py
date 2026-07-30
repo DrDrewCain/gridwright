@@ -19,7 +19,7 @@ different places.
 
 usage: click-probe.py <url> <out.png> [<x> <y>]...
 """
-import base64, json, subprocess, sys, time, urllib.request
+import base64, json, os, subprocess, sys, time, urllib.request
 import websocket
 
 URL, OUT = sys.argv[1], sys.argv[2]
@@ -28,6 +28,9 @@ URL, OUT = sys.argv[1], sys.argv[2]
 # window and a fraction of the picture are two different places.
 CLICKS = [(float(a), float(b)) for a, b in zip(sys.argv[3::2], sys.argv[4::2])]
 W, H, PORT = 1440, 940, 9333
+# Device pixel ratio to emulate. A Retina display is 2, and rendering at 1 there is
+# what "the text looks low-resolution" means -- so it has to be checkable.
+DPR = float(os.environ.get("PROBE_DPR", "1"))
 
 chrome = subprocess.Popen([
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -36,7 +39,7 @@ chrome = subprocess.Popen([
     f"--remote-debugging-port={PORT}", f"--window-size={W},{H}",
     # Chrome refuses a WebSocket from an origin it was not told to expect.
     "--remote-allow-origins=*",
-    "--no-first-run", "--user-data-dir=/tmp/cdp_profile", URL,
+    "--no-first-run", f"--user-data-dir=/tmp/cdp_profile_{PORT}", URL,
 ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 def targets():
@@ -61,6 +64,10 @@ try:
             msg = json.loads(ws.recv())
             if msg.get("id") == n[0]:
                 return msg.get("result", {})
+
+    if DPR != 1.0:
+        send("Emulation.setDeviceMetricsOverride", width=W, height=H,
+             deviceScaleFactor=DPR, mobile=False)
 
     # The wasm has to instantiate and lay out before a click means anything.
     time.sleep(14)

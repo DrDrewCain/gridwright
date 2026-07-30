@@ -54,6 +54,11 @@ pub struct StudioApp {
     /// on it would leave the picker showing nothing as selected -- or worse,
     /// marking the wrong row when two cases share a stem.
     from_sample: Option<usize>,
+    /// The cut network the last solve actually ran on, if it was a cut one.
+    ///
+    /// Kept because a result indexed by a cut network cannot be drawn on the whole
+    /// file without the maps it carries.
+    submodel: Option<crate::submodel::Submodel>,
     /// A country to isolate, applied at the end of the frame.
     ///
     /// Deferred like the others: the region list is drawn while `self.loaded` is
@@ -133,6 +138,7 @@ impl StudioApp {
             palette: crate::palette::Palette::default(),
             scrub_to: std::cell::Cell::new(None),
             from_sample: None,
+            submodel: None,
             pending_only_region: None,
             pending_sample: None,
             solve_took: None,
@@ -899,14 +905,36 @@ impl StudioApp {
         let busy = self.backend.is_busy();
         let can_solve = ready && !busy && self.loaded.is_some();
 
-        if ui
-            .add_enabled(can_solve, egui::Button::new("Solve"))
-            .clicked()
-            && let Some(net) = self.loaded.as_ref().map(|l| &l.network)
-        {
-            self.backend.submit(net);
-            self.outcome = None;
+        // The label says what will be solved, because with countries switched off
+        // that is not the whole file and a button reading "Solve" would not say so.
+        let shown = self.solvable_buses();
+        let whole = self.loaded.as_ref().map_or(0, |l| l.network.buses.len());
+        let label = if shown < whole {
+            format!("Solve {shown} of {whole} buses")
+        } else {
+            "Solve".to_string()
+        };
+        if ui.add_enabled(can_solve, egui::Button::new(label)).clicked() {
             self.peak_shed.clear();
+            self.solve();
+        }
+
+        // What severing the interconnectors costs, said before the answer arrives
+        // rather than after. A net importer solved as an island sheds load it would
+        // never shed, and a reader who does not know that will read the shedding as
+        // a finding about the country.
+        if shown < whole {
+            ui.add_space(crate::theme::UNIT);
+            ui.label(
+                egui::RichText::new(
+                    "solved as an island: every tie to a hidden country is cut, so \
+                     an importer will shed and an exporter will idle. A region cut \
+                     out of a map extract is many small islands, and this page's \
+                     solver may return no answer for one — HiGHS solves them.",
+                )
+                .size(11.0)
+                .color(crate::theme::ALARM),
+            );
         }
 
         if !ready {
@@ -1543,13 +1571,7 @@ impl StudioApp {
             // they searched for the moment they pan.
             Action::GoTo(b) => self.view.reveal(b),
             Action::GoToLine(e) => self.view.reveal_line(e),
-            Action::Solve => {
-                if let Some(net) = self.loaded.as_ref().map(|l| &l.network) {
-                    self.backend.submit(net);
-                    self.outcome = None;
-                    self.reduce();
-                }
-            }
+            Action::Solve => self.solve(),
             Action::Fit => self.view.refit(),
             Action::OpenSample(i) => self.open_sample(i),
             Action::Horizon => {
@@ -1622,6 +1644,53 @@ impl StudioApp {
         ));
     }
 
+    /// How many buses the next solve would cover.
+    ///
+    /// Which is not the same as how many the file has, once countries are switched
+    /// off, and the difference is the whole reason the button says which.
+    fn solvable_buses(&self) -> usize {
+        let Some(net) = self.loaded.as_ref().map(|l| &l.network) else {
+            return 0;
+        };
+        if !self.view.any_region_hidden() {
+            return net.buses.len();
+        }
+        (0..net.buses.len())
+            .filter(|b| self.view.shows(net, *b))
+            .count()
+    }
+
+    /// Solve what is on screen.
+    ///
+    /// **The region filter decides what gets solved, not just what gets drawn.** It
+    /// was a view filter to begin with, and on the European extract that made it a
+    /// control that could not help with the thing a reader most wanted: the whole
+    /// network builds 18,737 rows, past what a browser tab will solve without
+    /// freezing, and switching fifty-nine countries off did nothing about it. One
+    /// country is a few hundred buses.
+    ///
+    /// The cut network is an **island** -- every interconnector to a country that was
+    /// switched off is severed -- and `submodel` explains why that is the only
+    /// self-consistent choice and what it costs. The panel says so beside the result,
+    /// because a net importer solved this way sheds load it would never shed.
+    fn solve(&mut self) {
+        let Some(net) = self.loaded.as_ref().map(|l| &l.network) else {
+            return;
+        };
+        self.submodel = self
+            .view
+            .any_region_hidden()
+            .then(|| crate::submodel::cut(net, |b| self.view.shows(net, b)))
+            .filter(|sub| !sub.net.buses.is_empty());
+
+        match &self.submodel {
+            Some(sub) => self.backend.submit(&sub.net),
+            None => self.backend.submit(net),
+        }
+        self.outcome = None;
+        self.reduce();
+    }
+
     /// Reduce the solve's per-bus, per-snapshot series to one number per bus,
     /// which is what the canvas can draw.
     ///
@@ -1640,8 +1709,21 @@ impl StudioApp {
     /// because it is a pass over the whole horizon and the picture it produces
     /// does not change between frames.
     fn reduce(&mut self) {
-        let reduced = match (&self.outcome, &self.loaded) {
-            (Some(Ok(solved)), Some(loaded)) => {
+        let reduced = match (&self.outcome, &self.loaded, &self.submodel) {
+            // A solve of a cut network is indexed by the cut network, and the canvas
+            // draws the whole file. **Scattered back rather than used directly**:
+            // without this every price and loading lands on the wrong component, and
+            // the picture looks entirely plausible.
+            (Some(Ok(solved)), Some(loaded), Some(sub)) => {
+                let cut = reduce(solved, &sub.net, self.instant);
+                Reduced {
+                    shed: scatter(&cut.shed, &sub.bus_of, loaded.network.buses.len()),
+                    price: scatter(&cut.price, &sub.bus_of, loaded.network.buses.len()),
+                    load: scatter(&cut.load, &sub.line_of, loaded.network.lines.len()),
+                    flow: scatter(&cut.flow, &sub.line_of, loaded.network.lines.len()),
+                }
+            }
+            (Some(Ok(solved)), Some(loaded), None) => {
                 reduce(solved, &loaded.network, self.instant)
             }
             _ => Reduced::default(),
@@ -1842,6 +1924,25 @@ struct Reduced {
 /// A free function rather than a method so it can be tested without a window.
 /// The choice of reduction per quantity is the whole content of it, and getting
 /// one of them wrong produces a picture that is plausible and false.
+/// Put a cut network's per-component results back where the whole file expects them.
+///
+/// Anything the cut left out reads as zero, which is what the canvas already draws
+/// for a component with no result. `of` is the cut-to-original index map.
+fn scatter(values: &[f64], of: &[usize], full: usize) -> Vec<f64> {
+    if values.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![0.0; full];
+    for (i, v) in values.iter().enumerate() {
+        if let Some(&at) = of.get(i)
+            && at < full
+        {
+            out[at] = *v;
+        }
+    }
+    out
+}
+
 fn reduce(solved: &Solved, net: &gridwright_net::Network, at: Instant) -> Reduced {
     Reduced {
         // Shed reduces by peak. It is an *event*: one bad hour is the story,

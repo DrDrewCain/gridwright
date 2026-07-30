@@ -88,3 +88,10 @@ web-sys = { version = "0.3", features = [
     # `std::time::Instant` panics there.
     "Performance",
 ] }
+
+[dev-dependencies]
+# Only for tests, and only natively. The studio's own solver is the pure-Rust
+# simplex, which is the one that reaches wasm; HiGHS is here so a test can ask a
+# second, independent solver whether a model is really unbounded or merely hard.
+gridwright-solve.workspace = true
+gridwright-build.workspace = true

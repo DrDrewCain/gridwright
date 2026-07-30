@@ -31,6 +31,7 @@ mod backend;
 mod fuzzy;
 mod palette;
 mod samples;
+mod submodel;
 mod places;
 mod layout;
 mod theme;
