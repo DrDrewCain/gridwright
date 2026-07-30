@@ -39,6 +39,18 @@ pub struct Sample {
     /// Whether the buses came with positions. Decides whether opening it shows a
     /// map at all, so it belongs in the list rather than being a surprise.
     pub located: bool,
+    /// What real system this is a model of, or that it is synthetic.
+    ///
+    /// Shown, because it is the question a reader asks second and the files do not
+    /// answer it. **A test case being "the IEEE 118-bus system" says nothing about
+    /// where it is.** Most of these abstract a real network — four of them are
+    /// portions of American Electric Power's system in the early 1960s — but the
+    /// mapping from a bus number to a substation was never published with the case,
+    /// and several are wholly invented. Neither kind carries a coordinate.
+    ///
+    /// So this is the honest substitute for a map: the case can say what it is a
+    /// reduction of, without anyone pretending to know which bus is where.
+    pub abstracts: &'static str,
     pub bytes: &'static [u8],
 }
 
@@ -55,6 +67,7 @@ pub const ALL: &[Sample] = &[
         note: "real positions, fuels, storage and a day of hourly data",
         buses: 8,
         located: true,
+        abstracts: "written for this project: real substations and coordinates in northern and southern Germany, with invented demand and costs",
         bytes: include_bytes!("../../../examples/demo-grid.json"),
     },
     Sample {
@@ -63,6 +76,7 @@ pub const ALL: &[Sample] = &[
         note: "the smallest network with a loop in it",
         buses: 3,
         located: false,
+        abstracts: "synthetic, from Lesieutre, Molzahn, Borden and DeMarco's work on local optima in optimal power flow",
         bytes: include_bytes!("../../../examples/pglib/case3_lmbd.m"),
     },
     Sample {
@@ -71,6 +85,7 @@ pub const ALL: &[Sample] = &[
         note: "the standard example of congestion separating nodal prices",
         buses: 5,
         located: false,
+        abstracts: "a five-bus teaching example from PJM's training material — not a model of PJM's system",
         bytes: include_bytes!("../../../examples/pglib/case5_pjm.m"),
     },
     Sample {
@@ -79,6 +94,7 @@ pub const ALL: &[Sample] = &[
         note: "the 1962 AEP case, and the field's default example",
         buses: 14,
         located: false,
+        abstracts: "a portion of American Electric Power's system in the US Midwest, as of early 1962",
         bytes: include_bytes!("../../../examples/pglib/case14_ieee.m"),
     },
     Sample {
@@ -87,6 +103,7 @@ pub const ALL: &[Sample] = &[
         note: "the Reliability Test System: 33 units on 24 buses",
         buses: 24,
         located: false,
+        abstracts: "synthetic: the IEEE Reliability Test System, built in 1979 for generation adequacy studies rather than to resemble anywhere",
         bytes: include_bytes!("../../../examples/pglib/case24_ieee_rts.m"),
     },
     Sample {
@@ -95,6 +112,7 @@ pub const ALL: &[Sample] = &[
         note: "the security-constrained variant of the 30-bus case",
         buses: 30,
         located: false,
+        abstracts: "the 30-bus case as altered by Alsac and Stott for their work on security-constrained dispatch",
         bytes: include_bytes!("../../../examples/pglib/case30_as.m"),
     },
     Sample {
@@ -103,6 +121,7 @@ pub const ALL: &[Sample] = &[
         note: "six generators against twenty-one loads",
         buses: 30,
         located: false,
+        abstracts: "a portion of American Electric Power's system, as of the early 1960s",
         bytes: include_bytes!("../../../examples/pglib/case30_ieee.m"),
     },
     Sample {
@@ -111,6 +130,7 @@ pub const ALL: &[Sample] = &[
         note: "the reference case for transient stability work",
         buses: 39,
         located: false,
+        abstracts: "a reduced model of the New England transmission system",
         bytes: include_bytes!("../../../examples/pglib/case39_epri.m"),
     },
     Sample {
@@ -119,6 +139,7 @@ pub const ALL: &[Sample] = &[
         note: "seven generators against forty-two loads",
         buses: 57,
         located: false,
+        abstracts: "a portion of American Electric Power's system in the early 1960s",
         bytes: include_bytes!("../../../examples/pglib/case57_ieee.m"),
     },
     Sample {
@@ -127,6 +148,7 @@ pub const ALL: &[Sample] = &[
         note: "three Reliability Test System areas tied together, 99 units",
         buses: 73,
         located: false,
+        abstracts: "synthetic: three Reliability Test System areas interconnected, known as RTS-96",
         bytes: include_bytes!("../../../examples/pglib/case73_ieee_rts.m"),
     },
     Sample {
@@ -135,6 +157,7 @@ pub const ALL: &[Sample] = &[
         note: "the largest case a meshed diagram still reads at",
         buses: 118,
         located: false,
+        abstracts: "a portion of American Electric Power's system, as of December 1962",
         bytes: include_bytes!("../../../examples/pglib/case118_ieee.m"),
     },
     Sample {
@@ -143,6 +166,7 @@ pub const ALL: &[Sample] = &[
         note: "twelve generators for a hundred and thirteen loads",
         buses: 162,
         located: false,
+        abstracts: "a reduced model of a US utility system, published as the IEEE Dynamic Test Case",
         bytes: include_bytes!("../../../examples/pglib/case162_ieee_dtc.m"),
     },
     Sample {
@@ -151,6 +175,7 @@ pub const ALL: &[Sample] = &[
         note: "the largest of the IEEE cases",
         buses: 300,
         located: false,
+        abstracts: "an IEEE working-group case; the system it was reduced from is not recorded in the file",
         bytes: include_bytes!("../../../examples/pglib/case300_ieee.m"),
     },
 ];
@@ -251,6 +276,32 @@ mod tests {
             "case300_ieee.m",
         ] {
             assert!(ALL.iter().any(|s| s.name == want), "{want} is not offered");
+        }
+    }
+
+    #[test]
+    fn every_case_says_what_it_is_a_model_of() {
+        // The question a reader asks second, and the one the files do not answer.
+        // A blank here is a case presenting itself as authoritative about a place
+        // it may have nothing to do with.
+        for s in ALL {
+            assert!(!s.abstracts.is_empty(), "{} says nothing about its origin", s.name);
+        }
+    }
+
+    #[test]
+    fn a_case_with_no_positions_never_claims_a_place_it_can_locate() {
+        // Four of these are portions of American Electric Power's system, which is
+        // a real network in a real region -- and not one bus in them carries a
+        // coordinate. The provenance line exists so that can be said without the
+        // map implying it is known where anything is.
+        for s in ALL.iter().filter(|s| !s.located) {
+            let net = gridwright_worker::load(Some(s.name), s.bytes).unwrap().network;
+            assert!(
+                net.buses.iter().all(|b| b.position.is_none()),
+                "{} has coordinates but is listed as unlocated",
+                s.name,
+            );
         }
     }
 

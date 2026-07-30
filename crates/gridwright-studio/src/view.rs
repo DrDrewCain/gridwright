@@ -1241,16 +1241,11 @@ impl NetworkView {
             let bus = &net.buses[b];
             let Some(&p) = layout.get(b) else { continue };
             let s = self.screen_of(rect, p);
-            let at = s + vec2(0.0, thickness * 0.5 + 19.0);
             let galley = painter.layout_no_wrap(
                 bus.name.clone(),
                 FontId::proportional(10.0),
                 crate::theme::INK_DIM,
             );
-            // Wider margins than the text needs. A label that merely fails to
-            // overlap its neighbour still reads as one continuous run of type at
-            // this size; the gap is what makes them separate things.
-            let box_ = Rect::from_center_size(at, galley.size()).expand2(vec2(6.0, 3.0));
 
             // The selected bus is labelled whatever else is in the way. It is
             // the one the reader asked about, and losing its name to a
@@ -1260,14 +1255,40 @@ impl NetworkView {
             // Its own bar is skipped, or every label would collide with the bus
             // it belongs to.
             let own = Rect::from_center_size(s, vec2(half * 2.0, thickness)).expand(2.0);
-            if !mine
-                && placed
+            let free = |placed: &[Rect], box_: Rect| {
+                placed
                     .iter()
                     .enumerate()
-                    .any(|(i, r)| r.intersects(box_) && !(i < bars && *r == own))
-            {
+                    .all(|(i, r)| !r.intersects(box_) || (i < bars && *r == own))
+            };
+
+            // Below first, then above. **Two candidate positions rather than one**,
+            // which is what a map renderer does and for the reason a dense case
+            // makes obvious: with only one, a busbar three rows down blocks a name
+            // that had a perfectly good gap over its own head. Reserving the bars
+            // took the 118-bus case from a wall of text to twelve names, and the
+            // second position brings back the ones that were never really in
+            // anybody's way.
+            //
+            // Below is tried first so the common case stays where a reader has
+            // learned to look, and the order is fixed so a label does not swap
+            // sides as neighbours come and go.
+            let offsets = [
+                vec2(0.0, thickness * 0.5 + 19.0),
+                vec2(0.0, -(thickness * 0.5 + 19.0)),
+            ];
+            // Enough margin that two labels read as two things. A gap of a pixel
+            // is not a gap at ten point.
+            let candidate = |off: Vec2| {
+                Rect::from_center_size(s + off, galley.size()).expand2(vec2(5.0, 2.0))
+            };
+            let Some(box_) = offsets
+                .into_iter()
+                .map(candidate)
+                .find(|b| mine || free(&placed, *b))
+            else {
                 continue;
-            }
+            };
             placed.push(box_);
 
             // A knocked-out background rather than a halo stroke. Edges pass
@@ -1276,7 +1297,7 @@ impl NetworkView {
             // fixes.
             painter.rect_filled(box_, 2.0, crate::theme::SLATE_WORK);
             painter.galley(
-                box_.min + vec2(3.0, 1.0),
+                box_.min + vec2(5.0, 2.0),
                 galley,
                 if mine {
                     crate::theme::INK_STRONG

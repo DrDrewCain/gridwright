@@ -367,6 +367,36 @@ impl StudioApp {
                             }
                         }
                     });
+
+                // What the case is a model of, for the cases that came from the
+                // list. It answers the question a reader asks straight after
+                // opening one — *where is this?* — which the file itself never
+                // does: four of them are portions of American Electric Power's
+                // system in the early 1960s and not one bus in them carries a
+                // coordinate, so the honest answer is words rather than a map.
+                if let Some(s) = self.from_sample.and_then(|i| crate::samples::ALL.get(i)) {
+                    ui.add_space(theme::UNIT);
+                    ui.label(
+                        egui::RichText::new(s.abstracts)
+                            .size(11.0)
+                            .color(theme::INK_DIM),
+                    );
+                    if !s.located {
+                        // Said plainly, because `bus1` looks like a name the file
+                        // chose and it is not: MATPOWER carries no bus names at
+                        // all, and these are numbers this reader wrote a prefix
+                        // onto. A reader who thinks the file named them will trust
+                        // the arrangement too.
+                        ui.add_space(theme::UNIT);
+                        ui.label(
+                            egui::RichText::new(
+                                "no coordinates or names in the file — buses are                                  numbered, and the arrangement is the topology relaxed",
+                            )
+                            .size(11.0)
+                            .color(theme::INK_DIM),
+                        );
+                    }
+                }
             }
         }
 
@@ -1580,6 +1610,13 @@ impl eframe::App for StudioApp {
         }
     }
 }
+
+/// Said plainly under an unlocated case.
+///
+/// Because `bus1` looks like a name the file chose, and it is not: MATPOWER carries
+/// no bus names at all, and these are numbers with a prefix this reader wrote on.
+/// A person who believes the file named them will trust the arrangement too.
+const NO_GEOGRAPHY: &str = "buses are numbered, not named; the arrangement is the topology relaxed";
 
 /// A label and its count.
 ///
