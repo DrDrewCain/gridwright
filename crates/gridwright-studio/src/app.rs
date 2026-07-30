@@ -54,6 +54,12 @@ pub struct StudioApp {
     /// on it would leave the picker showing nothing as selected -- or worse,
     /// marking the wrong row when two cases share a stem.
     from_sample: Option<usize>,
+    /// A country to isolate, applied at the end of the frame.
+    ///
+    /// Deferred like the others: the region list is drawn while `self.loaded` is
+    /// borrowed to read the countries out of, and isolating one needs the network
+    /// again to know what to hide.
+    pending_only_region: Option<String>,
     /// A case chosen from the picker this frame, opened once at the end of it.
     ///
     /// Deferred for the same reason as `scrub_to`, and more sharply: the picker is
@@ -127,6 +133,7 @@ impl StudioApp {
             palette: crate::palette::Palette::default(),
             scrub_to: std::cell::Cell::new(None),
             from_sample: None,
+            pending_only_region: None,
             pending_sample: None,
             solve_took: None,
             load_error: None,
@@ -400,6 +407,8 @@ impl StudioApp {
             }
         }
 
+        self.regions(ui);
+
         if let Some(err) = &self.load_error {
             ui.add_space(theme::UNIT);
             ui.label(egui::RichText::new(err).color(theme::TRIP));
@@ -466,6 +475,97 @@ impl StudioApp {
     ///
     /// Returns whether anything was drawn, so the caller can space around it
     /// without leaving a hole when nothing is selected.
+    /// Countries in the loaded network, each switchable.
+    ///
+    /// Only when there is more than one, which is the honest test: a filter with a
+    /// single entry is a control that does nothing, and every IEEE case has exactly
+    /// one country because MATPOWER has no column for it.
+    ///
+    /// The list is what makes a continental model usable. 7,893 substations across
+    /// sixty countries is a question about scale, and asking anything about Portugal
+    /// inside it means being able to put the other fifty-nine away.
+    fn regions(&mut self, ui: &mut egui::Ui) {
+        let Some(net) = self.network() else { return };
+        let regions = crate::NetworkView::regions(net);
+        if regions.len() < 2 {
+            return;
+        }
+        // Names resolved before the list is drawn. The gazetteer lives on the view
+        // and switching a country off mutates the view, so reading one while
+        // holding the other is a borrow this cannot have.
+        let regions: Vec<(String, usize, Option<String>)> = regions
+            .into_iter()
+            .map(|(code, buses)| {
+                let name = self.view.places().country_named(&code).map(str::to_string);
+                (code, buses, name)
+            })
+            .collect();
+
+        ui.add_space(crate::theme::UNIT * 2.0);
+        ui.horizontal(|ui| {
+            ui.label(crate::theme::eyebrow("regions"));
+            // Only offered when it would do something. A live "show all" beside a
+            // list where everything is already shown is a button that reads as
+            // broken the first time somebody presses it.
+            if self.view.any_region_hidden() {
+                ui.add_space(crate::theme::UNIT);
+                if ui
+                    .add(egui::Button::new(
+                        egui::RichText::new("all").size(10.0).color(crate::theme::INK),
+                    ))
+                    .on_hover_text("show every country again")
+                    .clicked()
+                {
+                    self.view.show_all_regions();
+                }
+            }
+        });
+        ui.add_space(crate::theme::UNIT);
+
+        // Scrolled, and capped in height. Sixty countries down the panel would push
+        // the composition, the results and the dispatch stack off the bottom of the
+        // window -- the filter is not the most important thing here.
+        egui::ScrollArea::vertical()
+            .max_height(190.0)
+            .id_salt("regions")
+            .show(ui, |ui| {
+                for (code, buses, named) in &regions {
+                    // The country's name where the gazetteer knows the code, and the
+                    // code itself where it does not. Never a guess: an unrecognised
+                    // code shown as some nearby country's name would be a label
+                    // that is confidently wrong.
+                    let label = match named.as_deref() {
+                        Some(name) => format!("{name}  ·  {buses}"),
+                        None => format!("{code}  ·  {buses}"),
+                    };
+                    let was = !self.view.region_hidden(code);
+                    let mut shown = was;
+                    let text = egui::RichText::new(label).size(11.0).color(if was {
+                        crate::theme::INK
+                    } else {
+                        crate::theme::INK_DIM
+                    });
+                    let row = ui.add(egui::Checkbox::new(&mut shown, text));
+                    if row.changed() {
+                        self.view.set_region_hidden(code, !shown);
+                    }
+                    // Alt-click to isolate. The common thing a reader wants is one
+                    // country, and reaching it by switching off fifty-nine others
+                    // is not a route anybody would take.
+                    if row.clicked() && ui.input(|i| i.modifiers.alt) {
+                        self.pending_only_region = Some(code.clone());
+                    }
+                    if named.is_none() {
+                        row.on_hover_text(format!(
+                            "{code}: the gazetteer has no country by this code"
+                        ));
+                    } else {
+                        row.on_hover_text("alt-click to show only this one");
+                    }
+                }
+            });
+    }
+
     fn inspector(&self, ui: &mut egui::Ui) -> bool {
         use crate::theme;
 
@@ -1596,6 +1696,12 @@ impl eframe::App for StudioApp {
         // Before the scrub, because opening a network resets the instant and
         // applying a scrub into the old horizon first would be a position in a
         // timeline that is about to stop existing.
+        if let Some(code) = self.pending_only_region.take()
+            && let Some(net) = self.loaded.as_ref().map(|l| &l.network)
+        {
+            self.view.only_region(net, &code);
+        }
+
         if let Some(i) = self.pending_sample.take() {
             self.open_sample(i);
         }
