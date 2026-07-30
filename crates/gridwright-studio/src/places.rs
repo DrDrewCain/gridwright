@@ -72,6 +72,8 @@ pub struct Place {
     /// State, province or Land. Empty where the source has none.
     pub region: String,
     pub country: String,
+    /// Two-letter country code, for joining to a network file's own codes.
+    pub iso: String,
     pub kind: Kind,
     /// Lower is more prominent, 1 to 10.
     pub rank: u8,
@@ -140,6 +142,22 @@ impl Places {
             }
         }
         out
+    }
+
+    /// The country a two-letter code names, if the gazetteer knows it.
+    ///
+    /// Transmission data identifies a country by its ISO code and a reader wants a
+    /// name. This is the join, and it comes from the gazetteer rather than from a
+    /// table written out by hand here -- sixty codes typed from memory is sixty
+    /// chances to mislabel somebody's country.
+    pub fn country_named(&self, iso: &str) -> Option<&str> {
+        if iso.is_empty() {
+            return None;
+        }
+        self.all
+            .iter()
+            .find(|p| p.iso.eq_ignore_ascii_case(iso) && !p.country.is_empty())
+            .map(|p| p.country.as_str())
     }
 
     /// Every distinct country inside `extent`, most prominent first.
@@ -317,10 +335,11 @@ fn decode(blob: &[u8]) -> Vec<Place> {
 
     let mut out = Vec::with_capacity(n as usize);
     for _ in 0..n {
-        let (Some(x), Some(y), Some(packed), Some(pop), Some(region), Some(country)) = (
+        let (Some(x), Some(y), Some(packed), Some(pop), Some(region), Some(country), Some(iso)) = (
             i16b(blob, &mut at),
             i16b(blob, &mut at),
             u8b(blob, &mut at),
+            u16b(blob, &mut at),
             u16b(blob, &mut at),
             u16b(blob, &mut at),
             u16b(blob, &mut at),
@@ -338,6 +357,7 @@ fn decode(blob: &[u8]) -> Vec<Place> {
             name,
             region: name_of(region),
             country: name_of(country),
+            iso: name_of(iso),
             kind: Kind::from_tag(packed & 0x0F),
             rank: packed >> 4,
             population: pop as u32 * 1000,
@@ -477,6 +497,24 @@ mod tests {
     }
 
     #[test]
+    fn a_country_code_resolves_to_a_country_name() {
+        // The join a per-country filter needs: network files say DE, readers want
+        // Germany. Taken from the gazetteer rather than from a hand-written table,
+        // so it cannot drift from the names shown on the map.
+        let p = Places::load();
+        for (code, want) in [
+            ("DE", "Germany"),
+            ("FR", "France"),
+            ("ES", "Spain"),
+            ("NO", "Norway"),
+        ] {
+            assert_eq!(p.country_named(code), Some(want), "{code}");
+        }
+        assert_eq!(p.country_named(""), None);
+        assert_eq!(p.country_named("ZZ"), None);
+    }
+
+    #[test]
     fn capitals_are_classified_as_capitals() {
         let p = Places::load();
         assert_eq!(
@@ -610,6 +648,7 @@ mod tests {
         blob.extend(0i16.to_le_bytes());
         blob.push(0x32); // rank 3, kind 2 = City
         blob.extend(0u16.to_le_bytes());
+        blob.extend(NO_LABEL.to_le_bytes());
         blob.extend(NO_LABEL.to_le_bytes());
         blob.extend(NO_LABEL.to_le_bytes());
         blob.push(2);
