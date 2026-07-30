@@ -76,6 +76,34 @@
         }
         await settle();
       }
+      // An optional click, for checking an interaction rather than a still frame.
+      // `cx`/`cy` are fractions of the canvas, like the zoom anchor.
+      if (q.has("cx")) {
+        const cx = box.left + box.width * parseFloat(q.get("cx"));
+        const cy = box.top + box.height * parseFloat(q.get("cy"));
+        // `buttons` matters and is easy to leave out. A pointerdown with
+        // `buttons: 0` says no button is held, and a handler that checks it -- as
+        // eframe's does -- discards the event. Without it every synthetic click in
+        // this harness silently did nothing, including one on a button that plainly
+        // works when a person presses it.
+        const base = { clientX: cx, clientY: cy, bubbles: true, cancelable: true,
+                       pointerId: 1, pointerType: "mouse", isPrimary: true,
+                       button: 0, pressure: 0.5 };
+        const down = { ...base, buttons: 1 };
+        const up = { ...base, buttons: 0 };
+
+        canvas.dispatchEvent(new PointerEvent("pointermove", up));
+        await settle();
+        // Both families, because which one a framework listens to is its business.
+        canvas.dispatchEvent(new PointerEvent("pointerdown", down));
+        canvas.dispatchEvent(new MouseEvent("mousedown", down));
+        await settle();
+        canvas.dispatchEvent(new PointerEvent("pointerup", up));
+        canvas.dispatchEvent(new MouseEvent("mouseup", up));
+        canvas.dispatchEvent(new MouseEvent("click", up));
+        for (let i = 0; i < 12; i++) await settle();
+      }
+
       for (let i = 0; i < 20; i++) await settle();
       document.title = `ready ${steps}`;
     </script>
