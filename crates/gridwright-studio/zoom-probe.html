@@ -1,0 +1,83 @@
+<!doctype html>
+<!--
+  A harness for screenshotting the studio at a chosen zoom.
+
+  Not part of the application. It exists because a level pyramid's whole claim is
+  that detail rises with magnification, and that claim cannot be checked from a
+  screenshot at one zoom -- so this mounts the studio, waits for the first paint,
+  and dispatches synthetic wheel events at the canvas centre before a headless
+  browser takes the picture.
+
+  Usage: zoom-probe.html#<case>&steps=<n>
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>gridwright — zoom probe</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #14171C; }
+      canvas { display: block; width: 100%; height: 100%; }
+    </style>
+  </head>
+  <body>
+    <canvas id="gridwright_studio"></canvas>
+    <script type="module">
+      import init, { mount } from "./pkg/gridwright_studio.js";
+      await init();
+      mount("gridwright_studio");
+
+      const q = new URLSearchParams(location.hash.slice(1).replace(/^([^&=]+)(&|$)/, "case=$1$2"));
+      const steps = parseInt(q.get("steps") ?? "0", 10);
+      // Where to zoom about, as a fraction of the canvas. Settable because the
+      // interesting thing to magnify depends on the question: coastline detail is
+      // only visible if the camera stays on a coast, and a fixed anchor walks
+      // inland.
+      const ax = parseFloat(q.get("ax") ?? "0.62");
+      const ay = parseFloat(q.get("ay") ?? "0.5");
+
+      const canvas = document.getElementById("gridwright_studio");
+      const settle = () => new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+      // Several frames before touching it. eframe negotiates a WebGL context and
+      // lays out on its first paints, and a wheel event before the camera has a
+      // pane to fit into is applied to a view that is about to be replaced.
+      for (let i = 0; i < 20; i++) await settle();
+
+      const box = canvas.getBoundingClientRect();
+      // Right of centre, because the left third is the panel and zooming at the
+      // pane centre walks the network off screen.
+      const at = { clientX: box.left + box.width * ax, clientY: box.top + box.height * ay };
+
+      // The pointer has to be over the canvas first. Zoom is gated on the canvas
+      // being hovered -- otherwise a scroll anywhere in the page would move a
+      // camera the reader is not looking at -- and a synthetic wheel event with no
+      // preceding pointer position is delivered to a widget that reports it is not
+      // hovered, so it is discarded. That is correct behaviour and it is why the
+      // first version of this harness produced twenty identical screenshots.
+      for (const kind of ["pointerover", "pointerenter", "pointermove", "mousemove"]) {
+        canvas.dispatchEvent(new PointerEvent(kind, {
+          ...at, bubbles: true, pointerId: 1, pointerType: "mouse", isPrimary: true,
+        }));
+      }
+      await settle();
+      await settle();
+
+      // **The keyboard, not the wheel.** egui smooths scroll deltas across frames
+      // so a trackpad feels continuous, which means a synthetic burst of wheel
+      // events is spread out and partly swallowed -- sixteen of them and thirty of
+      // them produced pixel-identical screenshots. The keyboard zoom is one
+      // discrete step per key press, so it is reproducible, which is the only
+      // property a screenshot harness needs.
+      for (let i = 0; i < steps; i++) {
+        for (const kind of ["keydown", "keyup"]) {
+          canvas.dispatchEvent(new KeyboardEvent(kind, {
+            key: "+", code: "Equal", bubbles: true, cancelable: true,
+          }));
+        }
+        await settle();
+      }
+      for (let i = 0; i < 20; i++) await settle();
+      document.title = `ready ${steps}`;
+    </script>
+  </body>
+</html>
