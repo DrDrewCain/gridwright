@@ -396,9 +396,7 @@ impl StudioApp {
                         // the arrangement too.
                         ui.add_space(theme::UNIT);
                         ui.label(
-                            egui::RichText::new(
-                                "no coordinates or names in the file — buses are                                  numbered, and the arrangement is the topology relaxed",
-                            )
+                            egui::RichText::new(NO_GEOGRAPHY)
                             .size(11.0)
                             .color(theme::INK_DIM),
                         );

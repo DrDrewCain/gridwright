@@ -92,16 +92,6 @@ pub struct NetworkView {
     /// Whether the next fit jumps rather than travels. True for a new network.
     snap_next_fit: bool,
     /// The map under the network. Levels are decoded on first use.
-    /// Whether the last frame reduced the busbars to points.
-    ///
-    /// Set by `draw_buses` and read by `draw_regions`, which runs after it. It
-    /// decides who wins a click: at a zoom where individual buses are two-pixel
-    /// dots, a reader clicking a country's name means the country, and the bus that
-    /// happens to be within picking distance is not what they were pointing at.
-    /// Threading it through as an argument would mean returning it from one draw
-    /// call to hand to another, which is what the comment in `draw_buses` about the
-    /// eighth argument was already about.
-    crowded: bool,
     /// Countries the reader has switched off, by the code the network file uses.
     ///
     /// Off rather than on, so the default is everything and a network with no
@@ -134,7 +124,6 @@ impl Default for NetworkView {
             goal: None,
             hovered: None,
             snap_next_fit: true,
-            crowded: false,
             hidden: std::collections::HashSet::new(),
             basemap: crate::basemap::Basemap::default(),
             places: crate::places::Places::load(),
@@ -350,7 +339,7 @@ impl NetworkView {
         // background competing with the grid rather than about it being visible.
         if let Some(frame) = geo
             && let Some(code) =
-                self.draw_regions(ui, &painter, rect, net, layout, frame, on_bus)
+                self.draw_regions(ui, &painter, rect, net, layout, frame)
         {
             // The bus this click also landed on is given back. At a zoom where the
             // busbars are points a country name covers hundreds of them, so the
@@ -358,15 +347,17 @@ impl NetworkView {
             // to be under the word -- and the inspector then described a substation
             // the reader had not asked about.
             self.selected = selected_before;
-            // Clicking a name isolates that country; clicking it again brings the
-            // rest back. Two states rather than a per-country toggle, because the
-            // gesture is "show me this one" and the way out has to be the same
-            // gesture -- otherwise a reader who isolated Portugal has to go and
-            // find the panel to escape it.
-            if self.hidden.is_empty() {
-                self.only_region(net, &code);
-            } else {
+            // Clicking a country shows only that country; clicking the one already
+            // on its own shows everything again. **Decided from the country
+            // clicked, not from whether anything is hidden**, which is what makes
+            // it switch focus rather than flip-flop: the first version read
+            // "something is hidden" and so clicking France while Spain was isolated
+            // showed the whole continent, and moving between two countries took two
+            // clicks with everything flashing up in between.
+            if self.only_shown(net, &code) {
                 self.show_all_regions();
+            } else {
+                self.only_region(net, &code);
             }
         }
 
@@ -1192,7 +1183,6 @@ impl NetworkView {
             .max(1);
         let spacing = (rect.area() / shown as f32).sqrt();
         let crowded = spacing < half * 2.0;
-        self.crowded = crowded;
         // Never smaller than a pixel, or the network vanishes instead of
         // simplifying.
         let dot = (spacing * 0.22).clamp(1.0, thickness);
@@ -1633,15 +1623,12 @@ impl NetworkView {
         net: &Network,
         layout: &[Pos2],
         frame: crate::layout::Frame,
-        blocked: bool,
     ) -> Option<String> {
         let extents = Self::region_extents(net, layout, frame);
         if extents.len() < 2 {
             return None;
         }
 
-        let pointer = ui.input(|i| i.pointer.hover_pos());
-        let clicked = ui.input(|i| i.pointer.primary_clicked());
         let mut hit = None;
         // Placed largest-first so a big country wins a collision with a small one
         // it encloses, rather than the alphabetical order the extents come in.
@@ -1667,6 +1654,16 @@ impl NetworkView {
             // Skip a country with no room for its own name. On a continental view
             // that is Luxembourg and Malta; zoom in and they appear.
             if on_screen.width() < size * 2.5 || !rect.intersects(on_screen) {
+                continue;
+            }
+            // **And skip a country the reader is inside.** A country name is for
+            // orientation at a scale where individual substations are not the
+            // subject; once the country is wider than the pane, the reader is
+            // looking at part of it and the word is in the way of the thing they
+            // came for. Dropping it here is also what lets the label take a click
+            // outright below, because it is only ever present at a zoom where a
+            // busbar is not what is being aimed at.
+            if on_screen.width() > rect.width() * 1.6 {
                 continue;
             }
 
@@ -1699,14 +1696,32 @@ impl NetworkView {
             }
             taken.push(where_);
 
-            // A busbar under the pointer wins -- it is the more specific thing --
-            // but only while a busbar is still a thing a reader can aim at. Once
-            // the view is dense enough that every bus is a two-pixel dot, the
-            // pointer is always within picking distance of one, and requiring an
-            // empty spot made the country names unclickable across the whole of
-            // central Europe. Which is where they are most useful.
-            let over = (!blocked || self.crowded)
-                && pointer.is_some_and(|p| where_.contains(p));
+            // **A real interaction, not a look at the raw pointer state.** Reading
+            // `primary_clicked` inside a draw call reports the same click on every
+            // layout pass egui runs for the frame, so an action derived from the
+            // current state applies twice and undoes itself. A `Response` is
+            // delivered once however many passes there were.
+            //
+            // The label takes the click outright, rather than yielding to a busbar
+            // under the pointer. Two attempts at yielding both failed, and in
+            // opposite directions: requiring an empty spot made the names
+            // unclickable across central Europe, where every pointer position is
+            // within picking distance of some bus; conditioning it on the view
+            // being crowded then broke the way back out, because isolating one
+            // country *un*-crowds the view and the name stopped answering. The rule
+            // that works is the one the skip above earns -- a country name only
+            // exists at a zoom where the reader is looking at the country rather
+            // than inside it, and at that zoom a two-pixel dot is not what they are
+            // aiming at.
+            let response = ui.interact(
+                where_,
+                eframe::egui::Id::new(("region", code.as_str())),
+                eframe::egui::Sense::click(),
+            );
+            let over = response.hovered();
+            if response.clicked() {
+                hit = Some(code.clone());
+            }
             // A hidden country keeps its name and loses everything else, which is
             // what makes it possible to switch back on. Struck through, because a
             // dimmer label alone reads as a country that is merely far away.
@@ -1744,9 +1759,11 @@ impl NetworkView {
             if over {
                 ui.ctx()
                     .set_cursor_icon(eframe::egui::CursorIcon::PointingHand);
-                if clicked {
-                    hit = Some(code.clone());
-                }
+                response.on_hover_text(if self.only_shown(net, code) {
+                    format!("{label} only — click to show every country again")
+                } else {
+                    format!("click to show only {label}")
+                });
             }
         }
         hit
@@ -1874,6 +1891,22 @@ impl NetworkView {
 
     pub fn any_region_hidden(&self) -> bool {
         !self.hidden.is_empty()
+    }
+
+    /// Whether this country is the only one being shown.
+    ///
+    /// Asked of the country rather than of the filter, which is the difference
+    /// between a control that switches focus and one that flip-flops. The first
+    /// version decided what to do from whether *anything* was hidden, so clicking
+    /// France while Spain was isolated meant "something is hidden, show
+    /// everything" -- and the reader had to click twice to move between two
+    /// countries, with the whole continent flashing up in between.
+    pub fn only_shown(&self, net: &Network, code: &str) -> bool {
+        !self.hidden.is_empty()
+            && !self.hidden.contains(code)
+            && Self::regions(net)
+                .iter()
+                .all(|(c, _)| c == code || self.hidden.contains(c))
     }
 
     /// The lowest line voltage worth drawing, given how much room there is.
@@ -2629,6 +2662,89 @@ mod region_tests {
 
         view.show_all_regions();
         assert!((0..net.buses.len()).all(|b| view.shows(&net, b)));
+    }
+
+    /// What a click on a country's name does, as the canvas decides it.
+    fn click(view: &mut NetworkView, net: &Network, code: &str) {
+        if view.only_shown(net, code) {
+            view.show_all_regions();
+        } else {
+            view.only_region(net, code);
+        }
+    }
+
+    #[test]
+    fn the_first_click_on_a_country_shows_that_country() {
+        // **Reported: the first click showed the whole grid and the second one
+        // finally narrowed it.** The rule used to be "if anything is hidden, show
+        // everything", read fresh on every click, so any earlier interaction that
+        // had hidden something turned the next click into a reset.
+        let net = net_of(&["ES", "FR", "DE"]);
+        let mut view = NetworkView::default();
+        click(&mut view, &net, "ES");
+        assert!(view.shows(&net, 0), "clicking Spain did not show Spain");
+        assert!(!view.shows(&net, 1));
+        assert!(!view.shows(&net, 2));
+    }
+
+    #[test]
+    fn clicking_another_country_moves_to_it_rather_than_resetting() {
+        // The failure the report was actually about: with Spain isolated, clicking
+        // France showed the whole continent, and a second click on France was
+        // needed to get there. Moving between two countries is one click.
+        let net = net_of(&["ES", "FR", "DE"]);
+        let mut view = NetworkView::default();
+        click(&mut view, &net, "ES");
+        click(&mut view, &net, "FR");
+        assert!(!view.shows(&net, 0), "Spain is still shown");
+        assert!(view.shows(&net, 1), "clicking France did not show France");
+        assert!(!view.shows(&net, 2));
+    }
+
+    #[test]
+    fn clicking_the_country_already_on_its_own_shows_everything() {
+        // The way back out, using the same gesture, so a reader who isolated
+        // Portugal does not have to go and find the panel to escape it.
+        let net = net_of(&["ES", "FR", "DE"]);
+        let mut view = NetworkView::default();
+        click(&mut view, &net, "ES");
+        assert!(view.any_region_hidden());
+        click(&mut view, &net, "ES");
+        assert!(!view.any_region_hidden());
+        assert!((0..net.buses.len()).all(|b| view.shows(&net, b)));
+    }
+
+    #[test]
+    fn only_shown_is_about_the_country_asked_about() {
+        let net = net_of(&["ES", "FR", "DE"]);
+        let mut view = NetworkView::default();
+        assert!(!view.only_shown(&net, "ES"), "nothing is isolated yet");
+        view.only_region(&net, "ES");
+        assert!(view.only_shown(&net, "ES"));
+        assert!(!view.only_shown(&net, "FR"));
+        // Two of three shown is not one on its own.
+        view.show_all_regions();
+        view.set_region_hidden("DE", true);
+        assert!(!view.only_shown(&net, "ES"));
+        assert!(!view.only_shown(&net, "FR"));
+    }
+
+    #[test]
+    fn applying_a_click_twice_in_one_frame_would_undo_it() {
+        // Why the hit test uses a `Response` rather than reading the raw pointer:
+        // egui may lay a frame out more than once, a draw call that reads
+        // `primary_clicked` sees the same click on each pass, and this is what that
+        // costs. The test documents the hazard rather than the fix, so anyone
+        // tempted back to raw input can see what it does.
+        let net = net_of(&["ES", "FR"]);
+        let mut view = NetworkView::default();
+        click(&mut view, &net, "ES");
+        click(&mut view, &net, "ES");
+        assert!(
+            !view.any_region_hidden(),
+            "two applications of one click must be visible as a no-op, which is \
+             exactly why the click may only be applied once",
+        );
     }
 
     #[test]
