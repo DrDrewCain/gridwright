@@ -1736,12 +1736,26 @@ impl NetworkView {
             // actually uses is that the country's network is gone; the label only
             // has to stay legible and clickable, and the panel says which is which
             // without ambiguity.
+            // **Opaque, mixed toward the background, not alpha-blended over it.**
+            //
+            // This is the real reason the names looked bitty on the European
+            // network. A translucent glyph lets whatever is beneath it show through,
+            // and beneath these is a mat of bright 380 kV corridors -- so the
+            // letterforms came out mottled and half-eaten wherever the grid was
+            // dense, and clean only over open sea. It reads exactly like a
+            // low-resolution image of text.
+            //
+            // A watermark should be quiet because of the colour it *is*, not because
+            // you can see through it. Mixing the ink toward the canvas gives the same
+            // dimness and stays solid over anything.
             let ink = if over {
                 crate::theme::INK_STRONG
-            } else if hidden {
-                crate::theme::INK_DIM.gamma_multiply(0.22)
             } else {
-                crate::theme::INK_DIM.gamma_multiply(0.42)
+                lerp_color(
+                    crate::theme::SLATE_WORK,
+                    crate::theme::INK_DIM,
+                    if hidden { 0.30 } else { 0.52 },
+                )
             };
             // A halo, not a plate. A filled plate behind a word this large would
             // punch a hole in the network under it, which is the one thing a label
@@ -1761,11 +1775,10 @@ impl NetworkView {
                 Vec2::new(0.0, spread),
                 Vec2::new(0.0, -spread),
             ] {
-                painter.galley(
-                    origin + d,
-                    galley.clone(),
-                    crate::theme::SLATE_DEEP.gamma_multiply(0.75),
-                );
+                // Opaque too, for the same reason: a translucent halo over a bright
+                // corridor darkens it barely at all, which is precisely where the
+                // separation is needed.
+                painter.galley(origin + d, galley.clone(), crate::theme::SLATE_DEEP);
             }
             painter.galley(origin, galley, ink);
             if over {
@@ -1787,7 +1800,7 @@ impl NetworkView {
     /// estimate that decides how much detail any of them get. If they disagreed the
     /// reader would see corridors ending in nothing, or a network thinned to a
     /// backbone because of buses that are not on screen.
-    fn shows(&self, net: &Network, b: usize) -> bool {
+    pub fn shows(&self, net: &Network, b: usize) -> bool {
         self.hidden.is_empty()
             || net
                 .buses
