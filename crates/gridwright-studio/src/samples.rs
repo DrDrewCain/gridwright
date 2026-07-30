@@ -21,8 +21,10 @@
 //! impedances, so the studio arranges them by relaxing the topology and says so in
 //! the status strip. The basemap and the place names stay off, deliberately: a
 //! coastline under invented positions is a map of somewhere that does not exist.
-//! `demo-grid` is the one case here with real positions, a carrier per generator
-//! and a day of hourly data, which is why it is the default.
+//! Two cases here do have positions. `demo-grid` is the default, being small
+//! enough to read and the only one with a day of hourly data. `eu-grid` is the
+//! other, and it is the reason the basemap exists: 7,893 named substations across
+//! sixty countries, which is a question about scale that eight buses cannot ask.
 
 /// One network the studio can open without touching a filesystem.
 pub struct Sample {
@@ -69,6 +71,15 @@ pub const ALL: &[Sample] = &[
         located: true,
         abstracts: "written for this project: real substations and coordinates in northern and southern Germany, with invented demand and costs",
         bytes: include_bytes!("../../../examples/demo-grid.json"),
+    },
+    Sample {
+        name: "eu-grid.json",
+        label: "Europe — the ENTSO-E map, 7,893 substations",
+        note: "real positions and names at continental scale",
+        buses: 7893,
+        located: true,
+        abstracts: "the GridKit extract of the ENTSO-E interactive map (May 2016, unofficial) joined to published national demand; where the demand sits and what each fuel costs are this project's assumptions, not published data",
+        bytes: include_bytes!("../../../examples/eu-grid.json"),
     },
     Sample {
         name: "case3_lmbd.m",
