@@ -144,19 +144,39 @@ impl Places {
         out
     }
 
-    /// The country a two-letter code names, if the gazetteer knows it.
+    /// The country a two-letter code names, **checked against where it is**.
     ///
     /// Transmission data identifies a country by its ISO code and a reader wants a
-    /// name. This is the join, and it comes from the gazetteer rather than from a
-    /// table written out by hand here -- sixty codes typed from memory is sixty
-    /// chances to mislabel somebody's country.
-    pub fn country_named(&self, iso: &str) -> Option<&str> {
+    /// name, and the gazetteer is the only public thing in the bundle holding both
+    /// halves of that pair. But the join cannot be taken on trust, because a file's
+    /// codes are only mostly ISO:
+    ///
+    /// - The ENTSO-E extract writes `PA` for the Palestinian territories, whose ISO
+    ///   code is `PS`. A blind lookup labels fifteen substations around Bethlehem
+    ///   and Hebron **Panama**.
+    /// - It writes `NI` for Northern Ireland, which is not a country code at all —
+    ///   ISO puts it under `GB`. A blind lookup labels Castlereagh and Coolkeeragh
+    ///   **Nicaragua**.
+    ///
+    /// Both are recognised codes, so nothing about them looks doubtful. What gives
+    /// them away is that the places they name are thousands of kilometres from the
+    /// substations carrying the code, so that is what is tested: a name is only
+    /// returned when the gazetteer has a place of that country inside `extent`.
+    ///
+    /// `extent` is Mercator, and the caller should pass the code's own buses'
+    /// bounding box with room around it. Getting a code back instead of a name is
+    /// the correct outcome, not a failure — `NI` is at least what the file says.
+    pub fn country_named_within(&self, iso: &str, extent: Rect) -> Option<&str> {
         if iso.is_empty() {
             return None;
         }
         self.all
             .iter()
-            .find(|p| p.iso.eq_ignore_ascii_case(iso) && !p.country.is_empty())
+            .find(|p| {
+                p.iso.eq_ignore_ascii_case(iso)
+                    && !p.country.is_empty()
+                    && extent.contains(p.at)
+            })
             .map(|p| p.country.as_str())
     }
 
@@ -502,16 +522,60 @@ mod tests {
         // Germany. Taken from the gazetteer rather than from a hand-written table,
         // so it cannot drift from the names shown on the map.
         let p = Places::load();
-        for (code, want) in [
-            ("DE", "Germany"),
-            ("FR", "France"),
-            ("ES", "Spain"),
-            ("NO", "Norway"),
+        for (code, want, west, east, south, north) in [
+            ("DE", "Germany", 5.5, 15.5, 47.0, 55.5),
+            ("FR", "France", -5.0, 8.5, 42.0, 51.5),
+            ("ES", "Spain", -9.5, 3.5, 36.0, 44.0),
+            ("NO", "Norway", 4.5, 31.5, 57.5, 71.5),
         ] {
-            assert_eq!(p.country_named(code), Some(want), "{code}");
+            assert_eq!(
+                p.country_named_within(code, window(west, east, south, north)),
+                Some(want),
+                "{code}",
+            );
         }
-        assert_eq!(p.country_named(""), None);
-        assert_eq!(p.country_named("ZZ"), None);
+        let anywhere = window(-180.0, 180.0, -85.0, 85.0);
+        assert_eq!(p.country_named_within("", anywhere), None);
+        assert_eq!(p.country_named_within("ZZ", anywhere), None);
+    }
+
+    #[test]
+    fn a_code_that_does_not_mean_what_iso_says_gets_no_name() {
+        // **Both of these shipped as confidently wrong labels.** The ENTSO-E
+        // extract writes PA for the Palestinian territories and NI for Northern
+        // Ireland; ISO reads them as Panama and Nicaragua, and both are recognised
+        // codes so nothing about them looks doubtful. What gives them away is that
+        // the places they name are thousands of kilometres from the substations
+        // carrying the code.
+        let p = Places::load();
+
+        // The extents of the buses actually carrying those codes.
+        let palestine = window(33.8, 36.0, 30.8, 32.8);
+        let ulster = window(-8.1, -5.2, 53.8, 55.5);
+        assert_eq!(p.country_named_within("PA", palestine), None);
+        assert_eq!(p.country_named_within("NI", ulster), None);
+
+        // And the check is not simply refusing everything: the same lookup over
+        // the region those codes really do mean still answers.
+        assert_eq!(
+            p.country_named_within("PA", window(-83.0, -77.0, 7.0, 9.7)),
+            Some("Panama"),
+        );
+        assert_eq!(
+            p.country_named_within("NI", window(-87.7, -83.1, 10.7, 15.0)),
+            Some("Nicaragua"),
+        );
+    }
+
+    #[test]
+    fn a_large_country_is_still_named_from_its_own_extent() {
+        // The check must not reject Russia because the gazetteer's nearest Russian
+        // place is a thousand kilometres from the middle of it.
+        let p = Places::load();
+        assert_eq!(
+            p.country_named_within("RU", window(19.0, 180.0, 41.0, 78.0)),
+            Some("Russia"),
+        );
     }
 
     #[test]
